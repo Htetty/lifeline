@@ -82,7 +82,7 @@ class HandlerTransport:
 def facts(**updates):
     data = dict(
         reported_address="18 Lantern Lane (fictional)", people_count=3,
-        reported_position="upstairs", location_queries=[], location_changed=False, caller_role="trapped", risk_factors=[],
+        reported_position="upstairs", location_queries=[], location_changed=False, caller_role="trapped", risk_factors=[], caller_asked_status=False,
         hazards=[{"hazard": "Water on stairs", "evidence": "Water is on the stairs."}],
         summary="Three people upstairs; caller reports water on the stairs.",
         missing=[], next_question=None,

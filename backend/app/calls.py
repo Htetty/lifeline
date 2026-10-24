@@ -82,6 +82,16 @@ async def _load_transcript(call_id: str) -> list[str]:
     return _transcripts[call_id]
 
 
+async def _confirmed_status_text(call_id: str) -> str:
+    """What the agent may truthfully say about progress right now."""
+    try:
+        status = (await convex_store.call_state(call_id))["status"]
+    except Exception:
+        log.warning("call %s: couldn't read status for a status question", call_id)
+        return "I'm checking on that for you."
+    return status["sayIfAsked"] if status else "I'm passing your details to the dispatcher now."
+
+
 async def _classify(call_id: str, version: int, transcript: str) -> None:
     """Store advisory topic tags. Never raises: classification is optional."""
     caller_text = "\n".join(line[len("Caller: "):] for line in transcript.split("\n") if line.startswith("Caller: "))
@@ -148,12 +158,17 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
         if candidate:
             log.info("call %s: location candidate %r from %r", call_id, candidate.label, candidate.query)
 
+        # "Is anyone coming?": answer with the confirmed status (approved wording) first.
+        next_question = extraction.next_question if extraction else None
+        if extraction and extraction.caller_asked_status:
+            next_question = " ".join(filter(None, [await _confirmed_status_text(call_id), next_question]))
+
         # Save even when extraction fails, so the report is never lost.
         response = dict(
             saved=True,
             incident=None,
             extraction=extraction.model_dump() if extraction else None,
-            next_question=extraction.next_question if extraction else None,
+            next_question=next_question,
             location_match=candidate.label if candidate else None,
             extraction_error=error,
         )
