@@ -179,7 +179,7 @@ class NoFalseSuccess(Base):
                 r = self.say()
         self.assertEqual(r.status_code, 502)
         self.assertNotIn("saved", r.json())
-        self.assertIn("Not saved", r.json()["detail"])
+        self.assertIn("Not stored", r.json()["detail"])
         self.assertFalse(any("transcript saved" in line.lower() for line in logs.output), logs.output)
         self.assertEqual(self.incidents(), [])
 
@@ -187,7 +187,7 @@ class NoFalseSuccess(Base):
         with patch.object(convex_store, "upsert_from_call", AsyncMock(side_effect=OSError("offline"))):
             r = self.say()
         self.assertEqual(r.status_code, 503)
-        self.assertIn("Not saved", r.json()["detail"])
+        self.assertIn("Not stored", r.json()["detail"])
 
     def test_extraction_failure_still_saves_and_says_so_only_after_saving(self):
         self.parse.side_effect = extraction.ExtractionUnavailable("mock refusal")

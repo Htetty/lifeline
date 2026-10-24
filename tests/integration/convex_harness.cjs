@@ -15,6 +15,7 @@ const dependencies = path.resolve(
 const dependencyRequire = createRequire(path.join(dependencies, "__demo__.cjs"));
 const ts = dependencyRequire("typescript");
 process.env.BACKEND_SECRET = "isolated-demo-secret";
+process.env.DISPATCHER_TOKEN = "isolated-demo-dispatcher";
 globalThis.fetch = async () => { throw new Error("Network forbidden in isolated handler tests"); };
 
 // Transpile copies in memory, including the generated ESM utilities. Never emit

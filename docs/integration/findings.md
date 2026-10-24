@@ -137,7 +137,7 @@ Paths below are relative to the repo root on the named branch.
 | F1 three ingestion paths / PR #2 not persisted | **Open: owner decision** (PR #2 comment). Demo blocker for phone calls. |
 | F2 `app.voice` missing | **Open: owner** (#3). Demo blocker for live audio. |
 | F3 stale announcements | Fixed here. `decisionRevision` on incidents and events, and `isCurrentEvent` gates both delivery and ack. Field names match the voice WIP. |
-| F4 false "saved" | Fixed here. `saved` flag; error text no longer claims a save; 502 or 503 with "Not saved". |
+| F4 false "saved" | Fixed here. `saved` flag; error text no longer claims a save; 502 or 503 with "Not stored". |
 | F5 duplicate line on retry | Partly fixed here. A failed save no longer leaves the line in memory. A retry after a *lost response* still appends again until the bridge sends turn ids (voice WIP receipts). |
 | F6 corrections lose evidence | Fixed here. `factHistory` keeps earlier values and dropped hazards with their evidence, and the dashboard shows them under "Changed by caller". |
 | F7 dispatcher ops open | Fixed here. `DISPATCHER_TOKEN`, entered at sign-in and kept in sessionStorage, never bundled. Required by every `exercise:*` and `incidents:*` function, including `exercise:get`. |

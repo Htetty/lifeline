@@ -172,10 +172,10 @@ async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
             )
         except ConvexError as e:
             log.error("call %s: NOT saved, Convex rejected the update", call_id)
-            raise HTTPException(status_code=502, detail=f"Not saved: Convex rejected the update: {e.data}") from e
+            raise HTTPException(status_code=502, detail=f"Not stored: Convex rejected the update: {e.data}") from e
         except Exception as e:
             log.error("call %s: NOT saved, Convex unreachable (%s)", call_id, type(e).__name__)
-            raise HTTPException(status_code=503, detail="Not saved: incident storage is unreachable") from e
+            raise HTTPException(status_code=503, detail="Not stored: incident storage is unreachable") from e
         _has_incident.add(call_id)
         _transcripts[call_id] = lines
 

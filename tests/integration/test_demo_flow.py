@@ -32,6 +32,10 @@ from convex import ConvexError
 from fastapi.testclient import TestClient
 
 SECRET = "isolated-demo-secret"
+DISPATCHER_TOKEN = "isolated-demo-dispatcher"
+VOICE_TOKEN = "isolated-demo-voice-token"
+# Read per request by the backend's voice auth.
+os.environ["VOICE_BRIDGE_TOKEN"] = VOICE_TOKEN
 
 
 class HandlerTransport:
@@ -45,6 +49,8 @@ class HandlerTransport:
         self.lock = threading.Lock()
 
     def invoke(self, name, args):
+        if name.startswith(("exercise:", "incidents:")):
+            args = {"dispatcherToken": DISPATCHER_TOKEN, **args}
         with self.lock:
             self.process.stdin.write(json.dumps({"name": name, "args": args}) + "\n")
             self.process.stdin.flush()
@@ -101,7 +107,8 @@ class DemoIntegration(unittest.TestCase):
         main._transcripts.clear()
         main._locks.clear()
         main._has_incident.clear()
-        self.http = self.enterContext(TestClient(main.app, raise_server_exceptions=False))
+        self.http = self.enterContext(TestClient(main.app, raise_server_exceptions=False,
+                                                 headers={"Authorization": f"Bearer {VOICE_TOKEN}"}))
         self.result(facts())
 
     def result(self, value):
@@ -267,7 +274,7 @@ class DemoIntegration(unittest.TestCase):
     def test_storage_transport_failure_is_not_a_saved_report_response(self):
         with patch.object(self.transport, "mutation", side_effect=RuntimeError("mock transport offline")):
             response = self.say()
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 503)
         self.assertNotIn("saved", response.text.lower())
         self.assertEqual(self.state()["incidents"], [])
 
@@ -288,30 +295,26 @@ class DemoIntegration(unittest.TestCase):
         self.assertEqual(after["transcript"], before["transcript"])
         self.assertEqual(after["version"], before["version"])
 
-    @unittest.expectedFailure
-    def test_gap_revoked_assignment_must_not_be_announced(self):
+    def test_fixed_revoked_assignment_must_not_be_announced(self):
         self.say()
         self.dispatch()
         self.transport.mutation("incidents:setStatus", {"incidentId": self.incident()["_id"], "status": "awaiting_assignment"})
         self.assertEqual(self.announcements(), [])
 
-    @unittest.expectedFailure
-    def test_gap_superseded_updates_must_not_be_announced(self):
+    def test_fixed_superseded_updates_must_not_be_announced(self):
         self.say()
         self.dispatch()
         for status in ("en_route", "resolved"):
             self.transport.mutation("incidents:setStatus", {"incidentId": self.incident()["_id"], "status": status})
         self.assertEqual([event["type"] for event in self.announcements()], ["rescue_resolved"])
 
-    @unittest.expectedFailure
-    def test_gap_disconnected_call_must_not_receive_pending_speech(self):
+    def test_fixed_disconnected_call_must_not_receive_pending_speech(self):
         self.say()
         self.dispatch()
         self.http.post("/calls/demo-fictional-1/end")
         self.assertEqual(self.announcements(), [])
 
-    @unittest.expectedFailure
-    def test_gap_post_dispatch_location_correction_invalidates_old_update(self):
+    def test_fixed_post_dispatch_location_correction_invalidates_old_update(self):
         self.say()
         self.dispatch()
         self.result(facts(reported_address="81 Lantern Lane (fictional)", location_changed=True))
@@ -332,8 +335,7 @@ class DemoIntegration(unittest.TestCase):
         self.say("Correction: I was mistaken; there is no water on the stairs.")
         self.assertEqual(self.incident()["hazards"], [])
 
-    @unittest.expectedFailure
-    def test_gap_failed_storage_must_not_log_transcript_saved(self):
+    def test_fixed_failed_storage_must_not_log_transcript_saved(self):
         self.parse.side_effect = extraction.ExtractionUnavailable("mock refusal")
         with patch.object(self.transport, "mutation", side_effect=ConvexError("unavailable", "mock unavailable")):
             with self.assertLogs("flood-backend", level="WARNING") as logs:
@@ -341,10 +343,11 @@ class DemoIntegration(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertNotIn("transcript saved", "\n".join(logs.output).lower())
 
-    @unittest.expectedFailure
-    def test_gap_unauthenticated_http_write_must_be_rejected(self):
-        response = self.say("An unauthenticated public caller can currently write.")
+    def test_fixed_unauthenticated_http_write_must_be_rejected(self):
+        response = self.http.post("/calls/demo-fictional-1/utterances", headers={"Authorization": ""},
+                                  json={"speaker": "caller", "text": "An unauthenticated public caller."})
         self.assertIn(response.status_code, (401, 403))
+        self.assertEqual(self.state()["incidents"], [])
 
     def test_mocked_demo_walkthrough(self):
         self.say("Simulation: three people upstairs at 18 Lantern Lane, water on stairs.")
