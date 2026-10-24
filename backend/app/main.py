@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from . import convex_store
 from .extraction import Extraction, ExtractionUnavailable, extract_incident
+from .geocode import find_candidate
 
 log = logging.getLogger("flood-backend")
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +54,7 @@ class UtteranceResult(BaseModel):
     incident: dict | None
     extraction: Extraction | None
     next_question: str | None
+    location_match: str | None = None
     extraction_error: str | None = None
 
 
@@ -83,6 +85,12 @@ async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
             if error:
                 log.warning("call %s: %s", call_id, error)
 
+        # Place the incident on the map when the caller named a findable place.
+        # Convex ignores candidates once the dispatcher has confirmed a location.
+        candidate = await find_candidate(extraction.location_queries) if extraction else None
+        if candidate:
+            log.info("call %s: location candidate %r from %r", call_id, candidate.label, candidate.query)
+
         # Save even when extraction fails, so the report is never lost.
         try:
             incident = await convex_store.upsert_from_call(
@@ -96,6 +104,11 @@ async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
                         reported_position=extraction.reported_position,
                         hazards=[h.model_dump() for h in extraction.hazards],
                         summary=extraction.summary,
+                        candidate=(
+                            (candidate.latitude, candidate.longitude, f"Map search: {candidate.label}")
+                            if candidate
+                            else None
+                        ),
                     )
                     if extraction
                     else {}
@@ -108,6 +121,7 @@ async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
             incident=incident,
             extraction=extraction,
             next_question=extraction.next_question if extraction else None,
+            location_match=candidate.label if candidate else None,
             extraction_error=error,
         )
 

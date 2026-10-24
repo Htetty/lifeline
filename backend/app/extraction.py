@@ -23,6 +23,17 @@ street address or coordinates.
 
 For each hazard, include the caller's words that support it as `evidence`.
 
+`location_queries` are up to three map-search strings for the caller's current
+location, most specific first, each ending with ", San Diego, CA". The exercise
+takes place in Mission Valley, San Diego. Prefer named places the caller mentioned
+(a hotel, business, school, apartment complex) and street addresses with a house
+number, e.g. "Days Inn Hotel Circle, San Diego, CA". Use only names and streets the
+caller actually said; leave the list empty if they gave nothing searchable.
+A search result is drawn as the caller's own building, so only search for the place
+the caller is IN. Never search for a landmark they are near, next to, behind or
+across from ("a house next to the Holiday Inn" gives no query); the dispatcher
+places those by hand.
+
 `next_question` is one short, calm question the call-taker can ask to fill the most
 important gap, in this priority: exact location, number of people, where they are in
 the building, injuries or medical needs, other hazards. Set it to null when nothing
@@ -40,6 +51,7 @@ class Extraction(BaseModel):
     reported_address: str | None = Field(description="Caller's description of where they are, in their words")
     people_count: int | None = Field(description="Number of people needing rescue, if stated")
     reported_position: str | None = Field(description="Where they are in the building: floor, roof, attic, vehicle")
+    location_queries: list[str] = Field(description="Map-search strings for the current location, most specific first")
     hazards: list[HazardFact]
     summary: str = Field(description="One sentence summarising only the stated facts")
     missing: list[str] = Field(description="Important facts still unknown")

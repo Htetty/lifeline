@@ -70,7 +70,9 @@ their own `ANTHROPIC_API_KEY` in `backend/.env`. The deploy key is needed only b
 1. **Cartesia voice** (Person 1): stream the mic → Cartesia STT → `POST /calls/{id}/utterances`. Speak `next_question`;
    at pauses, `GET /calls/{id}/announcements`, speak the text, then `POST .../ack`. Confirm the Cartesia integration approach
    (agent framework) before building.
-2. **Address lookup**: geocode `reportedAddress` in the backend (Mapbox, per the plan) and pass candidate coordinates
-   (`candidateLatitude/Longitude` already exist in `calls:upsertFromCall`). They are never auto-verified.
+2. **Address lookup (done, basic):** Claude writes map-search queries for the building the caller is *in*. The backend
+   searches OSM Nominatim (`backend/app/geocode.py`, free, 1 req/s) and places precise matches (hotels, businesses,
+   house numbers) as an unverified candidate, so the building turns red automatically. Streets, areas and "next to X" stay
+   for the dispatcher to place. Upgrade to Mapbox if coverage is too thin.
 3. **Want, not need:** recommended team + route (Openrouteservice) for one-click dispatcher approval.
 4. Before the demo: freeze features, reset data, and rehearse the opening scenario (3 people upstairs → assign → caller hears it).

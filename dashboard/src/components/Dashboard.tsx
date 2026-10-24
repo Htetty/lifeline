@@ -282,7 +282,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                       ) : (
                         !i.locationVerified && (
                           <span className="rounded bg-yellow-300 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
-                            Location unverified
+                            {i.locationNote?.startsWith("Map search") ? "Auto-located · confirm" : "Location unverified"}
                           </span>
                         )
                       )}
@@ -508,6 +508,7 @@ function IncidentDetail({
       ) : !incident.locationVerified ? (
         <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
           <p className="text-xs text-yellow-200">
+            {incident.locationNote ? <b>{incident.locationNote}. </b> : null}
             Location is a candidate only. Check the highlighted building against the caller&apos;s description.
           </p>
           <div className="mt-2 flex gap-2">

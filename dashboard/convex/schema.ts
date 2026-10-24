@@ -48,6 +48,8 @@ export default defineSchema({
     latitude: v.union(v.number(), v.null()),
     longitude: v.union(v.number(), v.null()),
     locationVerified: v.boolean(),
+    /** How an unverified location was found, e.g. "Map search: Days Inn San Diego Hotel Circle". */
+    locationNote: v.optional(v.union(v.string(), v.null())),
     peopleCount: v.union(v.number(), v.null()),
     reportedPosition: v.union(v.string(), v.null()),
     hazards: v.array(hazard),

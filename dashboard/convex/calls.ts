@@ -43,6 +43,7 @@ export const upsertFromCall = mutation({
     /** Candidate coordinates from geocoding, never treated as verified. */
     candidateLatitude: v.optional(v.number()),
     candidateLongitude: v.optional(v.number()),
+    candidateLabel: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
@@ -58,6 +59,7 @@ export const upsertFromCall = mutation({
         latitude: args.candidateLatitude ?? null,
         longitude: args.candidateLongitude ?? null,
         locationVerified: false,
+        locationNote: args.candidateLabel ?? null,
         peopleCount: args.peopleCount,
         reportedPosition: args.reportedPosition,
         hazards: args.hazards,
@@ -93,6 +95,7 @@ export const upsertFromCall = mutation({
         patch.status = "needs_review";
         patch.latitude = args.candidateLatitude ?? null;
         patch.longitude = args.candidateLongitude ?? null;
+        patch.locationNote = args.candidateLabel ?? null;
       }
       await logActivity(
         ctx,
@@ -104,6 +107,7 @@ export const upsertFromCall = mutation({
     } else if (!existing.locationVerified && args.candidateLatitude != null && args.candidateLongitude != null) {
       patch.latitude = args.candidateLatitude;
       patch.longitude = args.candidateLongitude;
+      patch.locationNote = args.candidateLabel ?? null;
     }
 
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });

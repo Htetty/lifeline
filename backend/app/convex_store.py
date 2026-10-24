@@ -27,10 +27,17 @@ async def upsert_from_call(
     reported_position: str | None = None,
     hazards: list[dict[str, str | None]] | None = None,
     summary: str | None = None,
+    candidate: tuple[float, float, str] | None = None,
 ) -> dict[str, Any]:
+    location = (
+        {"candidateLatitude": candidate[0], "candidateLongitude": candidate[1], "candidateLabel": candidate[2]}
+        if candidate
+        else {}
+    )
     return await _mutation(
         "calls:upsertFromCall",
         {
+            **location,
             "callId": call_id,
             "source": source,
             "transcript": transcript,

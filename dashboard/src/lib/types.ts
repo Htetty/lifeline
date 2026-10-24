@@ -19,6 +19,8 @@ export interface Incident {
   latitude: number | null;
   longitude: number | null;
   locationVerified: boolean;
+  /** How an unverified location was found (e.g. a map search match). */
+  locationNote?: string | null;
   peopleCount: number | null;
   reportedPosition: string | null;
   hazards: { hazard: string; evidence: string | null }[];

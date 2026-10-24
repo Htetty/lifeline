@@ -95,6 +95,7 @@ export const verifyLocation = mutation({
       latitude: lat,
       longitude: lon,
       locationVerified: true,
+      locationNote: latitude != null ? "Placed by dispatcher" : incident.locationNote,
       status: incident.status === "needs_review" ? "awaiting_assignment" : incident.status,
     });
     await logActivity(ctx, `Location confirmed for ${incident.reportedAddress}.`, incident._id);

@@ -23,6 +23,11 @@ SCENARIOS = {
         "There's three of us, me, my husband and my mum. We went up to the second floor.",
         "My mum is 82 and she can't do stairs well. The water is already halfway up the first floor stairs.",
     ],
+    "hotel": [
+        "Please help, we're stuck at the Handlery Hotel, the water is up to the lobby.",
+        "Four of us, we're on the third floor, room 312.",
+        "My son has asthma and we're running low on his inhaler.",
+    ],
     "correction": [
         "I'm stuck in my car, no wait, I got out, I'm on the roof of a shop.",
         "It's on Hotel Circle South, near the Days Inn.",
@@ -73,6 +78,8 @@ def main() -> None:
                 f"  → address={facts.get('reported_address')!r} people={facts.get('people_count')} "
                 f"position={facts.get('reported_position')!r} status={body['incident']['status']}"
             )
+            if body.get("location_match"):
+                print(f"  📍 placed on map: {body['location_match']} (unverified)")
             question = body.get("next_question")
             if question:
                 print(f"Agent: {question}")
