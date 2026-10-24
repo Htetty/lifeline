@@ -1,10 +1,10 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
-import { logActivity, requireBackend } from "./lib";
+import { isCurrentEvent, logActivity, requireBackend } from "./lib";
 import { autoGroup } from "./linking";
-import { callerRole, hazard, incidentSource, riskFactor } from "./schema";
+import { advisoryTags, callerRole, hazard, incidentSource, riskFactor } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
@@ -26,6 +26,8 @@ async function confirmedStatus(ctx: QueryCtx, incident: Doc<"incidents">) {
     locationVerified: incident.locationVerified,
     assignedTeamName: team?.name ?? null,
     version: incident.version,
+    callConnected: incident.callConnected,
+    decisionRevision: incident.decisionRevision ?? 0,
   };
 }
 
@@ -55,9 +57,35 @@ export const upsertFromCall = mutation({
     locationChanged: v.optional(v.boolean()),
     callerRole: v.optional(callerRole),
     riskFactors: v.optional(v.array(riskFactor)),
+    turnId: v.optional(v.string()),
+    sequence: v.optional(v.number()),
+    fingerprint: v.optional(v.string()),
+    response: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
+    const hasTurn = args.turnId !== undefined;
+    if (hasTurn !== (args.sequence !== undefined) || hasTurn !== (args.fingerprint !== undefined) ||
+        (hasTurn && args.response === undefined)) throw new ConvexError("Incomplete voice turn identity");
+    const call = await ctx.db.query("voiceCalls").withIndex("by_call", q => q.eq("callId", args.callId)).unique();
+    if (args.turnId !== undefined) {
+      const receipt = await ctx.db.query("voiceTurns").withIndex("by_call_turn", q => q.eq("callId", args.callId).eq("turnId", args.turnId!)).unique();
+      if (receipt) {
+        if (receipt.fingerprint !== args.fingerprint || receipt.sequence !== args.sequence) throw new ConvexError("Turn identity conflict");
+        return receipt.result;
+      }
+      if (!call || call.ended) throw new ConvexError("Voice call is not active");
+      if (!Number.isInteger(args.sequence) || args.sequence !== call.nextSequence || !args.fingerprint) throw new ConvexError("Out of order voice turn");
+    }
+    async function finish(incident: Doc<"incidents">) {
+      const status = await confirmedStatus(ctx, incident);
+      if (args.turnId === undefined) return status;
+      const result = { ...args.response, incident: status };
+      await ctx.db.insert("voiceTurns", {callId: args.callId, turnId: args.turnId,
+        sequence: args.sequence!, fingerprint: args.fingerprint!, result});
+      await ctx.db.patch(call!._id, {nextSequence: args.sequence! + 1});
+      return result;
+    }
     const now = Date.now();
     const existing = await byCall(ctx, args.callId);
 
@@ -86,13 +114,14 @@ export const upsertFromCall = mutation({
         version: 1,
       });
       await logActivity(ctx, `Incoming call: ${args.reportedAddress ?? "location not given yet"}.`, id);
-      const created = (await ctx.db.get(id))!;
-      await queueCallerUpdate(ctx, created, "details_received");
+      await queueCallerUpdate(ctx, (await ctx.db.get(id))!, "details_received");
       await autoGroup(ctx, id);
-      return await confirmedStatus(ctx, (await ctx.db.get(id))!);
+      return await finish((await ctx.db.get(id))!);
     }
 
-    const patch: Partial<Doc<"incidents">> = { transcript: args.transcript, callConnected: true };
+    // callConnected is left alone: a late utterance after hang-up is saved, but must not
+    // reopen the call and restart announcements to a caller who is gone.
+    const patch: Partial<Doc<"incidents">> = { transcript: args.transcript };
     if (args.peopleCount != null) patch.peopleCount = args.peopleCount;
     if (args.reportedPosition != null) patch.reportedPosition = args.reportedPosition;
     if (args.summary) patch.summary = args.summary;
@@ -106,7 +135,27 @@ export const upsertFromCall = mutation({
     // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
     if (args.hazards.length) patch.hazards = args.hazards;
 
+    // Keep every known fact the caller changed, with its evidence, so a correction loses nothing.
+    const history: Doc<"incidents">["factHistory"] = [];
+    const changed = (field: string, previous: unknown, next: unknown) => {
+      if (previous == null || next == null || previous === next) return;
+      history.push({ at: now, field, previous: String(previous), evidence: null });
+    };
+    changed("peopleCount", existing.peopleCount, patch.peopleCount);
+    changed("reportedPosition", existing.reportedPosition, patch.reportedPosition);
+    if (existing.reportedAddress !== NO_ADDRESS_YET) changed("reportedAddress", existing.reportedAddress, args.reportedAddress);
+    if (patch.hazards) {
+      const kept = new Set(patch.hazards.map((h) => h.hazard.trim().toLowerCase()));
+      for (const h of existing.hazards) {
+        if (!kept.has(h.hazard.trim().toLowerCase())) {
+          history.push({ at: now, field: "hazard", previous: h.hazard, evidence: h.evidence });
+        }
+      }
+    }
+    if (history.length) patch.factHistory = [...(existing.factHistory ?? []), ...history];
+
     const hadAddress = existing.reportedAddress !== NO_ADDRESS_YET;
+    let tellCallerLocationUnclear = false;
     if (args.reportedAddress != null) patch.reportedAddress = args.reportedAddress;
     const dispatched = existing.status === "assigned" || existing.status === "en_route";
 
@@ -118,6 +167,8 @@ export const upsertFromCall = mutation({
       norm(args.reportedAddress) !== norm(existing.reportedAddress);
 
     if (corrected) {
+      // Anything queued for the caller was decided for the old location.
+      patch.decisionRevision = (existing.decisionRevision ?? 0) + 1;
       if (dispatched) {
         // Don't silently move a team's destination; flag it for the dispatcher.
         await logActivity(
@@ -135,7 +186,7 @@ export const upsertFromCall = mutation({
         patch.linkedTo = null; // a different place may be a different incident
         await logActivity(ctx, `Caller corrected location to "${args.reportedAddress}". Needs review.`, existing._id);
         // Only worth telling the caller if they had already heard the location was confirmed.
-        if (existing.locationVerified) await queueCallerUpdate(ctx, existing, "location_unclear");
+        tellCallerLocationUnclear = existing.locationVerified;
       }
     } else if (!existing.locationVerified && args.candidateLatitude != null && args.candidateLongitude != null) {
       patch.latitude = args.candidateLatitude;
@@ -144,8 +195,10 @@ export const upsertFromCall = mutation({
     }
 
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });
+    // Queued after the save, so it carries the new decisionRevision.
+    if (tellCallerLocationUnclear) await queueCallerUpdate(ctx, existing, "location_unclear");
     await autoGroup(ctx, existing._id);
-    return await confirmedStatus(ctx, (await ctx.db.get(existing._id))!);
+    return await finish((await ctx.db.get(existing._id))!);
   },
 });
 
@@ -154,6 +207,8 @@ export const callEnded = mutation({
   args: { secret: v.string(), callId: v.string() },
   handler: async (ctx, { secret, callId }) => {
     requireBackend(secret);
+    const call = await ctx.db.query("voiceCalls").withIndex("by_call", q => q.eq("callId", callId)).unique();
+    if (call) await ctx.db.patch(call._id, {ended: true});
     const incident = await byCall(ctx, callId);
     if (!incident || !incident.callConnected) return;
     await ctx.db.patch(incident._id, { callConnected: false, updatedAt: Date.now() });
@@ -184,10 +239,15 @@ export const callState = query({
     if (!incident) return { status: null, pending: [] };
     const team = incident.assignedTeamId ? await ctx.db.get(incident.assignedTeamId) : null;
     const teamName = team?.name ?? null;
-    const pending = await ctx.db
-      .query("events")
-      .withIndex("by_call_announced", (q) => q.eq("callId", callId).eq("announcedAt", null))
-      .collect();
+    // Same rule as pendingEvents: nothing for a caller who hung up, nothing no longer true.
+    const pending = incident.callConnected
+      ? (
+          await ctx.db
+            .query("events")
+            .withIndex("by_call_announced", (q) => q.eq("callId", callId).eq("announcedAt", null))
+            .collect()
+        ).filter((e) => isCurrentEvent(incident, e))
+      : [];
     return {
       status: {
         incidentId: incident._id,
@@ -225,10 +285,14 @@ export const pendingEvents = query({
   args: { secret: v.string(), callId: v.string() },
   handler: async (ctx, { secret, callId }) => {
     requireBackend(secret);
-    return await ctx.db
+    const incident = await byCall(ctx, callId);
+    // Nothing is spoken to a caller who hung up, and nothing that is no longer true.
+    if (!incident || !incident.callConnected) return [];
+    const events = await ctx.db
       .query("events")
       .withIndex("by_call_announced", (q) => q.eq("callId", callId).eq("announcedAt", null))
       .collect();
+    return events.filter((e) => isCurrentEvent(incident, e));
   },
 });
 
@@ -237,9 +301,61 @@ export const markAnnounced = mutation({
   handler: async (ctx, { secret, callId, eventId }) => {
     requireBackend(secret);
     const event = await ctx.db.get(eventId);
-    if (event && event.callId === callId && event.announcedAt == null) {
-      await ctx.db.patch(eventId, { announcedAt: Date.now() });
+    if (!event || event.callId !== callId) return { acknowledged: false };
+    // Replaced by a newer update before it was spoken: never report it as heard.
+    if (event.supersededAt) return { acknowledged: false };
+    if (event.announcedAt != null) return { acknowledged: true };
+    // Refuse to record a stale update as heard; the voice layer re-polls for the current one.
+    const incident = await ctx.db.get(event.incidentId);
+    if (!incident || !isCurrentEvent(incident, event)) return { acknowledged: false };
+    await ctx.db.patch(eventId, { announcedAt: Date.now() });
+    return { acknowledged: true };
+  },
+});
+
+/**
+ * Store optional ModernBERT tags for the call's incident. Writes only `advisoryTags`
+ * (not version or facts), and ignores results computed for an older incident version.
+ */
+export const setAdvisoryTags = mutation({
+  args: {
+    secret: v.string(),
+    callId: v.string(),
+    tags: advisoryTags,
+  },
+  handler: async (ctx, { secret, callId, tags }) => {
+    requireBackend(secret);
+    const incident = await byCall(ctx, callId);
+    if (!incident) return false;
+    if (tags.basedOnVersion > incident.version) return false;
+    if (incident.advisoryTags && incident.advisoryTags.basedOnVersion > tags.basedOnVersion) return false;
+    await ctx.db.patch(incident._id, { advisoryTags: tags });
+    return true;
+  },
+});
+
+export const startVoiceCall = mutation({
+  args: {secret: v.string(), callId: v.string()},
+  handler: async (ctx, {secret, callId}) => {
+    requireBackend(secret);
+    const call = await ctx.db.query("voiceCalls").withIndex("by_call", q => q.eq("callId", callId)).unique();
+    if (call) {
+      if (call.ended) throw new ConvexError("Voice call has ended");
+      return {nextSequence: call.nextSequence};
     }
+    await ctx.db.insert("voiceCalls", {callId, nextSequence: 1, ended: false});
+    return {nextSequence: 1};
+  },
+});
+
+export const turnReceipt = query({
+  args: {secret: v.string(), callId: v.string(), turnId: v.string(), sequence: v.number(), fingerprint: v.string()},
+  handler: async (ctx, args) => {
+    requireBackend(args.secret);
+    const receipt = await ctx.db.query("voiceTurns").withIndex("by_call_turn", q => q.eq("callId", args.callId).eq("turnId", args.turnId)).unique();
+    if (!receipt) return null;
+    if (receipt.fingerprint !== args.fingerprint || receipt.sequence !== args.sequence) throw new ConvexError("Turn identity conflict");
+    return receipt.result;
   },
 });
 

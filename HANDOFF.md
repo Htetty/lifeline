@@ -2,6 +2,15 @@
 
 Updated: 2026-10-23. Read `PROJECT_PLAN.md` for the product plan; this file is the current state.
 
+**2026-10-24 voice bridge increment:** See
+[`docs/integration/live-voice-dashboard.md`](docs/integration/live-voice-dashboard.md)
+for the browser microphone path, isolated startup, authentication changes, and
+recorded validation. The existing Managed Agent / Twilio setup is unchanged.
+New Convex tables `voiceCalls` and `voiceTurns` provide atomic ordering and retry
+receipts. All FastAPI `/calls/*` routes now require the backend bearer secret.
+Use fixture tests or the isolated local exercise; the shared reset/regression
+commands below are historical and must not be run as part of bridge verification.
+
 ## What works now
 
 ```
@@ -15,7 +24,7 @@ Call (simulated) → FastAPI → Claude Sonnet extracts facts → Convex → Das
   transcript, hazards with the caller's words), and place-on-map / confirm location / assign team / status
   controls. All data comes live from Convex.
 - **Convex** (`dashboard/convex/`): tables `exercises`, `incidents`, `teams`, `activity`, `events`.
-  Dashboard functions are in `exercise.ts` and `incidents.ts`. Backend-only functions in `calls.ts` require `BACKEND_SECRET`.
+  Dashboard functions are in `exercise.ts` and `incidents.ts` and require the dispatcher passcode (`DISPATCHER_TOKEN`). Backend-only functions in `calls.ts` require `BACKEND_SECRET`.
 - **Backend** (`backend/`, FastAPI): each utterance goes to Claude (`claude-sonnet-5-5`, effort low,
   structured output, server-side refusal fallback) and is then saved to Convex. Confirmed dispatcher decisions come back
   as announcements with approved wording. See `backend/README.md` for the endpoints.
@@ -31,7 +40,7 @@ Call (simulated) → FastAPI → Claude Sonnet extracts facts → Convex → Das
 | Unused dev deployment | `scintillating-sturgeon-661` |
 | Dashboard dev server | http://localhost:3100 (port 3000 is used by other projects) |
 | FastAPI | http://localhost:8000 |
-| Secrets (never commit) | `dashboard/.env.local`: `CONVEX_DEPLOY_KEY` (prod). `backend/.env`: `BACKEND_SECRET`, `ANTHROPIC_API_KEY` |
+| Secrets (never commit) | `dashboard/.env.local`: `CONVEX_DEPLOY_KEY` (prod). `backend/.env`: `BACKEND_SECRET`, `ANTHROPIC_API_KEY`, `VOICE_BRIDGE_TOKEN`. Convex env: `BACKEND_SECRET`, `DISPATCHER_TOKEN` (typed into the dashboard at sign-in, never bundled) |
 
 Function changes are **not** auto-synced. After editing `dashboard/convex/*.ts`, run `npx convex deploy` in `dashboard/`.
 Reset (button or `npx convex run exercise:reset`) wipes the shared data for everyone.
@@ -66,6 +75,12 @@ Claude extracts literal risk factors with the caller's words (injury, water at c
 `dashboard/src/lib/priority.ts` turns them, plus the water model ("water above their floor"), into
 critical / high / standard with reasons. The queue sorts by tier, then longest wait. Factors only accumulate. The
 dispatcher can override a tier with a reason. Rule cases: `cd dashboard && npm run test:priority`.
+
+## Tests
+
+Integration tests and the end-to-end walkthrough run on a throwaway local Convex backend, never the shared one:
+`scripts/integration/local_convex.sh backend/.venv/bin/python -m unittest discover -s backend/tests -v`.
+See `docs/integration/verification.md`.
 
 ## Gotchas already solved (don't undo)
 

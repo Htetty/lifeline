@@ -13,8 +13,20 @@ export const SAME_PLACE_M = 35;
 
 const ORDINALS = ["ground", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
 
-export async function bump(ctx: MutationCtx, incident: Doc<"incidents">, patch: Partial<Doc<"incidents">>) {
-  await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1 });
+/**
+ * Save a change. A dispatcher decision (assignment, status, moving the pin, linking)
+ * also moves decisionRevision on, which makes every update queued for the caller
+ * before it stale. Returns the new decisionRevision.
+ */
+export async function bump(
+  ctx: MutationCtx,
+  incident: Doc<"incidents">,
+  patch: Partial<Doc<"incidents">>,
+  decision = false,
+) {
+  const decisionRevision = (incident.decisionRevision ?? 0) + (decision ? 1 : 0);
+  await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1, decisionRevision });
+  return decisionRevision;
 }
 
 export async function linkedReports(ctx: MutationCtx, id: Id<"incidents">) {
@@ -78,8 +90,8 @@ export function pickMain(a: Doc<"incidents">, b: Doc<"incidents">): [Doc<"incide
 export async function linkInto(ctx: MutationCtx, main: Doc<"incidents">, report: Doc<"incidents">, note: string) {
   const team = main.assignedTeamId ? await ctx.db.get(main.assignedTeamId) : null;
   const follow = { linkedTo: main._id, status: main.status, assignedTeamId: main.assignedTeamId, linkNote: note };
-  for (const child of await linkedReports(ctx, report._id)) await bump(ctx, child, follow);
-  await bump(ctx, report, follow);
+  for (const child of await linkedReports(ctx, report._id)) await bump(ctx, child, follow, true);
+  await bump(ctx, report, follow, true);
   await queueCallerUpdate(ctx, report, "report_linked", { teamName: team?.name ?? null });
   await logActivity(ctx, `${note}: "${report.reportedAddress}" grouped under "${main.reportedAddress}".`, report._id);
 }

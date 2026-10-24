@@ -1,5 +1,5 @@
 import { ConvexError } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
   DEFAULT_WATER_SURFACE_ELEVATION,
@@ -25,6 +25,51 @@ export async function logActivity(
 export function requireBackend(secret: string) {
   const expected = process.env.BACKEND_SECRET;
   if (!expected || secret !== expected) throw new ConvexError("Unauthorized backend call");
+}
+
+/**
+ * Dispatcher operations. The passcode is entered in the dashboard at runtime (never
+ * bundled) and checked against `npx convex env set DISPATCHER_TOKEN <value>`.
+ */
+export function requireDispatcher(token: string) {
+  const expected = process.env.DISPATCHER_TOKEN;
+  if (!expected || token !== expected) throw new ConvexError("Dispatcher passcode required");
+}
+
+/**
+ * Whether a queued announcement still describes the incident's current, confirmed state.
+ * Any later dispatcher decision (decisionRevision) makes it stale, and so does a state
+ * that no longer matches what it would tell the caller.
+ */
+export function isCurrentEvent(incident: Doc<"incidents">, event: Doc<"events">) {
+  if (event.supersededAt) return false;
+  // A dispatcher's own typed message isn't a claim about status, so later decisions don't
+  // withdraw it (it still isn't delivered after the rescue is resolved or the call ends).
+  if (event.type !== "dispatcher_message" && (event.decisionRevision ?? 0) !== (incident.decisionRevision ?? 0)) {
+    return false;
+  }
+  // A linked report follows the main incident, whose location the dispatcher confirmed.
+  const locationVerified = incident.locationVerified || incident.linkedTo != null;
+  switch (event.type) {
+    case "details_received":
+      return incident.status !== "resolved";
+    case "location_confirmed":
+      return locationVerified && incident.status !== "resolved";
+    case "location_unclear":
+      return !incident.locationVerified;
+    case "assignment_approved":
+      return incident.status === "assigned" && locationVerified && incident.assignedTeamId != null;
+    case "assignment_changed":
+      return incident.status === "awaiting_assignment" && incident.assignedTeamId == null;
+    case "team_en_route":
+      return incident.status === "en_route" && locationVerified;
+    case "rescue_resolved":
+      return incident.status === "resolved";
+    case "dispatcher_message":
+      return incident.status !== "resolved";
+    case "report_linked":
+      return incident.linkedTo != null;
+  }
 }
 
 export async function getExercise(ctx: QueryCtx, exerciseId = EXERCISE_ID) {

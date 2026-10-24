@@ -13,9 +13,12 @@ one after playback. Status changes from the dashboard are printed as they arrive
 import argparse
 import asyncio
 import json
+import os
 import uuid
+from pathlib import Path
 
 import websockets
+from dotenv import dotenv_values
 
 SCENARIOS = {
     "upstairs": [
@@ -70,7 +73,9 @@ async def run(args: argparse.Namespace) -> None:
     url = f"{args.api.replace('http', 'ws', 1)}/calls/{call_id}/stream"
     print(f"Call {call_id} ({'interactive' if args.interactive else args.scenario})\n")
 
-    async with websockets.connect(url) as ws:
+    env = {**dotenv_values(Path(__file__).resolve().parents[1] / ".env"), **os.environ}
+    headers = {"Authorization": f"Bearer {env.get('VOICE_BRIDGE_TOKEN', '')}"}
+    async with websockets.connect(url, additional_headers=headers) as ws:
         results: asyncio.Queue[dict] = asyncio.Queue()
         cancelled: set[str] = set()
 

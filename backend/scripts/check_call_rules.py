@@ -10,6 +10,7 @@ they used, and then deleted so they don't clutter the shared map.
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 import uuid
@@ -20,9 +21,30 @@ import websockets
 from convex import ConvexClient, ConvexError
 from dotenv import dotenv_values
 
-env = dotenv_values(Path(__file__).resolve().parent.parent / ".env")
-convex = ConvexClient(env["CONVEX_URL"])
+# Environment variables override backend/.env, e.g. to point at a local Convex backend.
+env = {**dotenv_values(Path(__file__).resolve().parent.parent / ".env"), **os.environ}
 SECRET = env["BACKEND_SECRET"]
+DISPATCHER = {"dispatcherToken": env["DISPATCHER_TOKEN"]}
+VOICE_HEADERS = {"Authorization": f"Bearer {env['VOICE_BRIDGE_TOKEN']}"} if env.get("VOICE_BRIDGE_TOKEN") else {}
+
+
+class _DispatcherConvex:
+    """Adds the dispatcher passcode to every dashboard (incidents:/exercise:) function call."""
+
+    def __init__(self, client: ConvexClient):
+        self._client = client
+
+    def _args(self, name: str, args: dict | None) -> dict:
+        return {**DISPATCHER, **(args or {})} if name.split(":")[0] in ("incidents", "exercise") else (args or {})
+
+    def query(self, name: str, args: dict | None = None):
+        return self._client.query(name, self._args(name, args))
+
+    def mutation(self, name: str, args: dict | None = None):
+        return self._client.mutation(name, self._args(name, args))
+
+
+convex = _DispatcherConvex(ConvexClient(env["CONVEX_URL"]))
 HANDLERY = (32.761251, -117.172499)
 DAYS_INN = (32.759883, -117.167228)
 COURTYARD = (32.759717, -117.168249)
@@ -63,11 +85,11 @@ def upsert(call_id: str, address: str | None, changed: bool = False, candidate=N
 
 
 def incident(call_id: str) -> dict:
-    return next(i for i in convex.query("exercise:get")["incidents"] if i["callId"] == call_id)
+    return next(i for i in convex.query("exercise:get", DISPATCHER)["incidents"] if i["callId"] == call_id)
 
 
 def free_team() -> dict:
-    return next(t for t in convex.query("exercise:get")["teams"] if t["available"])
+    return next(t for t in convex.query("exercise:get", DISPATCHER)["teams"] if t["available"])
 
 
 def rejected(fn) -> str | None:
@@ -82,7 +104,7 @@ def convex_rules() -> None:
     # 1. Rewording the same place keeps the dispatcher's confirmed location.
     c = new_call()
     r = upsert(c, "the Handlery Hotel", candidate=HANDLERY)
-    convex.mutation("incidents:verifyLocation", {"incidentId": r["incidentId"]})
+    convex.mutation("incidents:verifyLocation", {**DISPATCHER, "incidentId": r["incidentId"]})
     upsert(c, "the Handlery Hotel, room 312")
     i = incident(c)
     check("reworded address keeps confirmed location", i["locationVerified"] and i["latitude"] == HANDLERY[0],
@@ -101,33 +123,33 @@ def convex_rules() -> None:
     # 4. First address after the dispatcher already placed the incident doesn't undo the placement.
     c2 = new_call()
     r2 = upsert(c2, None)
-    convex.mutation("incidents:verifyLocation", {"incidentId": r2["incidentId"], "latitude": HANDLERY[0], "longitude": HANDLERY[1]})
+    convex.mutation("incidents:verifyLocation", {**DISPATCHER, "incidentId": r2["incidentId"], "latitude": HANDLERY[0], "longitude": HANDLERY[1]})
     upsert(c2, "the Handlery Hotel", changed=True)
     check("first address after manual placement keeps it", incident(c2)["locationVerified"])
 
     # 5. Status rules: no reopening, unassign frees the team, no moving the pin after dispatch.
     team = free_team()
-    convex.mutation("incidents:assignTeam", {"incidentId": r2["incidentId"], "teamId": team["_id"]})
+    convex.mutation("incidents:assignTeam", {**DISPATCHER, "incidentId": r2["incidentId"], "teamId": team["_id"]})
     err = rejected(lambda: convex.mutation(
-        "incidents:verifyLocation", {"incidentId": r2["incidentId"], "latitude": DAYS_INN[0], "longitude": DAYS_INN[1]}))
+        "incidents:verifyLocation", {**DISPATCHER, "incidentId": r2["incidentId"], "latitude": DAYS_INN[0], "longitude": DAYS_INN[1]}))
     check("moving location after dispatch is rejected", err is not None)
     upsert(c2, "the Days Inn", changed=True, candidate=DAYS_INN)
     i = incident(c2)
     check("caller correction after dispatch flags, doesn't move pin",
           i["status"] == "assigned" and i["latitude"] == HANDLERY[0], f"status={i['status']} lat={i['latitude']}")
-    convex.mutation("incidents:setStatus", {"incidentId": r2["incidentId"], "status": "awaiting_assignment"})
-    t = next(x for x in convex.query("exercise:get")["teams"] if x["_id"] == team["_id"])
+    convex.mutation("incidents:setStatus", {**DISPATCHER, "incidentId": r2["incidentId"], "status": "awaiting_assignment"})
+    t = next(x for x in convex.query("exercise:get", DISPATCHER)["teams"] if x["_id"] == team["_id"])
     i = incident(c2)
     check("unassign frees the team", t["available"] and i["assignedTeamId"] is None)
-    convex.mutation("incidents:setStatus", {"incidentId": r2["incidentId"], "status": "resolved"})
-    err = rejected(lambda: convex.mutation("incidents:setStatus", {"incidentId": r2["incidentId"], "status": "en_route"}))
+    convex.mutation("incidents:setStatus", {**DISPATCHER, "incidentId": r2["incidentId"], "status": "resolved"})
+    err = rejected(lambda: convex.mutation("incidents:setStatus", {**DISPATCHER, "incidentId": r2["incidentId"], "status": "en_route"}))
     check("resolved incident can't be reopened to en_route", err is not None)
 
     # 6. Announcements can only be acknowledged by their own call.
     c3 = new_call()
     r3 = upsert(c3, "the Handlery Hotel", candidate=HANDLERY)
-    convex.mutation("incidents:verifyLocation", {"incidentId": r3["incidentId"]})
-    convex.mutation("incidents:assignTeam", {"incidentId": r3["incidentId"], "teamId": free_team()["_id"]})
+    convex.mutation("incidents:verifyLocation", {**DISPATCHER, "incidentId": r3["incidentId"]})
+    convex.mutation("incidents:assignTeam", {**DISPATCHER, "incidentId": r3["incidentId"], "teamId": free_team()["_id"]})
     events = convex.query("calls:pendingEvents", {"secret": SECRET, "callId": c3})
     convex.mutation("calls:markAnnounced", {"secret": SECRET, "callId": "someone-else", "eventId": events[0]["_id"]})
     still = convex.query("calls:pendingEvents", {"secret": SECRET, "callId": c3})
@@ -221,7 +243,7 @@ def convex_rules() -> None:
 
 
 def live_calls(api: str) -> None:
-    with httpx.Client(base_url=api, timeout=120) as http:
+    with httpx.Client(base_url=api, timeout=120, headers={"Authorization": f"Bearer {env['VOICE_BRIDGE_TOKEN']}"}) as http:
         def say(call_id: str, speaker: str, text: str) -> dict:
             r = http.post(f"/calls/{call_id}/utterances", json={"speaker": speaker, "text": text})
             r.raise_for_status()
@@ -230,7 +252,7 @@ def live_calls(api: str) -> None:
         # 7. An agent greeting alone doesn't create an incident.
         c = new_call()
         say(c, "agent", "Flood rescue line, what's your emergency?")
-        has = any(i["callId"] == c for i in convex.query("exercise:get")["incidents"])
+        has = any(i["callId"] == c for i in convex.query("exercise:get", DISPATCHER)["incidents"])
         check("agent greeting creates no incident", not has)
 
         # 8. Real extraction: confirming, then the caller adding detail, keeps the location.
@@ -239,7 +261,7 @@ def live_calls(api: str) -> None:
         inc = incident(c)
         check("named hotel is auto-located", inc["latitude"] is not None, f"note={inc.get('locationNote')}")
         if inc["latitude"] is not None:
-            convex.mutation("incidents:verifyLocation", {"incidentId": inc["_id"]})
+            convex.mutation("incidents:verifyLocation", {**DISPATCHER, "incidentId": inc["_id"]})
         say(c, "caller", "It's the Days Inn near SeaWorld, we're on the part of the roof by the pool.")
         check("caller adding detail keeps confirmed location (live Claude)", incident(c)["locationVerified"])
 
@@ -257,7 +279,7 @@ async def stream_check(api: str) -> None:
     c = new_call()
     url = f"{api.replace('http', 'ws', 1)}/calls/{c}/stream"
     announcements: list[str] = []
-    async with websockets.connect(url) as ws:
+    async with websockets.connect(url, additional_headers=VOICE_HEADERS) as ws:
         await ws.send(json.dumps({"type": "utterance", "speaker": "caller",
                                   "text": "We're on the roof of the Days Inn on Hotel Circle South, two of us."}))
         got_status = False
@@ -295,7 +317,7 @@ def main() -> None:
     finally:
         for incident_id in created:
             try:
-                convex.mutation("incidents:setStatus", {"incidentId": incident_id, "status": "resolved"})
+                convex.mutation("incidents:setStatus", {**DISPATCHER, "incidentId": incident_id, "status": "resolved"})
             except ConvexError:
                 pass  # already resolved
         convex.mutation("calls:purgeCheckIncidents", {"secret": SECRET})

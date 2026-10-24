@@ -5,3 +5,5 @@ anthropic
 pydantic
 python-dotenv
 httpx
+cartesia>=4.2,<5
+websockets>=15,<17

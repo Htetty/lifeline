@@ -3,7 +3,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
 import { autoGroup, bump, linkedReports, linkInto } from "./linking";
 import { queueCallerUpdate } from "./callerUpdates";
-import { logActivity } from "./lib";
+import { isCurrentEvent, logActivity, requireDispatcher } from "./lib";
 import { incidentStatus, priorityTier } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
@@ -36,7 +36,7 @@ async function syncLinked(
   teamName: string | null,
 ) {
   for (const report of await linkedReports(ctx, main._id)) {
-    await bump(ctx, report, patch);
+    await bump(ctx, report, patch, true);
     if (update) await queueCallerUpdate(ctx, report, update, { teamName });
   }
 }
@@ -49,8 +49,10 @@ export const reportFromMap = mutation({
     peopleCount: v.union(v.number(), v.null()),
     reportedPosition: v.union(v.string(), v.null()),
     reportedAddress: v.string(),
+    dispatcherToken: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, { dispatcherToken, ...args }) => {
+    requireDispatcher(dispatcherToken);
     const now = Date.now();
     const id = await ctx.db.insert("incidents", {
       exerciseId: EXERCISE_ID,
@@ -85,10 +87,13 @@ export const verifyLocation = mutation({
     incidentId: v.id("incidents"),
     latitude: v.optional(v.number()),
     longitude: v.optional(v.number()),
+    dispatcherToken: v.string(),
   },
-  handler: async (ctx, { incidentId, latitude, longitude }) => {
+  handler: async (ctx, { dispatcherToken, incidentId, latitude, longitude }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     rejectIfLinked(incident);
+    if (incident.locationVerified && latitude == null && longitude == null) return;
     const moving = latitude != null && (latitude !== incident.latitude || longitude !== incident.longitude);
     if (moving && incident.status !== "needs_review" && incident.status !== "awaiting_assignment") {
       throw new ConvexError("A team is already dispatched here. Unassign the team before moving the location.");
@@ -96,13 +101,19 @@ export const verifyLocation = mutation({
     const lat = latitude ?? incident.latitude;
     const lon = longitude ?? incident.longitude;
     if (lat == null || lon == null) throw new ConvexError("Place the incident on the map first");
-    await bump(ctx, incident, {
-      latitude: lat,
-      longitude: lon,
-      locationVerified: true,
-      locationNote: latitude != null ? "Placed by dispatcher" : incident.locationNote,
-      status: incident.status === "needs_review" ? "awaiting_assignment" : incident.status,
-    });
+    // Moving the pin is a decision: anything queued for the old location is stale.
+    await bump(
+      ctx,
+      incident,
+      {
+        latitude: lat,
+        longitude: lon,
+        locationVerified: true,
+        locationNote: latitude != null ? "Placed by dispatcher" : incident.locationNote,
+        status: incident.status === "needs_review" ? "awaiting_assignment" : incident.status,
+      },
+      moving,
+    );
     await logActivity(ctx, `Location confirmed for ${incident.reportedAddress}.`, incident._id);
     if (!incident.locationVerified) await queueCallerUpdate(ctx, incident, "location_confirmed");
     await autoGroup(ctx, incident._id);
@@ -111,8 +122,9 @@ export const verifyLocation = mutation({
 
 /** Approve a team. Runs as one transaction, so a team can't be double-booked. */
 export const assignTeam = mutation({
-  args: { incidentId: v.id("incidents"), teamId: v.id("teams") },
-  handler: async (ctx, { incidentId, teamId }) => {
+  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), teamId: v.id("teams") },
+  handler: async (ctx, { dispatcherToken, incidentId, teamId }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     rejectIfLinked(incident);
     const team = await ctx.db.get(teamId);
@@ -121,7 +133,7 @@ export const assignTeam = mutation({
     if (!team.available) throw new ConvexError(`${team.name} is no longer available`);
     if (incident.status !== "awaiting_assignment") throw new ConvexError("Incident is not awaiting a team");
 
-    await bump(ctx, incident, { status: "assigned", assignedTeamId: team._id });
+    await bump(ctx, incident, { status: "assigned", assignedTeamId: team._id }, true);
     await ctx.db.patch(team._id, { available: false, currentAssignment: incident._id, updatedAt: Date.now() });
     await logActivity(ctx, `${team.name} assigned to ${incident.reportedAddress}.`, incident._id);
     await queueCallerUpdate(ctx, incident, "assignment_approved", { teamName: team.name });
@@ -139,8 +151,9 @@ const TRANSITIONS: Record<Doc<"incidents">["status"], Doc<"incidents">["status"]
 };
 
 export const setStatus = mutation({
-  args: { incidentId: v.id("incidents"), status: incidentStatus },
-  handler: async (ctx, { incidentId, status }) => {
+  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), status: incidentStatus },
+  handler: async (ctx, { dispatcherToken, incidentId, status }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     rejectIfLinked(incident);
     if (incident.status === status) return;
@@ -154,7 +167,7 @@ export const setStatus = mutation({
     if (team && (unassigning || status === "resolved") && team.currentAssignment === incident._id) {
       await ctx.db.patch(team._id, { available: true, currentAssignment: null, updatedAt: Date.now() });
     }
-    await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status });
+    await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status }, true);
 
     await logActivity(
       ctx,
@@ -191,8 +204,9 @@ export const setStatus = mutation({
  * (different floors, different families) should stay separate.
  */
 export const linkReports = mutation({
-  args: { mainId: v.id("incidents"), reportIds: v.array(v.id("incidents")) },
-  handler: async (ctx, { mainId, reportIds }) => {
+  args: { dispatcherToken: v.string(), mainId: v.id("incidents"), reportIds: v.array(v.id("incidents")) },
+  handler: async (ctx, { dispatcherToken, mainId, reportIds }) => {
+    requireDispatcher(dispatcherToken);
     let main = await load(ctx, mainId);
     if (main.linkedTo) main = await load(ctx, main.linkedTo); // always link to the top-level incident
     if (main.status === "resolved") throw new ConvexError("The main incident is already resolved");
@@ -211,8 +225,9 @@ export const linkReports = mutation({
 
 /** Undo a link: the report becomes its own incident again, without a team. */
 export const unlinkReport = mutation({
-  args: { reportId: v.id("incidents") },
-  handler: async (ctx, { reportId }) => {
+  args: { dispatcherToken: v.string(), reportId: v.id("incidents") },
+  handler: async (ctx, { dispatcherToken, reportId }) => {
+    requireDispatcher(dispatcherToken);
     const report = await load(ctx, reportId);
     if (!report.linkedTo) return;
     const main = await load(ctx, report.linkedTo);
@@ -223,7 +238,7 @@ export const unlinkReport = mutation({
       assignedTeamId: null,
       status: report.locationVerified ? "awaiting_assignment" : "needs_review",
       separateFrom: [...new Set([...(report.separateFrom ?? []), main._id])],
-    });
+    }, true);
     await bump(ctx, main, { separateFrom: [...new Set([...(main.separateFrom ?? []), report._id])] });
     await logActivity(ctx, `Report "${report.reportedAddress}" unlinked; now its own incident.`, report._id);
   },
@@ -231,8 +246,9 @@ export const unlinkReport = mutation({
 
 /** Dispatcher says two nearby incidents are separate rescues (stops suggesting a link). */
 export const markSeparate = mutation({
-  args: { incidentId: v.id("incidents"), otherId: v.id("incidents") },
-  handler: async (ctx, { incidentId, otherId }) => {
+  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), otherId: v.id("incidents") },
+  handler: async (ctx, { dispatcherToken, incidentId, otherId }) => {
+    requireDispatcher(dispatcherToken);
     const [a, b] = [await load(ctx, incidentId), await load(ctx, otherId)];
     const add = (i: Doc<"incidents">, other: Id<"incidents">) =>
       bump(ctx, i, { separateFrom: [...new Set([...(i.separateFrom ?? []), other])] });
@@ -243,8 +259,9 @@ export const markSeparate = mutation({
 
 /** Dispatcher-written message for the voice agent to read to the caller word for word. */
 export const sendCallerMessage = mutation({
-  args: { incidentId: v.id("incidents"), message: v.string() },
-  handler: async (ctx, { incidentId, message }) => {
+  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), message: v.string() },
+  handler: async (ctx, { dispatcherToken, incidentId, message }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     const text = message.trim();
     if (!incident.callId) throw new ConvexError("This incident has no call to send a message to");
@@ -258,8 +275,9 @@ export const sendCallerMessage = mutation({
 
 /** What the caller has been told (or will be told) for an incident, newest first. */
 export const callerUpdates = query({
-  args: { incidentId: v.id("incidents") },
-  handler: async (ctx, { incidentId }) => {
+  args: { dispatcherToken: v.string(), incidentId: v.id("incidents") },
+  handler: async (ctx, { dispatcherToken, incidentId }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await ctx.db.get(incidentId);
     if (!incident?.callId) return [];
     const events = await ctx.db
@@ -273,15 +291,27 @@ export const callerUpdates = query({
         type: e.type,
         text: e.text ?? e.type,
         createdAt: e.createdAt,
-        state: (e.supersededAt ? "replaced" : e.announcedAt ? "spoken" : "waiting") as "replaced" | "spoken" | "waiting",
+        state: (e.announcedAt && !e.supersededAt
+          ? "spoken"
+          : e.supersededAt || !isCurrentEvent(incident, e)
+            ? "replaced"
+            : incident.callConnected
+              ? "waiting"
+              : "not delivered") as "replaced" | "spoken" | "waiting" | "not delivered",
       }));
   },
 });
 
 /** Dispatcher overrides the computed priority (or clears the override with tier null). */
 export const setPriorityOverride = mutation({
-  args: { incidentId: v.id("incidents"), tier: v.union(priorityTier, v.null()), reason: v.string() },
-  handler: async (ctx, { incidentId, tier, reason }) => {
+  args: {
+    dispatcherToken: v.string(),
+    incidentId: v.id("incidents"),
+    tier: v.union(priorityTier, v.null()),
+    reason: v.string(),
+  },
+  handler: async (ctx, { dispatcherToken, incidentId, tier, reason }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     const why = reason.trim();
     if (tier && !why) throw new ConvexError("Give a reason for changing the priority");

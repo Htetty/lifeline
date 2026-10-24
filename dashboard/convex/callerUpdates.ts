@@ -3,6 +3,7 @@ import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 
 // Everything the voice agent may tell a caller about progress, in one place.
+// Dispatcher decisions keep the "Simulation update" framing used for the live voice demo.
 // Wording only states what has been confirmed and saved: no arrival times,
 // no promises beyond the current stage.
 
@@ -60,13 +61,13 @@ export function announcementText(
     case "location_unclear":
       return "I need to double-check exactly where you are so the team goes to the right place.";
     case "assignment_approved":
-      return `Update from the dispatcher: a rescue team${team} has been assigned to you. Stay where you are, keep to the highest safe place, and keep your phone with you.`;
+      return `Simulation update from the dispatcher: a simulated rescue team${team} has been assigned to this fictional incident.`;
     case "assignment_changed":
       return "Update: the dispatcher is arranging a different rescue team for you. You're still in the queue; stay where you are.";
     case "team_en_route":
-      return "Update: the rescue team is on its way to you now. Stay where you are and stay above the water.";
+      return "Simulation update: the dispatcher has marked the simulated team as en route.";
     case "rescue_resolved":
-      return "The dispatcher has marked your rescue as complete. If you still need help, tell me now.";
+      return "Simulation update: the dispatcher has marked this fictional incident as complete.";
     case "dispatcher_message":
       return `The dispatcher asked me to tell you: ${message ?? ""}`.trim();
     case "report_linked":
@@ -112,10 +113,13 @@ export function stageText(incident: Doc<"incidents">, teamName: string | null): 
  */
 export async function queueCallerUpdate(
   ctx: MutationCtx,
-  incident: Doc<"incidents">,
+  incidentDoc: Doc<"incidents">,
   type: UpdateType,
   options: { teamName?: string | null; message?: string } = {},
 ) {
+  // Re-read so the update carries the incident's decisionRevision *after* the change it
+  // describes was saved (isCurrentEvent compares the two).
+  const incident = (await ctx.db.get(incidentDoc._id)) ?? incidentDoc;
   if (!incident.callId) return;
   const now = Date.now();
   if (type !== "dispatcher_message") {
@@ -138,5 +142,6 @@ export async function queueCallerUpdate(
     createdAt: now,
     announcedAt: null,
     supersededAt: null,
+    decisionRevision: incident.decisionRevision ?? 0,
   });
 }
