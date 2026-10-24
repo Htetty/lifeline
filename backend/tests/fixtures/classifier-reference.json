@@ -1,0 +1,35 @@
+{
+  "provenance": "Fictional diagnostics from the supplied predict_local.py and local_prediction_check.json; not accuracy evidence. Torch 2.6.0, Transformers 4.57.6, CPU, threshold 0.5.",
+  "cases": [
+    {
+      "text": "Please send rescue workers. We are trapped upstairs and flood water is rising.",
+      "scores": [0.7853124142, 0.9998241067, 0.0520201623, 0.9960522652],
+      "predicted_tags": ["request", "search_and_rescue", "floods"]
+    },
+    {
+      "text": "We need medical help. My father is injured and bleeding after the flood.",
+      "scores": [0.9954394698, 0.0212921705, 0.9999994040, 0.9944367409],
+      "predicted_tags": ["request", "medical_help", "floods"]
+    },
+    {
+      "text": "Our neighborhood is flooded. Water covers the roads.",
+      "scores": [0.8209127784, 0.0032615860, 0.0060313237, 0.9999789000],
+      "predicted_tags": ["request", "floods"]
+    },
+    {
+      "text": "Please send food and drinking water to the shelter.",
+      "scores": [0.9856950641, 0.0003292070, 0.0021399192, 0.0015259665],
+      "predicted_tags": ["request"]
+    },
+    {
+      "text": "The weather is sunny today. We are having lunch at home.",
+      "scores": [0.0121023580, 0.0010048705, 0.0003460893, 0.0045711035],
+      "predicted_tags": []
+    },
+    {
+      "text": "We are safe. Nobody is injured and we do not need rescue or medical help.",
+      "scores": [0.4432069361, 0.6249073744, 0.9994202852, 0.0013889015],
+      "predicted_tags": ["search_and_rescue", "medical_help"]
+    }
+  ]
+}
