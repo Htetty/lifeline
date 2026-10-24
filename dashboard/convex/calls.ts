@@ -3,7 +3,7 @@ import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { isCurrentEvent, logActivity, requireBackend } from "./lib";
-import { autoGroup } from "./linking";
+import { autoGroup, reevaluateLinks, unlink } from "./linking";
 import { advisoryTags, callerRole, hazard, incidentSource, riskFactor, withdrawal } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
@@ -210,7 +210,8 @@ export const upsertFromCall = mutation({
     const hadAddress = existing.reportedAddress !== NO_ADDRESS_YET;
     let tellCallerLocationUnclear = false;
     if (args.reportedAddress != null) patch.reportedAddress = args.reportedAddress;
-    const dispatched = existing.status === "assigned" || existing.status === "en_route";
+    // A linked report only mirrors its main incident's team; it isn't dispatched itself.
+    const dispatched = !existing.linkedTo && (existing.status === "assigned" || existing.status === "en_route");
 
     const norm = (a: string) => a.trim().toLowerCase();
     const corrected =
@@ -236,7 +237,6 @@ export const upsertFromCall = mutation({
         patch.latitude = args.candidateLatitude ?? null;
         patch.longitude = args.candidateLongitude ?? null;
         patch.locationNote = args.candidateLabel ?? null;
-        patch.linkedTo = null; // a different place may be a different incident
         await logActivity(ctx, `Caller corrected location to "${args.reportedAddress}". Needs review.`, existing._id);
         // Only worth telling the caller if they had already heard the location was confirmed.
         tellCallerLocationUnclear = existing.locationVerified;
@@ -250,6 +250,21 @@ export const upsertFromCall = mutation({
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });
     // Queued after the save, so it carries the new decisionRevision.
     if (tellCallerLocationUnclear) await queueCallerUpdate(ctx, existing, "location_unclear");
+    const saved = (await ctx.db.get(existing._id))!;
+    if (corrected && !dispatched && saved.linkedTo) {
+      // A different place may be a different incident, whoever linked it.
+      await unlink(ctx, saved, "Caller corrected their location");
+    } else {
+      // Grouping evidence changed (room, floor, role, pin): re-check links both ways.
+      const moved = saved.latitude !== existing.latitude || saved.longitude !== existing.longitude;
+      const what = [
+        saved.reportedPosition !== existing.reportedPosition && `position "${saved.reportedPosition}"`,
+        saved.callerRole !== existing.callerRole && `caller role "${saved.callerRole}"`,
+        saved.reportedAddress !== existing.reportedAddress && `address "${saved.reportedAddress}"`,
+        moved && "location",
+      ].filter(Boolean);
+      if (what.length) await reevaluateLinks(ctx, saved._id, `the caller's ${what.join(", ")} changed`);
+    }
     await autoGroup(ctx, existing._id);
     return await finish((await ctx.db.get(existing._id))!);
   },
