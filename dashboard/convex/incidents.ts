@@ -7,7 +7,7 @@ import { queueCallerUpdate } from "./callerUpdates";
 import { isCurrentEvent, logActivity, requireDispatcher } from "./lib";
 import { incidentStatus, priorityTier } from "./schema";
 import { EXERCISE_ID } from "./seedData";
-import { stopTrip } from "./trips";
+import { beginTrip, routePlan, stopTrip } from "./trips";
 
 const STATUS_LABEL: Record<Doc<"incidents">["status"], string> = {
   needs_review: "Needs review",
@@ -153,8 +153,14 @@ const TRANSITIONS: Record<Doc<"incidents">["status"], Doc<"incidents">["status"]
 };
 
 export const setStatus = mutation({
-  args: { dispatcherToken: v.optional(v.string()), incidentId: v.id("incidents"), status: incidentStatus },
-  handler: async (ctx, { dispatcherToken, incidentId, status }) => {
+  args: {
+    dispatcherToken: v.optional(v.string()),
+    incidentId: v.id("incidents"),
+    status: incidentStatus,
+    /** Flood-aware route for the team when going en route; without one, Convex plans a fallback. */
+    plan: v.optional(routePlan),
+  },
+  handler: async (ctx, { dispatcherToken, incidentId, status, plan }) => {
     requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     rejectIfLinked(incident);
@@ -170,10 +176,12 @@ export const setStatus = mutation({
       await stopTrip(ctx, team);
       await ctx.db.patch(team._id, { available: true, currentAssignment: null, updatedAt: Date.now() });
     }
-    if (team && status === "en_route") {
-      await ctx.scheduler.runAfter(0, internal.trips.planTrip, { teamId: team._id, incidentId: incident._id });
-    }
     await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status }, true);
+    // After the status is saved, so the trip sees the incident as en route.
+    if (team && status === "en_route") {
+      if (plan) await beginTrip(ctx, team._id, incident._id, { ...plan, route: "planned" });
+      else await ctx.scheduler.runAfter(0, internal.trips.planTrip, { teamId: team._id, incidentId: incident._id });
+    }
 
     await logActivity(
       ctx,

@@ -4,14 +4,26 @@
 
 export type LonLat = [number, number];
 
+export type LegMode = "road" | "water" | "foot" | "air";
+
+/** A stretch of the path travelled one way; `end` is the index of its last path point. */
+export interface TripLeg {
+  mode: LegMode;
+  end: number;
+}
+
 export interface Trip {
   incidentId: string;
   /** [longitude, latitude] points from the team's start to the incident. */
   path: number[][];
   departAt: number;
   arriveAt: number;
-  /** "road" follows a driving route; "direct" is a straight line (boat, air, or no route found). */
-  route: "road" | "direct";
+  /**
+   * "planned": flood-aware route from the dashboard (src/lib/router.ts).
+   * "road": driving route that ignores the flood. "direct": straight line.
+   */
+  route: "planned" | "road" | "direct";
+  legs?: TripLeg[];
   /** Estimated real-world travel time; the simulation plays it TRIP_SPEEDUP times faster. */
   realSeconds: number;
 }
@@ -34,7 +46,10 @@ export function pathLength(path: number[][]) {
   return total;
 }
 
-/** Where the team is at `now`, and the part of the path still ahead of it. */
+/**
+ * Where the team is at `now`, and the part of the path still ahead of it.
+ * `remaining[k]` for k ≥ 1 is `path[next + k - 1]`.
+ */
 export function tripProgress(trip: Pick<Trip, "path" | "departAt" | "arriveAt">, now: number) {
   const { path } = trip;
   const fraction = Math.min(1, Math.max(0, (now - trip.departAt) / Math.max(1, trip.arriveAt - trip.departAt)));
@@ -47,10 +62,25 @@ export function tripProgress(trip: Pick<Trip, "path" | "departAt" | "arriveAt">,
         path[i - 1][0] + (path[i][0] - path[i - 1][0]) * t,
         path[i - 1][1] + (path[i][1] - path[i - 1][1]) * t,
       ];
-      return { position, remaining: [position, ...path.slice(i)] as number[][], fraction };
+      return { position, remaining: [position, ...path.slice(i)] as number[][], next: i, fraction };
     }
     target -= leg;
   }
   const end = path[path.length - 1] as LonLat;
-  return { position: end, remaining: [end], fraction };
+  return { position: end, remaining: [end] as number[][], next: path.length, fraction };
+}
+
+/** The path still ahead, split into legs by how each stretch is travelled. */
+export function remainingLegs(trip: Trip, now: number) {
+  const { remaining, next } = tripProgress(trip, now);
+  const legs = trip.legs ?? [{ mode: "road" as LegMode, end: trip.path.length - 1 }];
+  const out: { mode: LegMode; coords: number[][] }[] = [];
+  for (let k = 1; k < remaining.length; k++) {
+    const index = next + k - 1;
+    const mode = (legs.find((l) => index <= l.end) ?? legs[legs.length - 1]).mode;
+    const last = out[out.length - 1];
+    if (last?.mode === mode) last.coords.push(remaining[k]);
+    else out.push({ mode, coords: [remaining[k - 1], remaining[k]] });
+  }
+  return out;
 }

@@ -8,7 +8,8 @@ import type { FloodResult } from "@/lib/flood";
 import { distanceToPolygon, expandPolygon, interiorPoint, pointInPolygon, polygons } from "@/lib/geo";
 import type { ExerciseState, Incident } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES } from "@/lib/types";
-import { TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
+import { ROUTE_COLOR } from "@/lib/router";
+import { remainingLegs, TRIP_SPEEDUP, tripProgress, type LegMode, type TripLeg } from "../../convex/tripMath";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const BUILDING_SOURCE = { source: "openmaptiles", sourceLayer: "building" } as const;
@@ -35,9 +36,18 @@ export interface BuildingPick {
   height: number | null;
 }
 
+const ROUTE_COLOR_EXPRESSION = [
+  "match", ["get", "mode"],
+  "water", ROUTE_COLOR.water,
+  "foot", ROUTE_COLOR.foot,
+  ROUTE_COLOR.road,
+] as unknown as string;
+
 interface Props {
   state: ExerciseState;
   flood: FloodResult | null;
+  /** Proposed route for the selected incident, before a team sets off. */
+  preview: { path: number[][]; legs: TripLeg[] } | null;
   selectedId: string | null;
   reportMode: boolean;
   onSelect: (incidentId: string | null) => void;
@@ -96,17 +106,30 @@ function teamPoints(state: ExerciseState, now: number): GeoJSON.FeatureCollectio
   };
 }
 
+function legLines(legs: { mode: LegMode; coords: number[][] }[]): GeoJSON.Feature[] {
+  return legs.map((l) => ({
+    type: "Feature",
+    properties: { mode: l.mode },
+    geometry: { type: "LineString", coordinates: l.coords },
+  }));
+}
+
 function teamRoutes(state: ExerciseState, now: number): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
-    features: state.teams
-      .filter((t) => t.trip && now < t.trip.arriveAt)
-      .map((t) => ({
-        type: "Feature",
-        properties: { route: t.trip!.route },
-        geometry: { type: "LineString", coordinates: tripProgress(t.trip!, now).remaining },
-      })),
+    features: state.teams.filter((t) => t.trip && now < t.trip.arriveAt).flatMap((t) => legLines(remainingLegs(t.trip!, now))),
   };
+}
+
+function previewRoute(preview: Props["preview"]): GeoJSON.FeatureCollection {
+  if (!preview) return { type: "FeatureCollection", features: [] };
+  let start = 0;
+  const legs = preview.legs.map((l) => {
+    const coords = preview.path.slice(start, l.end + 1);
+    start = l.end;
+    return { mode: l.mode, coords };
+  });
+  return { type: "FeatureCollection", features: legLines(legs) };
 }
 
 function drawTeams(map: MLMap, state: ExerciseState) {
@@ -262,18 +285,31 @@ export default function FloodMap(props: Props) {
         },
       });
 
-      map.addSource("team-routes", { type: "geojson", data: teamRoutes(propsRef.current.state, Date.now()) });
+      map.addSource("route-preview", { type: "geojson", data: previewRoute(propsRef.current.preview) });
       map.addLayer({
-        id: "team-routes-line",
+        id: "route-preview-line",
+        type: "line",
+        source: "route-preview",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": ROUTE_COLOR_EXPRESSION, "line-width": 5, "line-opacity": 0.75, "line-dasharray": [1.2, 1] },
+      });
+      map.addSource("team-routes", { type: "geojson", data: teamRoutes(propsRef.current.state, Date.now()) });
+      // Road and water legs are solid; walking and flying are dashed.
+      map.addLayer({
+        id: "team-routes-solid",
         type: "line",
         source: "team-routes",
+        filter: ["in", ["get", "mode"], ["literal", ["road", "water"]]],
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#f59e0b",
-          "line-width": 4,
-          "line-opacity": 0.9,
-          "line-dasharray": ["case", ["==", ["get", "route"], "road"], ["literal", [1, 0]], ["literal", [2, 1.5]]],
-        },
+        paint: { "line-color": ROUTE_COLOR_EXPRESSION, "line-width": 4, "line-opacity": 0.9 },
+      });
+      map.addLayer({
+        id: "team-routes-dashed",
+        type: "line",
+        source: "team-routes",
+        filter: ["in", ["get", "mode"], ["literal", ["foot", "air"]]],
+        layout: { "line-join": "round" },
+        paint: { "line-color": ROUTE_COLOR_EXPRESSION, "line-width": 3, "line-opacity": 0.9, "line-dasharray": [1, 1.5] },
       });
       map.addSource("teams", { type: "geojson", data: teamPoints(propsRef.current.state, Date.now()) });
       map.addLayer({
@@ -410,6 +446,12 @@ export default function FloodMap(props: Props) {
     drawTeams(map, props.state);
     syncBuildings.current();
   }, [props.state, props.selectedId]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) return;
+    (map.getSource("route-preview") as GeoJSONSource).setData(previewRoute(props.preview));
+  }, [props.preview]);
 
   // Moving teams are redrawn from the clock while any trip is under way.
   const anyTrip = props.state.teams.some((t) => t.trip);

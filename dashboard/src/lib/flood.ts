@@ -6,7 +6,7 @@ import type { Bounds, ElevationGrid } from "./elevation";
 // flow, levees, drainage and backwater, so it is an approximation, not a
 // hydraulic model.
 
-const CELL_METERS = 15;
+export const CELL_METERS = 15;
 const DEPTH_STEP = 0.2; // runs of cells are merged when depths round to the same step
 
 export interface FloodGrid {
@@ -165,6 +165,15 @@ export function computeFlood(grid: FloodGrid, waterSurface: number): FloodResult
     }
   }
   return { waterSurface, wet, geojson: { type: "FeatureCollection", features } };
+}
+
+/** Water depth in the cell containing a point; 0 when dry or outside the grid. */
+export function depthAt(grid: FloodGrid, flood: FloodResult, lon: number, lat: number) {
+  const c = Math.floor((lon - grid.bounds.west) / grid.dLon);
+  const r = Math.floor((grid.bounds.north - lat) / grid.dLat);
+  if (r < 0 || r >= grid.rows || c < 0 || c >= grid.cols) return 0;
+  const i = r * grid.cols + c;
+  return flood.wet[i] ? Math.max(0, columnSurface(grid, flood.waterSurface, c) - grid.ground[i]) : 0;
 }
 
 /**

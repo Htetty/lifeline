@@ -18,6 +18,17 @@ import {
 } from "@/lib/flood";
 import { formatGaugeTime, GAUGE, readingAt, readingIndex, REPLAY_LENGTH, surfaceToStage } from "@/lib/gauge";
 import {
+  deepestAhead,
+  loadRoads,
+  moverFor,
+  planRoute,
+  PROFILES,
+  ROUTE_COLOR,
+  type NoRoute,
+  type RoadGraph,
+  type RoutePlan,
+} from "@/lib/router";
+import {
   currentDispatcherToken,
   dispatch,
   errorMessage,
@@ -25,18 +36,34 @@ import {
   useExercise,
   usePasscodeRequired,
   type Action,
+  type TripPlan,
 } from "@/lib/store";
 import type { ExerciseState, Incident, IncidentStatus, PriorityTier, RescueTeam } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types";
 import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
 import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
-import { TRIP_SPEEDUP } from "../../convex/tripMath";
+import { TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
 
 type Filter = "all" | "stuck" | "dispatched" | "resolved";
 type Run = (action: Action) => void;
+
+interface TeamOption {
+  team: RescueTeam;
+  /** null while the roads or flood are still loading. */
+  plan: RoutePlan | NoRoute | null;
+}
+
+interface RouteAlert {
+  team: RescueTeam;
+  deepest: number;
+  limit: number;
+  label: string;
+}
+
+const asTripPlan = (p: RoutePlan): TripPlan => ({ path: p.path, legs: p.legs, realSeconds: p.realSeconds });
 
 const FILTERS: Record<Filter, (s: IncidentStatus) => boolean> = {
   all: () => true,
@@ -61,6 +88,7 @@ const WATER_COMMIT_MS = 150;
 const REPLAY_TICK_MS = 3000;
 const READINGS_PER_TICK = 2;
 const TEAM_UPDATE_EVERY_TICKS = 3;
+const CLOCK_MS = 2000;
 
 function fmt(m: number | null, digits = 1) {
   return m == null ? "unknown" : `${m.toFixed(digits)} m`;
@@ -138,6 +166,11 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [resolved, setResolved] = useState<Record<string, ResolvedBuilding>>({});
   const [toast, setToast] = useState<string | null>(null);
   const [waterDraft, setWaterDraft] = useState<number | null>(null);
+  const [roads, setRoads] = useState<RoadGraph | null>(null);
+  /** Team whose route is previewed for an incident. */
+  const [preview, setPreview] = useState<{ incidentId: string; teamId: string } | null>(null);
+  /** Clock for where moving teams are, refreshed while any team is travelling. */
+  const [now, setNow] = useState(() => Date.now());
 
   const run: Run = useCallback((action) => {
     dispatch(action).catch((e) => setToast(errorMessage(e)));
@@ -165,6 +198,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
     loadElevation(DEMO_AREA.floodBounds)
       .then(setElevation)
       .catch((e: Error) => setElevationError(e.message));
+    loadRoads()
+      .then(setRoads)
+      .catch((e: Error) => setToast(`Routing unavailable: ${e.message}`));
   }, []);
 
   const grid: FloodGrid | null = useMemo(
@@ -186,6 +222,26 @@ function DashboardView({ state }: { state: ExerciseState }) {
     [elevation, grid, flood, resolved, waterLevel],
   );
 
+  /** Fastest flood-aware route for a team to an incident, from where the team is now. */
+  const planFor = useCallback(
+    (team: RescueTeam, incident: Incident, at: number): RoutePlan | NoRoute | null => {
+      if (!roads || !grid || !flood || incident.latitude == null || incident.longitude == null) return null;
+      const [longitude, latitude] = team.trip ? tripProgress(team.trip, at).position : [team.longitude, team.latitude];
+      return planRoute(
+        roads,
+        grid,
+        flood,
+        { longitude, latitude, capabilities: team.capabilities },
+        { longitude: incident.longitude, latitude: incident.latitude },
+      );
+    },
+    [roads, grid, flood],
+  );
+  const planForRef = useRef(planFor);
+  useEffect(() => {
+    planForRef.current = planFor;
+  }, [planFor]);
+
   // Replays the recorded storm at the gauge and sets assigned teams off.
   // New calls come from the FastAPI backend (backend/scripts/simulate_call.py).
   const stateRef = useRef(state);
@@ -203,9 +259,12 @@ function DashboardView({ state }: { state: ExerciseState }) {
         const next = readingAt(current < 0 ? 0 : current + READINGS_PER_TICK);
         run({ type: "setWaterLevel", meters: next.surface, observedAt: next.time });
       }
-      const assigned = s.incidents.find((i) => i.status === "assigned");
+      const assigned = s.incidents.find((i) => i.status === "assigned" && !i.linkedTo);
       if (tick % TEAM_UPDATE_EVERY_TICKS === 0 && assigned) {
-        run({ type: "setStatus", incidentId: assigned.id, status: "en_route" });
+        const team = s.teams.find((t) => t.id === assigned.assignedTeamId);
+        const plan = team ? planForRef.current(team, assigned, Date.now()) : null;
+        // A team with no safe way in stays put for the dispatcher to reassign.
+        if (plan?.ok) run({ type: "setStatus", incidentId: assigned.id, status: "en_route", plan: asTripPlan(plan) });
       }
     }, REPLAY_TICK_MS);
     return () => clearInterval(timer);
@@ -265,6 +324,50 @@ function DashboardView({ state }: { state: ExerciseState }) {
     (i) => ACTIVE_STATUSES.includes(i.status) && priorities.get(i.id)?.tier === "critical",
   ).length;
   const selected = state.incidents.find((i) => i.id === selectedId) ?? null;
+
+  // Teams that could go to the selected incident, fastest first.
+  const teamOptions: TeamOption[] = useMemo(() => {
+    if (!selected || selected.linkedTo) return [];
+    return state.teams
+      .filter((t) => t.available || t.id === selected.assignedTeamId)
+      .map((team) => ({ team, plan: planFor(team, selected, now) }))
+      .sort((a, b) => {
+        const time = (o: TeamOption) => (o.plan?.ok ? o.plan.realSeconds : Infinity);
+        return time(a) - time(b) || a.team.name.localeCompare(b.team.name);
+      });
+  }, [selected, state.teams, planFor, now]);
+
+  // Show the chosen team's route, or the fastest one, until a team sets off.
+  const previewPlan = useMemo(() => {
+    if (!selected || !["awaiting_assignment", "assigned"].includes(selected.status)) return null;
+    const chosen =
+      selected.status === "assigned"
+        ? selected.assignedTeamId
+        : preview?.incidentId === selected.id
+          ? preview.teamId
+          : teamOptions.find((o) => o.plan?.ok)?.team.id;
+    const plan = teamOptions.find((o) => o.team.id === chosen)?.plan;
+    return plan?.ok ? { path: plan.path, legs: plan.legs } : null;
+  }, [selected, preview, teamOptions]);
+
+  // Whether rising water has cut the remaining route of the team heading to the selected incident.
+  const routeAlert: RouteAlert | null = useMemo(() => {
+    if (!selected || !roads || !grid || !flood) return null;
+    const team = state.teams.find((t) => t.id === selected.assignedTeamId);
+    if (!team?.trip) return null;
+    const mover = moverFor(team.capabilities);
+    if (mover === "air") return null;
+    const { limit, label } = PROFILES[mover];
+    const deepest = deepestAhead(roads, grid, flood, team.trip, now);
+    return deepest > limit ? { team, deepest, limit, label } : null;
+  }, [selected, state.teams, roads, grid, flood, now]);
+
+  const anyTrip = state.teams.some((t) => t.trip);
+  useEffect(() => {
+    if (!anyTrip) return;
+    const timer = setInterval(() => setNow(Date.now()), CLOCK_MS);
+    return () => clearInterval(timer);
+  }, [anyTrip]);
   const placing = state.incidents.find((i) => i.id === placingFor) ?? null;
   const stuckPeople = mainIncidents
     .filter((i) => ACTIVE_STATUSES.includes(i.status))
@@ -443,6 +546,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
           <FloodMap
             state={mapState}
             flood={flood}
+            preview={previewPlan}
             selectedId={selectedId}
             reportMode={reportMode || placingFor != null}
             onSelect={(id) => {
@@ -491,6 +595,14 @@ function DashboardView({ state }: { state: ExerciseState }) {
                     incident={selected}
                     water={waterReport(selected)}
                     teams={state.teams}
+                    options={teamOptions}
+                    routeAlert={routeAlert}
+                    onPreview={(teamId) => setPreview({ incidentId: selected.id, teamId })}
+                    onReroute={(team) => {
+                      const plan = planFor(team, selected, Date.now());
+                      if (plan?.ok) run({ type: "reroute", teamId: team.id, plan: asTripPlan(plan) });
+                      else setToast(plan ? `No safe route from here: ${plan.reason}.` : "Routes are still loading.");
+                    }}
                     allIncidents={state.incidents}
                     priority={priorities.get(selected.linkedTo ?? selected.id) ?? null}
                     run={run}
@@ -526,6 +638,14 @@ function Legend() {
       {row("#2563eb", "Simulated rescue team")}
       {row("#f59e0b", `Team moving (simulated, ${TRIP_SPEEDUP}× speed)`)}
       <div className="flex items-center gap-2">
+        <span className="inline-block h-1 w-3 rounded-sm" style={{ background: ROUTE_COLOR.road }} />
+        road
+        <span className="inline-block h-1 w-3 rounded-sm" style={{ background: ROUTE_COLOR.water }} />
+        boat
+        <span className="inline-block h-1 w-3 rounded-sm border-t-2 border-dashed border-slate-300" />
+        on foot · routes avoid water too deep for each vehicle
+      </div>
+      <div className="flex items-center gap-2">
         <span className="inline-block h-3 w-12 rounded-sm bg-gradient-to-r from-[#9fd8f5] via-[#1f7fc4] to-[#174a8f]" />
         Water depth 0 → 6 m+
       </div>
@@ -538,6 +658,10 @@ function IncidentDetail({
   incident,
   water,
   teams,
+  options,
+  routeAlert,
+  onPreview,
+  onReroute,
   allIncidents,
   priority,
   run,
@@ -548,6 +672,10 @@ function IncidentDetail({
   incident: Incident;
   water: ReturnType<typeof waterAtBuilding> | null;
   teams: RescueTeam[];
+  options: TeamOption[];
+  routeAlert: RouteAlert | null;
+  onPreview: (teamId: string) => void;
+  onReroute: (team: RescueTeam) => void;
   allIncidents: Incident[];
   priority: Priority | null;
   run: Run;
@@ -557,8 +685,9 @@ function IncidentDetail({
 }) {
   const main = incident.linkedTo ? allIncidents.find((i) => i.id === incident.linkedTo) : null;
   const [teamId, setTeamId] = useState("");
-  const available = teams.filter((t) => t.available);
+  const available = options.filter((o) => o.team.available);
   const assigned = teams.find((t) => t.id === incident.assignedTeamId);
+  const assignedPlan = options.find((o) => o.team.id === incident.assignedTeamId)?.plan ?? null;
   const st = STATUS_STYLE[incident.status];
   const onMap = incident.latitude != null && incident.longitude != null;
 
@@ -698,19 +827,37 @@ function IncidentDetail({
         </div>
       ) : incident.status === "awaiting_assignment" ? (
         <div className="space-y-2">
-          <select
-            aria-label="Choose team"
-            value={teamId}
-            onChange={(e) => setTeamId(e.target.value)}
-            className="w-full rounded bg-slate-800 px-2 py-1.5 text-xs"
-          >
-            <option value="">Choose a simulated team…</option>
-            {available.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} ({t.capabilities.join(", ").replaceAll("_", " ")})
-              </option>
+          <p className="text-[11px] uppercase tracking-wide text-slate-400">Teams by arrival time</p>
+          <div className="space-y-1" role="radiogroup" aria-label="Choose team">
+            {available.map(({ team, plan }, i) => (
+              <button
+                key={team.id}
+                role="radio"
+                aria-checked={teamId === team.id}
+                onClick={() => {
+                  setTeamId(team.id);
+                  onPreview(team.id);
+                }}
+                className={`w-full rounded px-2 py-1.5 text-left text-xs ring-1 ${
+                  teamId === team.id ? "bg-slate-800 ring-sky-400" : "bg-slate-800/50 ring-slate-700 hover:bg-slate-800"
+                } ${plan && !plan.ok ? "opacity-60" : ""}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold">
+                    {team.name}
+                    {i === 0 && plan?.ok && <span className="ml-1.5 text-[10px] text-emerald-400">FASTEST</span>}
+                  </span>
+                  <span className={plan?.ok ? "text-sky-300" : "text-red-400"}>
+                    {plan == null ? "…" : plan.ok ? `${Math.max(1, Math.round(plan.realSeconds / 60))} min` : "can't reach"}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {plan == null ? "Working out a route…" : plan.ok ? routeSummary(plan) : plan.reason}
+                </div>
+              </button>
             ))}
-          </select>
+            {available.length === 0 && <p className="text-xs text-slate-500">No teams available.</p>}
+          </div>
           <button
             disabled={!teamId}
             onClick={() => run({ type: "assignTeam", incidentId: incident.id, teamId })}
@@ -725,13 +872,37 @@ function IncidentDetail({
       ) : (
         <div className="space-y-2 text-xs">
           {assigned && <p>Team: {assigned.name}</p>}
+          {incident.status === "assigned" && assignedPlan && (
+            <p className={assignedPlan.ok ? "text-slate-400" : "text-red-400"}>
+              {assignedPlan.ok
+                ? `Route: ${Math.max(1, Math.round(assignedPlan.realSeconds / 60))} min · ${routeSummary(assignedPlan)}`
+                : `No safe route: ${assignedPlan.reason}. Unassign and send a boat or helicopter.`}
+            </p>
+          )}
+          {routeAlert && (
+            <div className="rounded bg-red-950/60 p-2 text-red-200 ring-1 ring-red-700">
+              Water on {routeAlert.team.name}&apos;s remaining route is now {routeAlert.deepest.toFixed(1)} m, beyond a{" "}
+              {routeAlert.label} ({routeAlert.limit} m).
+              <button
+                onClick={() => onReroute(routeAlert.team)}
+                className="mt-1.5 block rounded bg-red-700 px-2 py-1 font-semibold text-white hover:bg-red-600"
+              >
+                Re-route from current position
+              </button>
+            </div>
+          )}
           <div className="flex gap-2">
             {incident.status === "assigned" && (
               <button
-                onClick={() => run({ type: "setStatus", incidentId: incident.id, status: "en_route" })}
-                className="rounded bg-slate-700 px-2.5 py-1 hover:bg-slate-600"
+                disabled={!assignedPlan?.ok}
+                title={assignedPlan && !assignedPlan.ok ? assignedPlan.reason : undefined}
+                onClick={() =>
+                  assignedPlan?.ok &&
+                  run({ type: "setStatus", incidentId: incident.id, status: "en_route", plan: asTripPlan(assignedPlan) })
+                }
+                className="rounded bg-slate-700 px-2.5 py-1 hover:bg-slate-600 disabled:opacity-40"
               >
-                Mark en route
+                Send en route
               </button>
             )}
             {(incident.status === "assigned" || incident.status === "en_route") && (
@@ -760,6 +931,22 @@ function IncidentDetail({
       )}
     </div>
   );
+}
+
+const LEG_WORDS = { road: "drive", water: "boat", foot: "on foot", air: "fly" } as const;
+
+function distance(m: number) {
+  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
+}
+
+/** e.g. "tow 2.3 km → boat 380 m → on foot 80 m · deepest water 0.3 of 0.6 m" */
+function routeSummary(plan: RoutePlan) {
+  const steps = [...new Set(plan.legs.map((l) => l.mode))].map((mode) => {
+    const word = mode === "road" && plan.mover === "boat" ? "tow" : LEG_WORDS[mode];
+    return `${word} ${distance(plan.metres[mode])}`;
+  });
+  const depth = plan.limit != null && plan.maxDepth > 0.05 ? ` · deepest water ${plan.maxDepth.toFixed(1)} of ${plan.limit} m` : "";
+  return steps.join(" → ") + depth;
 }
 
 const TIER_STYLE: Record<PriorityTier, { label: string; cls: string }> = {

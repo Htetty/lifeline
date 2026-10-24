@@ -150,7 +150,15 @@ export default defineSchema({
           path: v.array(v.array(v.number())),
           departAt: v.number(),
           arriveAt: v.number(),
-          route: v.union(v.literal("road"), v.literal("direct")),
+          route: v.union(v.literal("planned"), v.literal("road"), v.literal("direct")),
+          legs: v.optional(
+            v.array(
+              v.object({
+                mode: v.union(v.literal("road"), v.literal("water"), v.literal("foot"), v.literal("air")),
+                end: v.number(),
+              }),
+            ),
+          ),
           realSeconds: v.number(),
         }),
         v.null(),

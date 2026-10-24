@@ -1,14 +1,36 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
-import { internalAction, internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
-import { logActivity } from "./lib";
-import { metres, MIN_TRIP_MS, TRIP_SPEEDUP, tripProgress } from "./tripMath";
+import type { Doc, Id } from "./_generated/dataModel";
+import { internalAction, internalMutation, internalQuery, mutation, type MutationCtx } from "./_generated/server";
+import { logActivity, requireDispatcher } from "./lib";
+import { metres, MIN_TRIP_MS, TRIP_SPEEDUP, tripProgress, type Trip, type TripLeg } from "./tripMath";
 
-// Simulated travel when a team goes en route: road vehicles follow a driving route,
-// boats and helicopters go straight. Speeds are rough planning figures.
+// Simulated travel when a team goes en route. The dashboard normally supplies a
+// flood-aware route (src/lib/router.ts). Without one, road vehicles take a driving
+// route that ignores the flood, and boats and helicopters go straight.
 const SPEED_MPS = { air: 50, boat: 6, road: 9 };
 const OSRM_URL = "https://router.project-osrm.org/route/v1/driving";
+// Convex arrays hold at most 8192 values.
+const MAX_PATH_POINTS = 4000;
+
+export const tripLeg = v.object({
+  mode: v.union(v.literal("road"), v.literal("water"), v.literal("foot"), v.literal("air")),
+  end: v.number(),
+});
+
+/** A route planned by the dashboard. */
+export const routePlan = v.object({
+  path: v.array(v.array(v.number())),
+  legs: v.array(tripLeg),
+  realSeconds: v.number(),
+});
+
+interface Plan {
+  path: number[][];
+  legs: TripLeg[];
+  realSeconds: number;
+  route: Trip["route"];
+}
 
 /** The team and incident for a trip, or null when the team is no longer heading there. */
 export const tripContext = internalQuery({
@@ -34,6 +56,7 @@ async function roadRoute(from: number[], to: number[]) {
   }
 }
 
+/** Fallback when no dashboard route was supplied. */
 export const planTrip = internalAction({
   args: { teamId: v.id("teams"), incidentId: v.id("incidents") },
   handler: async (ctx, args) => {
@@ -43,23 +66,25 @@ export const planTrip = internalAction({
     const from = [team.longitude, team.latitude];
     const to = [incident.longitude!, incident.latitude!];
     const straight = metres(from, to);
+    const direct = (mode: TripLeg["mode"], realSeconds: number): Plan => ({
+      path: [from, to],
+      legs: [{ mode, end: 1 }],
+      realSeconds,
+      route: "direct",
+    });
 
-    let path = [from, to];
-    let route: "road" | "direct" = "direct";
-    let realSeconds: number;
-    if (team.capabilities.includes("air")) realSeconds = straight / SPEED_MPS.air;
-    else if (team.capabilities.includes("boat")) realSeconds = straight / SPEED_MPS.boat;
+    let plan: Plan;
+    if (team.capabilities.includes("air")) plan = direct("air", straight / SPEED_MPS.air);
+    else if (team.capabilities.includes("boat")) plan = direct("water", straight / SPEED_MPS.boat);
     else {
       const road = await roadRoute(from, to);
-      if (road) {
-        path = [from, ...road.coords, to];
-        route = "road";
-        realSeconds = road.seconds;
-      } else {
-        realSeconds = (straight * 1.4) / SPEED_MPS.road;
-      }
+      const path = road ? [from, ...road.coords, to] : null;
+      plan =
+        path && path.length <= MAX_PATH_POINTS
+          ? { path, legs: [{ mode: "road", end: path.length - 1 }], realSeconds: road!.seconds, route: "road" }
+          : direct("road", (straight * 1.4) / SPEED_MPS.road);
     }
-    await ctx.runMutation(internal.trips.startTrip, { ...args, path, route, realSeconds });
+    await ctx.runMutation(internal.trips.startTrip, { ...args, ...plan });
   },
 });
 
@@ -68,25 +93,53 @@ export const startTrip = internalMutation({
     teamId: v.id("teams"),
     incidentId: v.id("incidents"),
     path: v.array(v.array(v.number())),
-    route: v.union(v.literal("road"), v.literal("direct")),
+    legs: v.array(tripLeg),
+    route: v.union(v.literal("planned"), v.literal("road"), v.literal("direct")),
     realSeconds: v.number(),
   },
-  handler: async (ctx, { teamId, incidentId, path, route, realSeconds }) => {
-    const [team, incident] = await Promise.all([ctx.db.get(teamId), ctx.db.get(incidentId)]);
-    // The dispatcher may have changed the plan while the route was being fetched.
-    if (!team || !incident || team.currentAssignment !== incidentId || incident.status !== "en_route") return;
-    if (team.trip?.incidentId === incidentId) return;
+  handler: async (ctx, { teamId, incidentId, ...plan }) => {
+    const team = await ctx.db.get(teamId);
+    // A route that arrives after a dispatcher already started one is dropped.
+    if (team?.trip?.incidentId === incidentId) return;
+    await beginTrip(ctx, teamId, incidentId, plan);
+  },
+});
 
-    const departAt = Date.now();
-    const arriveAt = departAt + Math.max(MIN_TRIP_MS, (realSeconds * 1000) / TRIP_SPEEDUP);
-    await ctx.db.patch(teamId, { trip: { incidentId, path, departAt, arriveAt, route, realSeconds }, updatedAt: departAt });
-    await ctx.scheduler.runAt(arriveAt, internal.trips.arrive, { teamId, departAt });
-    const how = route === "road" ? "by road" : team.capabilities.includes("air") ? "by air" : "direct";
-    await logActivity(
-      ctx,
-      `${team.name} departed for ${incident.reportedAddress}, about ${Math.max(1, Math.round(realSeconds / 60))} min ${how} (simulated).`,
-      incidentId,
-    );
+/** Starts a trip if the team is still assigned and en route to the incident. */
+export async function beginTrip(ctx: MutationCtx, teamId: Id<"teams">, incidentId: Id<"incidents">, plan: Plan) {
+  const [team, incident] = await Promise.all([ctx.db.get(teamId), ctx.db.get(incidentId)]);
+  // The dispatcher may have changed the plan while the route was being worked out.
+  if (!team || !incident || team.currentAssignment !== incidentId || incident.status !== "en_route") return;
+  if (plan.path.length < 2 || plan.path.length > MAX_PATH_POINTS) throw new ConvexError("Route is not usable");
+
+  const departAt = Date.now();
+  const arriveAt = departAt + Math.max(MIN_TRIP_MS, (plan.realSeconds * 1000) / TRIP_SPEEDUP);
+  await ctx.db.patch(teamId, { trip: { incidentId, departAt, arriveAt, ...plan }, updatedAt: departAt });
+  await ctx.scheduler.runAt(arriveAt, internal.trips.arrive, { teamId, departAt });
+  await logActivity(
+    ctx,
+    `${team.name} departed for ${incident.reportedAddress}, about ${Math.max(1, Math.round(plan.realSeconds / 60))} min ${describe(plan)} (simulated).`,
+    incidentId,
+  );
+}
+
+function describe(plan: Plan) {
+  const modes = [...new Set(plan.legs.map((l) => l.mode))].filter((m) => m !== "foot");
+  const words = { road: "road", water: "water", air: "air", foot: "foot" };
+  const how = `by ${modes.map((m) => words[m]).join(" and ")}`;
+  return plan.route === "road" ? `${how}, route ignores flooding` : how;
+}
+
+/** The dispatcher sends a moving team a new route from where it is now. */
+export const reroute = mutation({
+  args: { dispatcherToken: v.optional(v.string()), teamId: v.id("teams"), plan: routePlan },
+  handler: async (ctx, { dispatcherToken, teamId, plan }) => {
+    requireDispatcher(dispatcherToken);
+    const team = await ctx.db.get(teamId);
+    if (!team?.trip) throw new ConvexError("This team isn't on its way anywhere");
+    const incidentId = team.trip.incidentId;
+    await stopTrip(ctx, team);
+    await beginTrip(ctx, teamId, incidentId, { ...plan, route: "planned" });
   },
 });
 
