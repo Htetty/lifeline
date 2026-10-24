@@ -218,6 +218,16 @@ requirements before attributing failure to this adapter.
   `CA5793b974aec81175ef79091a42519aff` ended after 25 seconds without a saved caller
   utterance. Full correction/assignment/interruption/hangup exercise is still
   pending. Do not count synthetic/provider tests as hearing.
+- **Second human call, live intake and corrections:** call
+  `CA29c5d1a6981a55e5de5c92f61d17f6b1` created incident
+  `jh72kmvyszetz77egx7me99tbx8gwyxt` before hangup. It updated from three/South to
+  four/North, retaining both earlier and corrected words and fact history. Further
+  caller address changes updated the same incident. A live greeting interruption
+  logged `playback cleared` and `cleared mark ignored`; subsequent replies received
+  natural completion marks. After disconnect the same incident remained readable,
+  `needs_review`, with four people and `callConnected=false`. No dispatcher approval
+  occurred before hangup, so **matching assignment hearing and assignment-specific
+  interruption/retry are not yet human-verified**. The PR remains draft for these.
 
 Reproduce the deployment-dependent tests only against the disposable runner:
 
