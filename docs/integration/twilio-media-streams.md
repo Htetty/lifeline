@@ -259,8 +259,37 @@ requirements before attributing failure to this adapter.
 - The replay fix and stronger output reservation/response pause are locally
   verified and deployed to the same isolated test state. Correlated UTC playback
   IDs, reply/announcement/replay labels, bytes and mark elapsed times now support
-  inspecting the next call without logging speech or secrets. **Human verification
-  of fixed repeat and assignment interruption/retry remains pending; PR #9 is draft.**
+  inspecting calls without logging speech or secrets.
+- **Fourth human call: fixed replay and interruption/retry PASSED.** Call
+  `CA65e93b30326e50380b8fd794b4ea1e1b` created incident
+  `jh7bn5fzvc8m8vrq7qvjp2ba8s8gwqf1` before hangup. Three people at South changed
+  to four at North on the same incident. The initial correction omitted “Circle”
+  in the provider transcript; dispatch was withheld until the caller supplied the
+  exact address. The user approved only this new call's simulated pin and available
+  High-Water Truck 7, applied after the exact correction was saved. The caller heard
+  the approved assignment and requested matching replays. An initial interruption
+  attempt came after playback ended and was not counted as a clear test. On the
+  later attempt the user confirmed audio stopped, the full matching retry was
+  audible, and no automatic repeat occurred during a quiet pause.
+
+  | Fourth-call playback evidence (UTC) | Result |
+  | --- | --- |
+  | 19:52:30.828, `c671c834` | Initial approved assignment queued |
+  | 19:52:38.918 | Natural completion; event acknowledged at 19:52:38.919 |
+  | 19:52:47.776 → 19:52:55.621, `e9727975` | Explicit requested replay completed |
+  | 19:54:28.299, `8e4f90e2` | Later requested replay queued |
+  | 19:54:29.698 → 19:54:29.988 | Clear sent; clear-returned mark ignored |
+  | 19:54:36.189 → 19:54:44.134, `3869e633` | New replay completed naturally |
+
+  After hangup, Twilio reported `completed`, duration 283 seconds. Convex retained
+  one incident, `assigned`, four people, corrected address, verified pin,
+  `callConnected=false`, original transcript and correction history. All 22 turn
+  receipts have unique IDs and contiguous sequences 1–22. There is one assignment
+  event, with its original acknowledgement timestamp unchanged across replays.
+  Interrupted speech was not saved as completed agent speech. This live check
+  interrupted an **already acknowledged requested replay**; interruption of an
+  initial unacknowledged assignment is covered by the isolated protocol test.
+  PR #9 is ready for review; no branch has been merged.
 
 Reproduce the deployment-dependent tests only against the disposable runner:
 
