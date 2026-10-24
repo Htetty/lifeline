@@ -33,6 +33,7 @@ async def upsert_from_call(
     location_changed: bool = False,
     caller_role: str | None = None,
     risk_factors: list[dict[str, str]] | None = None,
+    withdrawn: list[dict[str, str | None]] | None = None,
     turn: dict | None = None,
     response: dict | None = None,
 ) -> dict[str, Any]:
@@ -50,6 +51,8 @@ async def upsert_from_call(
             "locationChanged": location_changed,
             **({"callerRole": caller_role} if caller_role else {}),
             **({"riskFactors": risk_factors} if risk_factors else {}),
+            # Sent only when the caller took something back, so ordinary turns keep the old arguments.
+            **({"withdrawn": withdrawn} if withdrawn else {}),
             "callId": call_id,
             "source": source,
             "transcript": transcript,
@@ -79,6 +82,10 @@ async def status_for_call(call_id: str) -> dict[str, Any] | None:
 async def pending_events(call_id: str) -> list[dict[str, Any]]:
     """Current, unspoken updates (empty after hang-up). Used by the browser voice bridge."""
     return await _query("calls:pendingEvents", {"callId": call_id})
+
+
+async def recorded_hazards(call_id: str) -> list[str]:
+    return await _query("calls:recordedHazards", {"callId": call_id})
 
 
 async def transcript_for_call(call_id: str) -> str | None:

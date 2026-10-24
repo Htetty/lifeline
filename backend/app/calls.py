@@ -141,7 +141,12 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
         error: str | None = None
         if utterance.speaker == "caller":
             try:
-                extraction = await extract_incident(transcript)
+                recorded = await convex_store.recorded_hazards(call_id)
+            except Exception:  # only a naming hint for withdrawals; extraction works without it
+                log.warning("call %s: couldn't read recorded hazards", call_id)
+                recorded = None
+            try:
+                extraction = await extract_incident(transcript, recorded)
             except ExtractionUnavailable as e:
                 error = f"Extraction unavailable ({e}); the dispatcher will read the transcript."
             except anthropic.APIError as e:
@@ -190,6 +195,7 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
                         location_changed=extraction.location_changed,
                         caller_role=extraction.caller_role,
                         risk_factors=[r.model_dump() for r in extraction.risk_factors],
+                        withdrawn=[w.model_dump() for w in extraction.withdrawn],
                         candidate=(
                             (candidate.latitude, candidate.longitude, f"Map search: {candidate.label}")
                             if candidate

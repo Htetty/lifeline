@@ -94,7 +94,7 @@ const db = {
 const allowed = new Set([
   "calls:upsertFromCall", "calls:callEnded", "calls:statusForCall",
   "calls:transcriptForCall", "calls:pendingEvents", "calls:markAnnounced",
-  "calls:startVoiceCall", "calls:turnReceipt", "calls:setAdvisoryTags",
+  "calls:startVoiceCall", "calls:turnReceipt", "calls:setAdvisoryTags", "calls:recordedHazards",
   "incidents:verifyLocation", "incidents:assignTeam", "incidents:setStatus", "exercise:get",
 ]);
 
