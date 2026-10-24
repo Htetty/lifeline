@@ -28,6 +28,11 @@ log = logging.getLogger("twilio-media")
 VOICE_PATH = "/twilio/voice"
 MEDIA_PATH = "/twilio/media"
 SID = re.compile(r"CA[a-zA-Z0-9]{32}\Z")
+# Phone callers pause inside numbers and addresses ("room nine ... oh five"). At Cartesia's
+# default end threshold (0.2) the turn ended inside such a pause on a recorded call (9/9
+# replays), so the agent answered half a number. 0.15 kept it together in replays without
+# leaving finished statements waiting (median end-of-turn +~150 ms). Phone only.
+PHONE_TURN = {"turn_end_threshold": 0.15}
 STREAM_SID = re.compile(r"MZ[a-zA-Z0-9]{32}\Z")
 
 
@@ -237,7 +242,8 @@ async def media_stream(socket: WebSocket):
         _active_calls.add(call_id)
         owned_call = call_id
         transport = TwilioTransport(socket, call_id, stream_id, int(start["sequenceNumber"]))
-        speech = CartesiaSpeech(input_encoding="pcm_mulaw", output_format={"container":"raw","encoding":"pcm_mulaw","sample_rate":8000})
+        speech = CartesiaSpeech(input_encoding="pcm_mulaw", output_format={"container":"raw","encoding":"pcm_mulaw","sample_rate":8000},
+                                turn=PHONE_TURN)
         session = Session(call_id, speech, transport.send)
         session.turn_prefix = stream_id
         session.audio_frame_alignment = 1
