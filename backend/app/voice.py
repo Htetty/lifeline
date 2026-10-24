@@ -63,6 +63,8 @@ class Session:
         self.last_output_end = 0.0
         self.last_audible = None
         self.requested_repeat = None
+        # An intake question that arrived while a caller update was pending: asked after it.
+        self.deferred_question = None
 
     def repeat_request(self, text, turn_id):
         """Narrow playback/status intents from verified caller text, not LLM IDs."""
@@ -70,8 +72,12 @@ class Session:
         if not team and not REPEAT.search(text):
             return False
         previous = self.last_audible
-        if team or (previous and previous.event_id):
+        if team:
+            # "Which team / is anyone coming?": the latest still-true status update.
             self.requested_repeat = {"kind":"announcement", "id":turn_id, "event_id":None}
+        elif previous and previous.event_id:
+            # "Say that again" after an update: that same update, if it is still true.
+            self.requested_repeat = {"kind":"announcement", "id":turn_id, "event_id":previous.event_id}
         elif previous:
             self.requested_repeat = {"kind":"reply", "id":turn_id, "text":previous.text}
         else:
@@ -167,8 +173,7 @@ class Session:
 
     async def current(self, event_id, *, include_announced=False):
         if include_announced:
-            event = await convex_store.current_announcement(self.call_id)
-            return bool(event and event["_id"] == event_id)
+            return bool(await convex_store.current_announcement(self.call_id, event_id))
         return any(e["_id"] == event_id for e in await convex_store.pending_events(self.call_id))
 
     def speak(self, text, event_id=None, *, replay=False, request_id=None):
@@ -188,7 +193,10 @@ class Session:
             if event_id and not await self.current(event_id, include_announced=replay):
                 return
             if not event_id and not replay and text != GREETING and await convex_store.pending_events(self.call_id):
-                return  # approved update wins before a new question starts
+                # The caller update goes first (e.g. dev's "details received" after the
+                # first turn); keep the question for afterwards rather than dropping it.
+                self.deferred_question = (text, generation)
+                return
             if self.playback is not p or generation != self.generation or self.open_turn:
                 return
             p.phase = "offered"
@@ -246,8 +254,11 @@ class Session:
             await asyncio.sleep(0.5)
 
     async def poll_once(self):
-        from .main import announcements, ANNOUNCEMENTS
         try:
+            # Resolved per poll (tests patch app.main); inside the handler so a failure here
+            # delays announcements instead of ending the call.
+            from .calls import _confirmed_status_text
+            from .main import announcements
             p = self.playback
             if p and p.phase == "completed":
                 await self.complete(p)
@@ -258,21 +269,29 @@ class Session:
                 if request:
                     if request["kind"] == "reply":
                         self.speak(request["text"], replay=True, request_id=request["id"])
+                        return
+                    event = await convex_store.current_announcement(self.call_id, request["event_id"])
+                    if event and event.get("text"):
+                        # Canonical, role-aware wording saved with the update (witness or trapped).
+                        request["event_id"] = event["_id"]
+                        self.speak(event["text"], event["_id"], replay=event.get("announcedAt") is not None,
+                                   request_id=request["id"])
                     else:
-                        event = await convex_store.current_announcement(self.call_id)
-                        if not event or (request["event_id"] and request["event_id"] != event["_id"]):
-                            self.requested_repeat = None
-                            self.speak("There is no current dispatcher-approved assignment to repeat.")
-                        else:
-                            request["event_id"] = event["_id"]
-                            text = ANNOUNCEMENTS[event["type"]].format(team=f", {event['teamName']}," if event.get("teamName") else "")
-                            self.speak(text, event["_id"], replay=event.get("announcedAt") is not None, request_id=request["id"])
+                        # Nothing current to repeat (e.g. the team was unassigned or the update
+                        # superseded): say only the confirmed stage, never the old update.
+                        self.requested_repeat = None
+                        self.speak(await _confirmed_status_text(self.call_id), replay=True, request_id=request["id"])
                     return
                 pending = await announcements(self.call_id)
                 for event in pending:
                     if event["eventId"] not in self.acknowledged:
                         self.speak(event["text"], event["eventId"])
-                        break
+                        return
+                question = self.deferred_question
+                if question:
+                    self.deferred_question = None
+                    if question[1] == self.generation:  # no newer caller turn since it was asked
+                        self.speak(question[0])
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -358,17 +358,39 @@ export const pendingEvents = query({
   },
 });
 
-/** Explicit caller replay may include an already heard event, only if still true. */
+/** Updates that answer "which team / is anyone coming?" when a caller asks for a replay. */
+const STATUS_UPDATES: Doc<"events">["type"][] = [
+  "assignment_approved",
+  "assignment_changed",
+  "team_en_route",
+  "rescue_resolved",
+  "report_linked",
+];
+
+/**
+ * An update a caller explicitly asked to hear again. It may already have been heard
+ * (announced), but only while it is still true: superseded or reversed updates never
+ * come back. With `eventId`, that exact update; otherwise the latest current status update.
+ */
 export const currentAnnouncement = query({
-  args: { secret: v.string(), callId: v.string() },
-  handler: async (ctx, { secret, callId }) => {
+  args: { secret: v.string(), callId: v.string(), eventId: v.optional(v.id("events")) },
+  handler: async (ctx, { secret, callId, eventId }) => {
     requireBackend(secret);
     const incident = await byCall(ctx, callId);
     if (!incident || !incident.callConnected) return null;
-    const events = await ctx.db.query("events")
-      .withIndex("by_call_announced", q => q.eq("callId", callId)).collect();
-    return events.filter(e => isCurrentEvent(incident, e))
-      .sort((a,b) => b.createdAt - a.createdAt)[0] ?? null;
+    if (eventId) {
+      const event = await ctx.db.get(eventId);
+      return event && event.callId === callId && isCurrentEvent(incident, event) ? event : null;
+    }
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_call_announced", (q) => q.eq("callId", callId))
+      .collect();
+    return (
+      events
+        .filter((e) => STATUS_UPDATES.includes(e.type) && isCurrentEvent(incident, e))
+        .sort((x, y) => y.createdAt - x.createdAt)[0] ?? null
+    );
   },
 });
 

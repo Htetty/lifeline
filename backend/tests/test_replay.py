@@ -9,13 +9,17 @@ from app import main, voice
 from app.voice import Playback, Session, QUIET_SECONDS
 
 
-EVENT={'_id':'approved-event','type':'assignment_approved','teamName':'Swift Water Boat 1','announcedAt':100}
+# Dev saves the approved, role-aware wording on each update; the phone speaks that text.
+EVENT={'_id':'approved-event','type':'assignment_approved','teamName':'Swift Water Boat 1','announcedAt':100,
+       'text':'Simulation update from the dispatcher: a simulated rescue team, Swift Water Boat 1, has been assigned to this fictional incident.'}
+STAGE='The dispatcher has confirmed your location and is arranging a rescue team. No team has been assigned yet.'
 
 
 @pytest.fixture
 def session(monkeypatch):
     monkeypatch.setattr(main.convex_store,'pending_events',AsyncMock(return_value=[]))
     monkeypatch.setattr(main.convex_store,'current_announcement',AsyncMock(return_value=EVENT))
+    monkeypatch.setattr(main.convex_store,'call_state',AsyncMock(return_value={'status':{'sayIfAsked':STAGE},'pending':[]}))
     s=Session('call',SimpleNamespace(synthesize=AsyncMock(return_value=b'audio')),AsyncMock())
     s.last_speech=0
     return s
@@ -101,11 +105,14 @@ async def test_synthesis_reserves_output_and_pending_assignment_suppresses_unsen
 @pytest.mark.asyncio
 async def test_withdrawn_assignment_cannot_be_replayed(session,monkeypatch):
     session.requested_repeat={'kind':'announcement','id':'repeat','event_id':EVENT['_id']}
-    monkeypatch.setattr(main.convex_store,'current_announcement',AsyncMock(return_value=None))
+    current=AsyncMock(return_value=None)
+    monkeypatch.setattr(main.convex_store,'current_announcement',current)
     await session.poll_once();await session.audio_task
+    current.assert_awaited_once_with('call',EVENT['_id'])  # that exact update, checked for currency
     assert session.requested_repeat is None
     assert session.playback.event_id is None
-    assert session.playback.text=='There is no current dispatcher-approved assignment to repeat.'
+    # Dev's truthful confirmed stage instead of the withdrawn team; never the old update.
+    assert session.playback.text==STAGE and 'Swift Water Boat 1' not in session.playback.text
 
 
 @pytest.mark.asyncio

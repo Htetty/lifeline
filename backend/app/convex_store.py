@@ -88,8 +88,9 @@ async def recorded_hazards(call_id: str) -> list[str]:
     return await _query("calls:recordedHazards", {"callId": call_id})
 
 
-async def current_announcement(call_id: str) -> dict[str, Any] | None:
-    return await _query("calls:currentAnnouncement", {"callId": call_id})
+async def current_announcement(call_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+    """A still-true update to replay on request: that event, or the latest status update."""
+    return await _query("calls:currentAnnouncement", {"callId": call_id, **({"eventId": event_id} if event_id else {})})
 
 
 async def transcript_for_call(call_id: str) -> str | None:

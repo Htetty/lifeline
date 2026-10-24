@@ -117,7 +117,35 @@ describe("approved announcement lifecycle", () => {
     expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"other"})).toBeNull();
     await expect(t.query(api.calls.currentAnnouncement,{secret:"wrong",callId:"a"})).rejects.toThrow();
     await t.mutation(api.incidents.setStatus,{dispatcherToken,incidentId,status:"awaiting_assignment"});
+    // The withdrawn assignment never comes back, by id or as "the latest update" ...
+    expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"a",eventId:event._id})).toBeNull();
+    // ... the truthful replay is dev's change notice, which names no team.
+    const changed=await t.query(api.calls.currentAnnouncement,{secret,callId:"a"});
+    expect(changed).toMatchObject({type:"assignment_changed"});
+    expect(changed!.text).not.toContain(event.teamName!);
+    await t.mutation(api.calls.callEnded,{secret,callId:"a"});
     expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"a"})).toBeNull();
+  });
+
+  test("replay picks a status update, by id any current update, with its saved witness wording",async()=>{
+    const t=convexTest(schema,modules);
+    await t.mutation(api.exercise.ensureSeeded,{dispatcherToken});
+    await t.mutation(api.calls.startVoiceCall,{secret,callId:"w"});
+    const result=await t.mutation(api.calls.upsertFromCall,{...update("w"),callerRole:"witness"});
+    const incidentId=result.incident.incidentId;
+    // Only "details received" so far: not a status answer for "which team?".
+    expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"w"})).toBeNull();
+    await t.mutation(api.incidents.sendCallerMessage,{dispatcherToken,incidentId,message:"Move to the top floor."});
+    const [message]=(await t.query(api.calls.pendingEvents,{secret,callId:"w"})).filter((e:{type:string})=>e.type==="dispatcher_message");
+    expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"w",eventId:message._id})).toMatchObject({_id:message._id});
+    expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"other",eventId:message._id})).toBeNull();
+    const team=await t.run(ctx=>ctx.db.query("teams").first());
+    await t.mutation(api.incidents.verifyLocation,{dispatcherToken,incidentId,latitude:32.76,longitude:-117.16});
+    await t.mutation(api.incidents.assignTeam,{dispatcherToken,incidentId,teamId:team!._id});
+    const replay=await t.query(api.calls.currentAnnouncement,{secret,callId:"w"});
+    expect(replay).toMatchObject({type:"assignment_approved"});
+    expect(replay!.text).toContain("the people you reported");
+    expect(replay!.text).toContain(team!.name);
   });
 });
 
