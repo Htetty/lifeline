@@ -1,5 +1,5 @@
 import { ConvexError } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
   DEFAULT_WATER_SURFACE_ELEVATION,
@@ -25,6 +25,28 @@ export async function logActivity(
 export function requireBackend(secret: string) {
   const expected = process.env.BACKEND_SECRET;
   if (!expected || secret !== expected) throw new ConvexError("Unauthorized backend call");
+}
+
+/**
+ * Dispatcher operations. The passcode is entered in the dashboard at runtime (never
+ * bundled) and checked against `npx convex env set DISPATCHER_TOKEN <value>`.
+ */
+export function requireDispatcher(token: string) {
+  const expected = process.env.DISPATCHER_TOKEN;
+  if (!expected || token !== expected) throw new ConvexError("Dispatcher passcode required");
+}
+
+/** Whether a queued announcement still describes the incident's current, confirmed state. */
+export function isCurrentEvent(incident: Doc<"incidents">, event: Doc<"events">) {
+  if ((event.decisionRevision ?? 0) !== (incident.decisionRevision ?? 0)) return false;
+  switch (event.type) {
+    case "assignment_approved":
+      return incident.status === "assigned" && incident.locationVerified && incident.assignedTeamId != null;
+    case "team_en_route":
+      return incident.status === "en_route" && incident.locationVerified;
+    case "rescue_resolved":
+      return incident.status === "resolved";
+  }
 }
 
 export async function getExercise(ctx: QueryCtx, exerciseId = EXERCISE_ID) {

@@ -1,6 +1,7 @@
 """Thin async wrapper over the Convex Python client (which is synchronous)."""
 
 import asyncio
+import time
 from typing import Any
 
 from convex import ConvexClient
@@ -69,5 +70,23 @@ async def transcript_for_call(call_id: str) -> str | None:
     return await _query("calls:transcriptForCall", {"callId": call_id})
 
 
-async def mark_announced(call_id: str, event_id: str) -> None:
-    await _mutation("calls:markAnnounced", {"callId": call_id, "eventId": event_id})
+async def mark_announced(call_id: str, event_id: str) -> dict[str, bool]:
+    return await _mutation("calls:markAnnounced", {"callId": call_id, "eventId": event_id})
+
+
+async def set_advisory_tags(
+    call_id: str, status: str, tags: list[str], model_version: str | None, based_on_version: int
+) -> bool:
+    return await _mutation(
+        "calls:setAdvisoryTags",
+        {
+            "callId": call_id,
+            "tags": {
+                "status": status,
+                "tags": tags,
+                "modelVersion": model_version,
+                "basedOnVersion": float(based_on_version),
+                "at": time.time() * 1000,
+            },
+        },
+    )
