@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0.0",
+  "simulated": true,
+  "report_id": "sim-incident-002",
+  "provider_call_id": "sim-call-002",
+  "version": 1,
+  "created_at": "2026-10-23T19:00:20Z",
+  "updated_at": "2026-10-23T19:00:20Z",
+  "transcript": [
+    {
+      "turn_id": "turn-001",
+      "speaker": "assistant",
+      "recorded_at": "2026-10-23T19:00:00Z",
+      "text": "This is a FloodLine simulation. Where is the fictional flooding, who is affected, and what hazards are present?"
+    },
+    {
+      "turn_id": "turn-002",
+      "speaker": "caller",
+      "recorded_at": "2026-10-23T19:00:15Z",
+      "text": "For this simulation, I don't know where I am and cannot see any signs or landmarks. Two adults are affected, no children. Water is rising, but nobody is trapped. I don't know whether it is moving fast or whether there is electrical danger."
+    }
+  ],
+  "summary": {
+    "text": "Simulated caller cannot identify their location. Two adults and no children are affected by rising water. Caller reports nobody trapped; fast-moving water and electrical danger are unknown. Human location review is needed.",
+    "generated_by": "model",
+    "source_turn_ids": [
+      "turn-002"
+    ]
+  },
+  "reported_location": {
+    "description": null,
+    "precision": "unknown",
+    "source_turn_ids": [
+      "turn-002"
+    ]
+  },
+  "people_affected": {
+    "count": 2,
+    "includes_children": false,
+    "source_turn_ids": [
+      "turn-002"
+    ]
+  },
+  "hazards": {
+    "rising_water": true,
+    "fast_moving_water": null,
+    "trapped_people": false,
+    "electrical_danger": null,
+    "source_turn_ids": [
+      "turn-002"
+    ]
+  },
+  "unknown_fields": [
+    {
+      "field": "/reported_location/description",
+      "reason": "caller_unsure",
+      "source_turn_ids": [
+        "turn-002"
+      ]
+    },
+    {
+      "field": "/reported_location/precision",
+      "reason": "caller_unsure",
+      "source_turn_ids": [
+        "turn-002"
+      ]
+    },
+    {
+      "field": "/reported_location/coordinates",
+      "reason": "not_available",
+      "source_turn_ids": []
+    },
+    {
+      "field": "/hazards/fast_moving_water",
+      "reason": "caller_unsure",
+      "source_turn_ids": [
+        "turn-002"
+      ]
+    },
+    {
+      "field": "/hazards/electrical_danger",
+      "reason": "caller_unsure",
+      "source_turn_ids": [
+        "turn-002"
+      ]
+    }
+  ],
+  "review_status": "needs_review",
+  "revisions": [
+    {
+      "version": 1,
+      "recorded_at": "2026-10-23T19:00:20Z",
+      "kind": "created",
+      "changed_fields": [
+        "/provider_call_id",
+        "/transcript",
+        "/summary",
+        "/reported_location",
+        "/people_affected",
+        "/hazards",
+        "/unknown_fields",
+        "/review_status"
+      ],
+      "source_turn_ids": [
+        "turn-002"
+      ],
+      "note": "Created a separate fictional report and flagged the unusable location for human attention."
+    }
+  ]
+}
