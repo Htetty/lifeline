@@ -1,6 +1,7 @@
 """Thin async wrapper over the Convex Python client (which is synchronous)."""
 
 import asyncio
+import time
 from typing import Any
 
 from convex import ConvexClient
@@ -29,6 +30,8 @@ async def upsert_from_call(
     summary: str | None = None,
     candidate: tuple[float, float, str] | None = None,
     location_changed: bool = False,
+    turn: dict | None = None,
+    response: dict | None = None,
 ) -> dict[str, Any]:
     location = (
         {"candidateLatitude": candidate[0], "candidateLongitude": candidate[1], "candidateLabel": candidate[2]}
@@ -38,6 +41,8 @@ async def upsert_from_call(
     return await _mutation(
         "calls:upsertFromCall",
         {
+            **(turn or {}),
+            **({"response": response} if turn else {}),
             **location,
             "locationChanged": location_changed,
             "callId": call_id,
@@ -69,5 +74,31 @@ async def transcript_for_call(call_id: str) -> str | None:
     return await _query("calls:transcriptForCall", {"callId": call_id})
 
 
-async def mark_announced(call_id: str, event_id: str) -> None:
-    await _mutation("calls:markAnnounced", {"callId": call_id, "eventId": event_id})
+async def mark_announced(call_id: str, event_id: str) -> dict[str, bool]:
+    return await _mutation("calls:markAnnounced", {"callId": call_id, "eventId": event_id})
+
+
+async def set_advisory_tags(
+    call_id: str, status: str, tags: list[str], model_version: str | None, based_on_version: int
+) -> bool:
+    return await _mutation(
+        "calls:setAdvisoryTags",
+        {
+            "callId": call_id,
+            "tags": {
+                "status": status,
+                "tags": tags,
+                "modelVersion": model_version,
+                "basedOnVersion": float(based_on_version),
+                "at": time.time() * 1000,
+            },
+        },
+    )
+
+
+async def start_voice_call(call_id: str) -> dict:
+    return await _mutation("calls:startVoiceCall", {"callId": call_id})
+
+
+async def turn_receipt(call_id: str, turn: dict) -> dict | None:
+    return await _query("calls:turnReceipt", {"callId": call_id, **turn})

@@ -1,12 +1,13 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { clearExercise, getExercise, logActivity, seedExercise } from "./lib";
+import { clearExercise, getExercise, logActivity, requireDispatcher, seedExercise } from "./lib";
 import { EXERCISE_ID } from "./seedData";
 
 /** Everything the dashboard renders, in one reactive query. Null until seeded. */
 export const get = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { dispatcherToken: v.string() },
+  handler: async (ctx, { dispatcherToken }) => {
+    requireDispatcher(dispatcherToken);
     const exercise = await getExercise(ctx);
     if (!exercise) return null;
     const [incidents, teams, activity] = await Promise.all([
@@ -30,8 +31,9 @@ export const get = query({
 
 /** Seeds the exercise the first time anyone opens the dashboard. */
 export const ensureSeeded = mutation({
-  args: {},
-  handler: async (ctx) => {
+  args: { dispatcherToken: v.string() },
+  handler: async (ctx, { dispatcherToken }) => {
+    requireDispatcher(dispatcherToken);
     if (await getExercise(ctx)) return false;
     await seedExercise(ctx);
     return true;
@@ -39,16 +41,18 @@ export const ensureSeeded = mutation({
 });
 
 export const reset = mutation({
-  args: {},
-  handler: async (ctx) => {
+  args: { dispatcherToken: v.string() },
+  handler: async (ctx, { dispatcherToken }) => {
+    requireDispatcher(dispatcherToken);
     await clearExercise(ctx);
     await seedExercise(ctx);
   },
 });
 
 export const setWaterLevel = mutation({
-  args: { meters: v.number() },
-  handler: async (ctx, { meters }) => {
+  args: { dispatcherToken: v.string(), meters: v.number() },
+  handler: async (ctx, { dispatcherToken, meters }) => {
+    requireDispatcher(dispatcherToken);
     const exercise = await getExercise(ctx);
     if (!exercise) return;
     const clamped = Math.min(40, Math.max(0, Math.round(meters * 10) / 10));
@@ -58,8 +62,9 @@ export const setWaterLevel = mutation({
 });
 
 export const logNote = mutation({
-  args: { message: v.string() },
-  handler: async (ctx, { message }) => {
+  args: { dispatcherToken: v.string(), message: v.string() },
+  handler: async (ctx, { dispatcherToken, message }) => {
+    requireDispatcher(dispatcherToken);
     await logActivity(ctx, message);
   },
 });

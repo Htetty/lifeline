@@ -1,7 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, type MutationCtx } from "./_generated/server";
-import { logActivity } from "./lib";
+import { logActivity, requireDispatcher } from "./lib";
 import { incidentStatus } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
@@ -19,8 +19,20 @@ async function load(ctx: MutationCtx, id: Id<"incidents">) {
   return incident;
 }
 
-async function bump(ctx: MutationCtx, incident: Doc<"incidents">, patch: Partial<Doc<"incidents">>) {
-  await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1 });
+/**
+ * Save a change. A dispatcher decision (assignment, status, moving the pin) also moves
+ * decisionRevision on, which makes every update queued for the caller before it stale.
+ * Returns the new decisionRevision.
+ */
+async function bump(
+  ctx: MutationCtx,
+  incident: Doc<"incidents">,
+  patch: Partial<Doc<"incidents">>,
+  decision = false,
+) {
+  const decisionRevision = (incident.decisionRevision ?? 0) + (decision ? 1 : 0);
+  await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1, decisionRevision });
+  return decisionRevision;
 }
 
 /** Queue a spoken update for the caller. Only for incidents that came from a call. */
@@ -29,6 +41,7 @@ async function emitEvent(
   incident: Doc<"incidents">,
   type: Doc<"events">["type"],
   teamName: string | null,
+  decisionRevision: number,
 ) {
   if (!incident.callId) return;
   await ctx.db.insert("events", {
@@ -39,19 +52,22 @@ async function emitEvent(
     teamName,
     createdAt: Date.now(),
     announcedAt: null,
+    decisionRevision,
   });
 }
 
 /** A dispatcher marks people stuck in a building directly on the map. */
 export const reportFromMap = mutation({
   args: {
+    dispatcherToken: v.string(),
     latitude: v.number(),
     longitude: v.number(),
     peopleCount: v.union(v.number(), v.null()),
     reportedPosition: v.union(v.string(), v.null()),
     reportedAddress: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, { dispatcherToken, ...args }) => {
+    requireDispatcher(dispatcherToken);
     const now = Date.now();
     const id = await ctx.db.insert("incidents", {
       exerciseId: EXERCISE_ID,
@@ -82,12 +98,15 @@ export const reportFromMap = mutation({
 /** Dispatcher confirms the candidate location, or places the incident on a building. */
 export const verifyLocation = mutation({
   args: {
+    dispatcherToken: v.string(),
     incidentId: v.id("incidents"),
     latitude: v.optional(v.number()),
     longitude: v.optional(v.number()),
   },
-  handler: async (ctx, { incidentId, latitude, longitude }) => {
+  handler: async (ctx, { dispatcherToken, incidentId, latitude, longitude }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
+    if (incident.locationVerified && latitude == null && longitude == null) return;
     const moving = latitude != null && (latitude !== incident.latitude || longitude !== incident.longitude);
     if (moving && incident.status !== "needs_review" && incident.status !== "awaiting_assignment") {
       throw new ConvexError("A team is already dispatched here. Unassign the team before moving the location.");
@@ -95,21 +114,27 @@ export const verifyLocation = mutation({
     const lat = latitude ?? incident.latitude;
     const lon = longitude ?? incident.longitude;
     if (lat == null || lon == null) throw new ConvexError("Place the incident on the map first");
-    await bump(ctx, incident, {
-      latitude: lat,
-      longitude: lon,
-      locationVerified: true,
-      locationNote: latitude != null ? "Placed by dispatcher" : incident.locationNote,
-      status: incident.status === "needs_review" ? "awaiting_assignment" : incident.status,
-    });
+    await bump(
+      ctx,
+      incident,
+      {
+        latitude: lat,
+        longitude: lon,
+        locationVerified: true,
+        locationNote: latitude != null ? "Placed by dispatcher" : incident.locationNote,
+        status: incident.status === "needs_review" ? "awaiting_assignment" : incident.status,
+      },
+      moving,
+    );
     await logActivity(ctx, `Location confirmed for ${incident.reportedAddress}.`, incident._id);
   },
 });
 
 /** Approve a team. Runs as one transaction, so a team can't be double-booked. */
 export const assignTeam = mutation({
-  args: { incidentId: v.id("incidents"), teamId: v.id("teams") },
-  handler: async (ctx, { incidentId, teamId }) => {
+  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), teamId: v.id("teams") },
+  handler: async (ctx, { dispatcherToken, incidentId, teamId }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     const team = await ctx.db.get(teamId);
     if (!team) throw new ConvexError("Team not found");
@@ -117,10 +142,10 @@ export const assignTeam = mutation({
     if (!team.available) throw new ConvexError(`${team.name} is no longer available`);
     if (incident.status !== "awaiting_assignment") throw new ConvexError("Incident is not awaiting a team");
 
-    await bump(ctx, incident, { status: "assigned", assignedTeamId: team._id });
+    const revision = await bump(ctx, incident, { status: "assigned", assignedTeamId: team._id }, true);
     await ctx.db.patch(team._id, { available: false, currentAssignment: incident._id, updatedAt: Date.now() });
     await logActivity(ctx, `${team.name} assigned to ${incident.reportedAddress}.`, incident._id);
-    await emitEvent(ctx, incident, "assignment_approved", team.name);
+    await emitEvent(ctx, incident, "assignment_approved", team.name, revision);
   },
 });
 
@@ -134,8 +159,9 @@ const TRANSITIONS: Record<Doc<"incidents">["status"], Doc<"incidents">["status"]
 };
 
 export const setStatus = mutation({
-  args: { incidentId: v.id("incidents"), status: incidentStatus },
-  handler: async (ctx, { incidentId, status }) => {
+  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), status: incidentStatus },
+  handler: async (ctx, { dispatcherToken, incidentId, status }) => {
+    requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     if (incident.status === status) return;
     if (!TRANSITIONS[incident.status].includes(status)) {
@@ -148,7 +174,7 @@ export const setStatus = mutation({
     if (team && (unassigning || status === "resolved") && team.currentAssignment === incident._id) {
       await ctx.db.patch(team._id, { available: true, currentAssignment: null, updatedAt: Date.now() });
     }
-    await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status });
+    const revision = await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status }, true);
 
     await logActivity(
       ctx,
@@ -157,7 +183,7 @@ export const setStatus = mutation({
         : `${incident.reportedAddress}: ${STATUS_LABEL[status]}.`,
       incident._id,
     );
-    if (status === "en_route") await emitEvent(ctx, incident, "team_en_route", team?.name ?? null);
-    if (status === "resolved") await emitEvent(ctx, incident, "rescue_resolved", team?.name ?? null);
+    if (status === "en_route") await emitEvent(ctx, incident, "team_en_route", team?.name ?? null, revision);
+    if (status === "resolved") await emitEvent(ctx, incident, "rescue_resolved", team?.name ?? null, revision);
   },
 });

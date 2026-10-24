@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
 import { buildFloodGrid, computeFlood, isFlooded, waterAtBuilding, type FloodGrid } from "@/lib/flood";
-import { dispatch, errorMessage, useExercise, type Action } from "@/lib/store";
+import { dispatch, errorMessage, useDispatcherToken, useExercise, type Action } from "@/lib/store";
 import type { ExerciseState, Incident, IncidentStatus, RescueTeam } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
@@ -40,7 +40,45 @@ function fmt(m: number | null, digits = 1) {
 }
 
 export default function Dashboard() {
-  const state = useExercise();
+  const { token, signIn } = useDispatcherToken();
+  if (!token) return <PasscodeGate signIn={signIn} />;
+  return <SignedInDashboard token={token} />;
+}
+
+function PasscodeGate({ signIn }: { signIn: (token: string) => Promise<void> }) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="flex h-screen items-center justify-center bg-slate-950 text-sm text-slate-200">
+      <form
+        className="w-72 space-y-3 rounded bg-slate-900 p-5 ring-1 ring-slate-700"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setError(null);
+          signIn(value.trim()).catch((err) => setError(errorMessage(err)));
+        }}
+      >
+        <h1 className="font-semibold">Dispatcher sign-in</h1>
+        <input
+          type="password"
+          autoComplete="current-password"
+          aria-label="Dispatcher passcode"
+          placeholder="Dispatcher passcode"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="w-full rounded bg-slate-800 px-2 py-1.5 ring-1 ring-slate-600"
+        />
+        {error && <p className="text-xs text-red-300">{error}</p>}
+        <button type="submit" disabled={!value.trim()} className="w-full rounded bg-sky-500 py-1.5 font-semibold text-slate-950 disabled:opacity-50">
+          Sign in
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function SignedInDashboard({ token }: { token: string }) {
+  const state = useExercise(token);
   if (!state) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950 text-sm text-slate-400">
@@ -483,7 +521,29 @@ function IncidentDetail({
         </dd>
         <dt className="text-slate-400">Summary</dt>
         <dd>{incident.summary || "—"}</dd>
+        {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && (
+          <>
+            <dt className="text-slate-400">Topic tags</dt>
+            <dd>
+              {incident.advisoryTags.tags.join(", ")}
+              <span className="text-slate-500"> (advisory, ModernBERT; not verified facts)</span>
+            </dd>
+          </>
+        )}
       </dl>
+
+      {incident.factHistory && incident.factHistory.length > 0 && (
+        <details className="rounded bg-slate-800/70 p-2 text-xs">
+          <summary className="cursor-pointer text-slate-400">Changed by caller ({incident.factHistory.length})</summary>
+          <ul className="mt-1.5 space-y-0.5 text-slate-300">
+            {incident.factHistory.map((c, n) => (
+              <li key={n}>
+                {c.field}: was “{c.previous}”{c.evidence && <span className="text-slate-500"> — “{c.evidence}”</span>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       {incident.transcript && (
         <details className="rounded bg-slate-800/70 p-2 text-xs" open={incident.callConnected}>

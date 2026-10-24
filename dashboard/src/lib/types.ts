@@ -33,6 +33,17 @@ export interface Incident {
   createdAt: number;
   updatedAt: number;
   version: number;
+  decisionRevision?: number;
+  /** Earlier values of facts the caller changed, with the words that supported them. */
+  factHistory?: { at: number; field: string; previous: string; evidence: string | null }[];
+  /** Optional ModernBERT topic tags. Advisory only; never incident facts. */
+  advisoryTags?: {
+    status: "ok" | "disabled" | "unavailable";
+    tags: string[];
+    modelVersion: string | null;
+    basedOnVersion: number;
+    at: number;
+  };
 }
 
 export type TeamCapability = "road_vehicle" | "high_water_vehicle" | "boat" | "air";

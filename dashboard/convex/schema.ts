@@ -25,6 +25,27 @@ export const hazard = v.object({
   evidence: v.union(v.string(), v.null()),
 });
 
+/** A fact the caller later changed, kept so a correction never loses evidence. */
+export const factChange = v.object({
+  at: v.number(),
+  field: v.string(),
+  previous: v.string(),
+  /** Caller's words that supported the previous value, when known. */
+  evidence: v.union(v.string(), v.null()),
+});
+
+/**
+ * Optional ModernBERT topic tags. Advisory only: never copied into incident facts
+ * or status. `basedOnVersion` is the incident version the tags were computed for.
+ */
+export const advisoryTags = v.object({
+  status: v.union(v.literal("ok"), v.literal("disabled"), v.literal("unavailable")),
+  tags: v.array(v.string()),
+  modelVersion: v.union(v.string(), v.null()),
+  basedOnVersion: v.number(),
+  at: v.number(),
+});
+
 export const capability = v.union(
   v.literal("road_vehicle"),
   v.literal("high_water_vehicle"),
@@ -62,6 +83,10 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
     version: v.number(),
+    /** Changes only when a dispatcher decision or its location basis changes. */
+    decisionRevision: v.optional(v.number()),
+    factHistory: v.optional(v.array(factChange)),
+    advisoryTags: v.optional(advisoryTags),
   })
     .index("by_exercise", ["exerciseId"])
     .index("by_callId", ["callId"]),
@@ -97,5 +122,15 @@ export default defineSchema({
     teamName: v.union(v.string(), v.null()),
     createdAt: v.number(),
     announcedAt: v.union(v.number(), v.null()),
+    /** The incident's decisionRevision this event describes; stale once it moves on. */
+    decisionRevision: v.optional(v.number()),
   }).index("by_call_announced", ["callId", "announcedAt"]),
+
+  voiceCalls: defineTable({
+    callId: v.string(), nextSequence: v.number(), ended: v.boolean(),
+  }).index("by_call", ["callId"]),
+  voiceTurns: defineTable({
+    callId: v.string(), turnId: v.string(), sequence: v.number(),
+    fingerprint: v.string(), result: v.any(),
+  }).index("by_call_turn", ["callId", "turnId"]),
 });
