@@ -41,6 +41,14 @@ SCENARIOS = {
         "I'm across the street from the Days Inn on Hotel Circle South, there are people waving on the roof.",
         "I can see three people, one looks like a kid. I'm safe, I'm up on the hill.",
     ],
+    "critical": [
+        "Please hurry, we're in the attic of our house on Camino del Rio North, the water is up to my chest.",
+        "My husband hit his head and he's bleeding a lot. We can't get any higher, there's no way onto the roof.",
+    ],
+    "dry": [
+        "Hi, we're on the second floor of the Courtyard hotel in Mission Valley, two of us, we're okay for now.",
+        "The water is in the lobby downstairs but our floor is dry.",
+    ],
     "correction": [
         "I'm stuck in my car, no wait, I got out, I'm on the roof of a shop.",
         "It's on Hotel Circle South, near the Days Inn.",

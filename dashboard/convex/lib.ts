@@ -91,6 +91,7 @@ export async function seedExercise(ctx: MutationCtx) {
       peopleCount: s.peopleCount,
       reportedPosition: s.reportedPosition,
       hazards: s.hazards.map((hazard) => ({ hazard, evidence: null })),
+      riskFactors: s.riskFactors ?? [],
       summary: s.summary,
       transcript: null,
       status: s.status,

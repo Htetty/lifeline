@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "node -e \"require('fs').copyFileSync('node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs','public/maplibre-gl-worker.mjs')\""
+    "postinstall": "node -e \"require('fs').copyFileSync('node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs','public/maplibre-gl-worker.mjs')\"",
+    "test:priority": "tsc --outDir .test-build --module commonjs --target es2022 --moduleResolution node --skipLibCheck src/lib/priority.ts && node scripts/test-priority.cjs .test-build"
   },
   "dependencies": {
     "convex": "^1.48.0",

@@ -53,11 +53,19 @@ their own `ANTHROPIC_API_KEY` in `backend/.env`. The deploy key is needed only b
 
 ## Several calls about one place
 
-Claude labels each caller `trapped` or `witness`. On the dashboard, reports at the same building (≤35 m) are compared:
-witnesses or matching floor/room → "possible duplicate"; different floor/room → "same building · N rescues". The
-dispatcher links duplicates ("Same incident" / "Link all"), and linked reports leave the queue and map, follow the main
-incident's team and status, and their callers hear its progress. Nothing links automatically (`src/lib/grouping.ts`,
-`convex/incidents.ts` `linkReports`).
+Claude labels each caller `trapped` or `witness`. Obvious duplicates at the same building (≤35 m) link themselves
+(`convex/linking.ts` `autoGroup`, run on every location/position change): same room number; same floor and headcount
+when no rooms were given; a witness at a building with one rescue (or only witnesses). Different floors/rooms stay
+separate rescues. Uncertain matches are suggested on the dashboard for the dispatcher. Linked reports leave the queue
+and map, follow the main incident's team/status, and their callers hear its progress. Every auto-link says why;
+Unlink keeps them apart permanently. Backfill existing data: `npx convex run incidents:autoGroupAll`.
+
+## Priority queue
+
+Claude extracts literal risk factors with the caller's words (injury, water at chest, child, in a vehicle…).
+`dashboard/src/lib/priority.ts` turns them, plus the water model ("water above their floor"), into
+critical / high / standard with reasons. The queue sorts by tier, then longest wait. Factors only accumulate. The
+dispatcher can override a tier with a reason. Rule cases: `cd dashboard && npm run test:priority`.
 
 ## Gotchas already solved (don't undo)
 

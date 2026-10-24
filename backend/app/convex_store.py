@@ -31,6 +31,7 @@ async def upsert_from_call(
     candidate: tuple[float, float, str] | None = None,
     location_changed: bool = False,
     caller_role: str | None = None,
+    risk_factors: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     location = (
         {"candidateLatitude": candidate[0], "candidateLongitude": candidate[1], "candidateLabel": candidate[2]}
@@ -43,6 +44,7 @@ async def upsert_from_call(
             **location,
             "locationChanged": location_changed,
             **({"callerRole": caller_role} if caller_role else {}),
+            **({"riskFactors": risk_factors} if risk_factors else {}),
             "callId": call_id,
             "source": source,
             "transcript": transcript,

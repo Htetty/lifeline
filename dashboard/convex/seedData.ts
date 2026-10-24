@@ -7,6 +7,7 @@ export const EXERCISE_NAME = "Mission Valley, San Diego";
 export const DEFAULT_WATER_SURFACE_ELEVATION = 14.2;
 
 type Capability = "road_vehicle" | "high_water_vehicle" | "boat" | "air";
+type RiskFactorKind = "limited_mobility" | "on_roof" | "water_rising_fast" | "elderly";
 
 export interface SeedTeam {
   key: string;
@@ -24,6 +25,7 @@ export interface SeedIncident {
   peopleCount: number | null;
   reportedPosition: string | null;
   hazards: string[];
+  riskFactors?: { factor: RiskFactorKind; evidence: string }[];
   summary: string;
   status: "needs_review" | "awaiting_assignment" | "assigned";
   /** Seed team key, when the incident starts already assigned. */
@@ -65,6 +67,7 @@ export const SEED_INCIDENTS: SeedIncident[] = [
     peopleCount: 2,
     reportedPosition: "Third floor",
     hazards: ["One person with limited mobility"],
+    riskFactors: [{ factor: "limited_mobility", evidence: "one cannot use stairs" }],
     summary: "Two people on the third floor, one cannot use stairs.",
     status: "awaiting_assignment",
     minutesAgo: 10,
@@ -77,6 +80,10 @@ export const SEED_INCIDENTS: SeedIncident[] = [
     peopleCount: 1,
     reportedPosition: "Roof",
     hazards: ["Fast-moving water", "Caller unsure of address"],
+    riskFactors: [
+      { factor: "on_roof", evidence: "on a roof" },
+      { factor: "water_rising_fast", evidence: "fast-moving water" },
+    ],
     summary: "One person on a roof; caller could not confirm the street.",
     status: "needs_review",
     minutesAgo: 7,
@@ -102,6 +109,7 @@ export const SEED_INCIDENTS: SeedIncident[] = [
     peopleCount: 1,
     reportedPosition: "Ground floor, standing on furniture",
     hazards: ["Elderly caller", "Water at waist height"],
+    riskFactors: [{ factor: "elderly", evidence: "elderly resident" }],
     summary: "Elderly resident trapped on the ground floor.",
     status: "awaiting_assignment",
     minutesAgo: 1,

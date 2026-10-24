@@ -25,6 +25,7 @@ convex = ConvexClient(env["CONVEX_URL"])
 SECRET = env["BACKEND_SECRET"]
 HANDLERY = (32.761251, -117.172499)
 DAYS_INN = (32.759883, -117.167228)
+COURTYARD = (32.759717, -117.168249)
 
 failures: list[str] = []
 created: list[str] = []
@@ -40,14 +41,19 @@ def new_call() -> str:
     return f"check-{uuid.uuid4().hex[:8]}"
 
 
-def upsert(call_id: str, address: str | None, changed: bool = False, candidate=None, role: str | None = None) -> dict:
+def upsert(call_id: str, address: str | None, changed: bool = False, candidate=None, role: str | None = None,
+           risks: list[str] | None = None, position: str | None = None, people: float = 2.0) -> dict:
+    # A unique room per test call, so automatic grouping doesn't link unrelated checks.
+    position = position or f"[check] unit {int(call_id[-6:], 16) % 9000 + 1000}"
     args = {
         "secret": SECRET, "callId": call_id, "source": "live_demo", "reportedAddress": address,
-        "peopleCount": 2.0, "reportedPosition": "[check] roof", "hazards": [], "summary": "[check]",
+        "peopleCount": people, "reportedPosition": position, "hazards": [], "summary": "[check]",
         "transcript": "Caller: [check]", "locationChanged": changed,
     }
     if role:
         args["callerRole"] = role
+    if risks is not None:
+        args["riskFactors"] = [{"factor": f, "evidence": "[check]"} for f in risks]
     if candidate:
         args |= {"candidateLatitude": candidate[0], "candidateLongitude": candidate[1], "candidateLabel": "Map search: test"}
     result = convex.mutation("calls:upsertFromCall", args)
@@ -173,6 +179,42 @@ def convex_rules() -> None:
           convex.query("calls:callState", {"secret": SECRET, "callId": w2})["status"]["stage"] == "en_route")
     convex.mutation("incidents:unlinkReport", {"reportId": b["incidentId"]})
     s2 = convex.query("calls:callState", {"secret": SECRET, "callId": w2})["status"]
+    # 10. Automatic grouping: obvious duplicates link themselves, separate rescues don't.
+    def linked_to(call_id: str):
+        return incident(call_id).get("linkedTo")
+
+    d1, d2, d3, d4, d5 = (new_call() for _ in range(5))
+    r_d1 = upsert(d1, "[check] Courtyard", candidate=COURTYARD, role="trapped", position="third floor, room 214")
+    upsert(d2, "[check] Courtyard", candidate=COURTYARD, role="trapped", position="room 214", people=3.0)
+    check("same room auto-links", linked_to(d2) == r_d1["incidentId"], str(linked_to(d2)))
+    check("auto-link says why", "room 214" in (incident(d2).get("linkNote") or ""), str(incident(d2).get("linkNote")))
+    upsert(d3, "[check] Courtyard", candidate=COURTYARD, role="trapped", position="room 318")
+    check("different room stays a separate rescue", linked_to(d3) is None)
+    upsert(d4, "[check] Courtyard", candidate=COURTYARD, role="witness", position="roof")
+    check("witness at a building with several rescues isn't auto-linked", linked_to(d4) is None)
+    convex.mutation("incidents:unlinkReport", {"reportId": incident(d2)["_id"]})
+    upsert(d2, "[check] Courtyard", candidate=COURTYARD, role="trapped", position="room 214", people=3.0)
+    check("unlinked report isn't re-linked automatically", linked_to(d2) is None)
+    e1, e2 = new_call(), new_call()
+    upsert(e1, "[check] Courtyard", candidate=COURTYARD, role="trapped", position="seventh floor", people=3.0)
+    upsert(e2, "[check] Courtyard", candidate=COURTYARD, role="trapped", position="seventh floor", people=5.0)
+    check("same floor but different headcount stays separate", linked_to(e2) is None)
+    upsert(d5, "[check] Courtyard", candidate=COURTYARD, role="trapped", position="seventh floor", people=3.0)
+    check("same floor and headcount (no rooms) auto-links", linked_to(d5) == incident(e1)["_id"], str(linked_to(d5)))
+
+    # 9. Risk factors only accumulate; lowering priority needs a dispatcher override with a reason.
+    c5 = new_call()
+    r5 = upsert(c5, "[check] house", risks=["child", "water_chest_or_higher"])
+    upsert(c5, "[check] house", risks=["child"])  # model left one out on a later line
+    factors = {r["factor"] for r in incident(c5)["riskFactors"]}
+    check("risk factors never disappear on later lines", factors == {"child", "water_chest_or_higher"}, str(factors))
+    err = rejected(lambda: convex.mutation("incidents:setPriorityOverride",
+                                           {"incidentId": r5["incidentId"], "tier": "standard", "reason": " "}))
+    check("priority override needs a reason", err is not None)
+    convex.mutation("incidents:setPriorityOverride",
+                    {"incidentId": r5["incidentId"], "tier": "standard", "reason": "[check] caller says water dropped"})
+    check("priority override is saved", (incident(c5).get("priorityOverride") or {}).get("tier") == "standard")
+
     check("unlinked report is its own incident without a team",
           not s2["linkedToAnotherReport"] and s2["assignedTeamName"] is None and s2["stage"] in ("needs_review", "awaiting_assignment"),
           str(s2))

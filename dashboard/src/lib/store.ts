@@ -6,7 +6,7 @@ import { ConvexError } from "convex/values";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { convex } from "./convex";
-import type { ExerciseState, Incident, IncidentStatus, RescueTeam } from "./types";
+import type { ExerciseState, Incident, IncidentStatus, PriorityTier, RescueTeam } from "./types";
 
 // Data adapter for the exercise, backed by Convex. Components read with
 // useExercise() and write with dispatch(); both stay the same shape as the
@@ -29,6 +29,7 @@ export type Action =
   | { type: "linkReports"; mainId: string; reportIds: string[] }
   | { type: "unlinkReport"; reportId: string }
   | { type: "markSeparate"; incidentId: string; otherId: string }
+  | { type: "setPriorityOverride"; incidentId: string; tier: PriorityTier | null; reason: string }
   | { type: "reset" };
 
 function toIncident(d: Doc<"incidents">): Incident {
@@ -116,6 +117,13 @@ export async function dispatch(action: Action): Promise<void> {
       await convex.mutation(api.incidents.markSeparate, {
         incidentId: asIncident(action.incidentId),
         otherId: asIncident(action.otherId),
+      });
+      return;
+    case "setPriorityOverride":
+      await convex.mutation(api.incidents.setPriorityOverride, {
+        incidentId: asIncident(action.incidentId),
+        tier: action.tier,
+        reason: action.reason,
       });
       return;
     case "reset":

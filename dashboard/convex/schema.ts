@@ -26,6 +26,30 @@ export const hazard = v.object({
   evidence: v.union(v.string(), v.null()),
 });
 
+/** Risk factors a caller reported. Rules in src/lib/priority.ts turn these into a priority tier. */
+export const riskFactorKind = v.union(
+  v.literal("serious_injury"),
+  v.literal("medical_need"),
+  v.literal("water_chest_or_higher"),
+  v.literal("water_rising_fast"),
+  v.literal("in_moving_water"),
+  v.literal("in_vehicle"),
+  v.literal("no_higher_ground"),
+  v.literal("on_roof"),
+  v.literal("child"),
+  v.literal("elderly"),
+  v.literal("limited_mobility"),
+  v.literal("pregnant"),
+);
+
+export const riskFactor = v.object({
+  factor: riskFactorKind,
+  /** Caller's words supporting it. */
+  evidence: v.union(v.string(), v.null()),
+});
+
+export const priorityTier = v.union(v.literal("critical"), v.literal("high"), v.literal("standard"));
+
 /** Whether the caller is among the people needing rescue or reporting others. */
 export const callerRole = v.union(v.literal("trapped"), v.literal("witness"), v.literal("unknown"));
 
@@ -62,11 +86,16 @@ export default defineSchema({
     status: incidentStatus,
     assignedTeamId: v.union(v.id("teams"), v.null()),
     callerRole: v.optional(callerRole),
+    riskFactors: v.optional(v.array(riskFactor)),
+    /** Dispatcher's override of the computed priority, with their reason. */
+    priorityOverride: v.optional(v.union(v.object({ tier: priorityTier, reason: v.string() }), v.null())),
     /**
      * Set when a dispatcher links this report to another one about the same people:
      * this report then follows the main incident's status and team.
      */
     linkedTo: v.optional(v.union(v.id("incidents"), v.null())),
+    /** Why it was linked, e.g. "Auto-linked: same room 312" or "Linked by dispatcher". */
+    linkNote: v.optional(v.union(v.string(), v.null())),
     /** Nearby incidents the dispatcher said are separate rescues (hides the suggestion). */
     separateFrom: v.optional(v.array(v.id("incidents"))),
     /** Whether the caller is still connected. Separate from rescue status. */

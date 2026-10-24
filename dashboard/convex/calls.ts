@@ -3,7 +3,8 @@ import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { logActivity, requireBackend } from "./lib";
-import { callerRole, hazard, incidentSource } from "./schema";
+import { autoGroup } from "./linking";
+import { callerRole, hazard, incidentSource, riskFactor } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
@@ -53,6 +54,7 @@ export const upsertFromCall = mutation({
      */
     locationChanged: v.optional(v.boolean()),
     callerRole: v.optional(callerRole),
+    riskFactors: v.optional(v.array(riskFactor)),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
@@ -77,6 +79,7 @@ export const upsertFromCall = mutation({
         status: "needs_review",
         assignedTeamId: null,
         callerRole: args.callerRole ?? "unknown",
+        riskFactors: args.riskFactors ?? [],
         callConnected: true,
         createdAt: now,
         updatedAt: now,
@@ -85,7 +88,8 @@ export const upsertFromCall = mutation({
       await logActivity(ctx, `Incoming call: ${args.reportedAddress ?? "location not given yet"}.`, id);
       const created = (await ctx.db.get(id))!;
       await queueCallerUpdate(ctx, created, "details_received");
-      return await confirmedStatus(ctx, created);
+      await autoGroup(ctx, id);
+      return await confirmedStatus(ctx, (await ctx.db.get(id))!);
     }
 
     const patch: Partial<Doc<"incidents">> = { transcript: args.transcript, callConnected: true };
@@ -93,6 +97,11 @@ export const upsertFromCall = mutation({
     if (args.reportedPosition != null) patch.reportedPosition = args.reportedPosition;
     if (args.summary) patch.summary = args.summary;
     if (args.callerRole && args.callerRole !== "unknown") patch.callerRole = args.callerRole;
+    // Risk factors only accumulate: a model omission must never quietly lower priority.
+    // The dispatcher's override is the way to lower it.
+    const known = new Map((existing.riskFactors ?? []).map((r) => [r.factor, r]));
+    for (const r of args.riskFactors ?? []) if (!known.has(r.factor)) known.set(r.factor, r);
+    if (known.size !== (existing.riskFactors ?? []).length) patch.riskFactors = [...known.values()];
 
     // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
     if (args.hazards.length) patch.hazards = args.hazards;
@@ -135,6 +144,7 @@ export const upsertFromCall = mutation({
     }
 
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });
+    await autoGroup(ctx, existing._id);
     return await confirmedStatus(ctx, (await ctx.db.get(existing._id))!);
   },
 });

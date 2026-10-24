@@ -43,6 +43,19 @@ and hasn't said which floor or room, that is the next thing to ask after the cou
 
 For each hazard, include the caller's words that support it as `evidence`.
 
+`risk_factors` set rescue priority, so be literal and quote the caller as
+`evidence`. Include a factor only when the caller clearly said it about the people
+needing rescue; never infer one ("water's coming in" is not water at chest height):
+- serious_injury: heavy bleeding, unconscious, not breathing, chest pain, broken bone
+- medical_need: needs medication or equipment, a medical condition, minor injury
+- water_chest_or_higher: water at their chest, shoulders, neck or above them
+- water_rising_fast: the caller says the water is rising quickly or fast-moving
+- in_moving_water: a person is in or being carried by moving water
+- in_vehicle: they are in a car or other vehicle
+- no_higher_ground: they can't climb any higher (attic with no way out, top floor flooding)
+- on_roof: they are on a roof
+- child / elderly / limited_mobility / pregnant: such a person is among them
+
 `location_queries` are up to three map-search strings for the caller's current
 location, most specific first, each ending with ", San Diego, CA". The exercise
 takes place in Mission Valley, San Diego. Prefer named places the caller mentioned
@@ -69,6 +82,24 @@ class HazardFact(BaseModel):
     evidence: str = Field(description="The caller's words supporting this hazard")
 
 
+class RiskFact(BaseModel):
+    factor: Literal[
+        "serious_injury",
+        "medical_need",
+        "water_chest_or_higher",
+        "water_rising_fast",
+        "in_moving_water",
+        "in_vehicle",
+        "no_higher_ground",
+        "on_roof",
+        "child",
+        "elderly",
+        "limited_mobility",
+        "pregnant",
+    ]
+    evidence: str = Field(description="The caller's words supporting this factor")
+
+
 class Extraction(BaseModel):
     caller_role: Literal["trapped", "witness", "unknown"] = Field(
         description="Is the caller among the people needing rescue, or reporting others?"
@@ -81,6 +112,7 @@ class Extraction(BaseModel):
     location_queries: list[str] = Field(description="Map-search strings for the current location, most specific first")
     location_changed: bool = Field(description="Caller's latest message changed or took back an earlier location")
     hazards: list[HazardFact]
+    risk_factors: list[RiskFact]
     summary: str = Field(description="One sentence summarising only the stated facts")
     missing: list[str] = Field(description="Important facts still unknown")
     next_question: str | None

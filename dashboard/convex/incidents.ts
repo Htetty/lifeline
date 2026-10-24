@@ -1,9 +1,10 @@
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, query, type MutationCtx } from "./_generated/server";
+import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
+import { autoGroup, bump, linkedReports, linkInto } from "./linking";
 import { queueCallerUpdate } from "./callerUpdates";
 import { logActivity } from "./lib";
-import { incidentStatus } from "./schema";
+import { incidentStatus, priorityTier } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
 const STATUS_LABEL: Record<Doc<"incidents">["status"], string> = {
@@ -18,18 +19,6 @@ async function load(ctx: MutationCtx, id: Id<"incidents">) {
   const incident = await ctx.db.get(id);
   if (!incident) throw new ConvexError("Incident not found");
   return incident;
-}
-
-async function bump(ctx: MutationCtx, incident: Doc<"incidents">, patch: Partial<Doc<"incidents">>) {
-  await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1 });
-}
-
-/** Reports a dispatcher linked to this incident as being about the same people. */
-async function linkedReports(ctx: MutationCtx, id: Id<"incidents">) {
-  return await ctx.db
-    .query("incidents")
-    .withIndex("by_linkedTo", (q) => q.eq("linkedTo", id))
-    .collect();
 }
 
 function rejectIfLinked(incident: Doc<"incidents">) {
@@ -85,6 +74,7 @@ export const reportFromMap = mutation({
     });
     const who = args.peopleCount ?? "Unknown number of";
     await logActivity(ctx, `New report: ${who} people at ${args.reportedAddress}.`, id);
+    await autoGroup(ctx, id);
     return id;
   },
 });
@@ -115,6 +105,7 @@ export const verifyLocation = mutation({
     });
     await logActivity(ctx, `Location confirmed for ${incident.reportedAddress}.`, incident._id);
     if (!incident.locationVerified) await queueCallerUpdate(ctx, incident, "location_confirmed");
+    await autoGroup(ctx, incident._id);
   },
 });
 
@@ -205,7 +196,6 @@ export const linkReports = mutation({
     let main = await load(ctx, mainId);
     if (main.linkedTo) main = await load(ctx, main.linkedTo); // always link to the top-level incident
     if (main.status === "resolved") throw new ConvexError("The main incident is already resolved");
-    const team = main.assignedTeamId ? await ctx.db.get(main.assignedTeamId) : null;
 
     for (const reportId of reportIds) {
       const report = await load(ctx, reportId);
@@ -214,13 +204,7 @@ export const linkReports = mutation({
       if (report.status === "assigned" || report.status === "en_route") {
         throw new ConvexError(`"${report.reportedAddress}" has its own team. Unassign it before linking.`);
       }
-      // Reports already linked to this one move to the main incident too.
-      for (const child of await linkedReports(ctx, report._id)) {
-        await bump(ctx, child, { linkedTo: main._id, status: main.status, assignedTeamId: main.assignedTeamId });
-      }
-      await bump(ctx, report, { linkedTo: main._id, status: main.status, assignedTeamId: main.assignedTeamId });
-      await queueCallerUpdate(ctx, report, "report_linked", { teamName: team?.name ?? null });
-      await logActivity(ctx, `Report "${report.reportedAddress}" linked to "${main.reportedAddress}".`, report._id);
+      await linkInto(ctx, main, report, "Linked by dispatcher");
     }
   },
 });
@@ -231,11 +215,16 @@ export const unlinkReport = mutation({
   handler: async (ctx, { reportId }) => {
     const report = await load(ctx, reportId);
     if (!report.linkedTo) return;
+    const main = await load(ctx, report.linkedTo);
+    // Remember they're separate, so automatic grouping doesn't link them again.
     await bump(ctx, report, {
       linkedTo: null,
+      linkNote: null,
       assignedTeamId: null,
       status: report.locationVerified ? "awaiting_assignment" : "needs_review",
+      separateFrom: [...new Set([...(report.separateFrom ?? []), main._id])],
     });
+    await bump(ctx, main, { separateFrom: [...new Set([...(main.separateFrom ?? []), report._id])] });
     await logActivity(ctx, `Report "${report.reportedAddress}" unlinked; now its own incident.`, report._id);
   },
 });
@@ -286,5 +275,39 @@ export const callerUpdates = query({
         createdAt: e.createdAt,
         state: (e.supersededAt ? "replaced" : e.announcedAt ? "spoken" : "waiting") as "replaced" | "spoken" | "waiting",
       }));
+  },
+});
+
+/** Dispatcher overrides the computed priority (or clears the override with tier null). */
+export const setPriorityOverride = mutation({
+  args: { incidentId: v.id("incidents"), tier: v.union(priorityTier, v.null()), reason: v.string() },
+  handler: async (ctx, { incidentId, tier, reason }) => {
+    const incident = await load(ctx, incidentId);
+    const why = reason.trim();
+    if (tier && !why) throw new ConvexError("Give a reason for changing the priority");
+    await bump(ctx, incident, { priorityOverride: tier ? { tier, reason: why } : null });
+    await logActivity(
+      ctx,
+      tier
+        ? `Priority for ${incident.reportedAddress} set to ${tier} by dispatcher: ${why}`
+        : `Priority override cleared for ${incident.reportedAddress}.`,
+      incident._id,
+    );
+  },
+});
+
+/** One-off: group obvious duplicates among existing incidents (`npx convex run incidents:autoGroupAll`). */
+export const autoGroupAll = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const open = (
+      await ctx.db
+        .query("incidents")
+        .withIndex("by_exercise", (q) => q.eq("exerciseId", EXERCISE_ID))
+        .collect()
+    ).sort((a, b) => a.createdAt - b.createdAt);
+    for (const incident of open) await autoGroup(ctx, incident._id);
+    const linked = (await ctx.db.query("incidents").collect()).filter((i) => i.linkedTo).length;
+    return { linked };
   },
 });

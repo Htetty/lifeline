@@ -64,7 +64,7 @@ function incidentPoints(state: ExerciseState, selectedId: string | null): GeoJSO
           kind: buildingStateFor(i),
           selected: i.id === selectedId,
           verified: i.locationVerified,
-          label: `${i.peopleCount ?? "?"} ${i.peopleCount === 1 ? "person" : "people"}${
+          label: `${i.priorityTier === "critical" && i.status !== "resolved" ? "CRITICAL · " : ""}${i.peopleCount ?? "?"} ${i.peopleCount === 1 ? "person" : "people"}${
             i.locationVerified ? "" : " · location unverified"
           }`,
         },

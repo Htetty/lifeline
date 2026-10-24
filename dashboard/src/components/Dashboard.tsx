@@ -9,9 +9,10 @@ import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
 import { buildFloodGrid, computeFlood, isFlooded, waterAtBuilding, type FloodGrid } from "@/lib/flood";
 import { dispatch, errorMessage, useExercise, type Action } from "@/lib/store";
-import type { ExerciseState, Incident, IncidentStatus, RescueTeam } from "@/lib/types";
+import type { ExerciseState, Incident, IncidentStatus, PriorityTier, RescueTeam } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types";
 import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
+import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
@@ -156,24 +157,50 @@ function DashboardView({ state }: { state: ExerciseState }) {
   );
 
   // Linked reports are about the same people as their main incident: list, map and count it once.
-  const mainIncidents = state.incidents.filter((i) => !i.linkedTo);
+  const mainIncidents = useMemo(() => state.incidents.filter((i) => !i.linkedTo), [state.incidents]);
   const linkedCount = (id: string) => state.incidents.filter((i) => i.linkedTo === id).length;
+  const priorities = useMemo(
+    () =>
+      new Map<string, Priority>(
+        mainIncidents.map((i) => [
+          i.id,
+          computePriority(
+            i,
+            state.incidents.filter((r) => r.linkedTo === i.id),
+            waterReport(i),
+          ),
+        ]),
+      ),
+    [mainIncidents, state.incidents, waterReport],
+  );
+  // Waiting incidents: most urgent tier first, then whoever has waited longest, then more people.
   const incidents = [...mainIncidents]
     .filter((i) => FILTERS[filter](i.status))
     .sort((a, b) => {
-      const rank = (i: Incident) =>
+      const group = (i: Incident) =>
         ACTIVE_STATUSES.includes(i.status) ? 0 : DISPATCHED_STATUSES.includes(i.status) ? 1 : 2;
-      return rank(a) - rank(b) || b.createdAt - a.createdAt;
+      const tier = (i: Incident) => TIER_RANK[priorities.get(i.id)?.tier ?? "standard"];
+      if (group(a) !== group(b)) return group(a) - group(b);
+      if (group(a) === 2) return b.updatedAt - a.updatedAt;
+      return tier(a) - tier(b) || a.createdAt - b.createdAt || (b.peopleCount ?? 0) - (a.peopleCount ?? 0);
     });
+  const mapState = useMemo(
+    () => ({
+      ...state,
+      incidents: mainIncidents.map((i) => ({ ...i, priorityTier: priorities.get(i.id)?.tier })),
+      waterSurfaceElevation: waterLevel,
+    }),
+    [state, mainIncidents, priorities, waterLevel],
+  );
+  const criticalWaiting = mainIncidents.filter(
+    (i) => ACTIVE_STATUSES.includes(i.status) && priorities.get(i.id)?.tier === "critical",
+  ).length;
   const selected = state.incidents.find((i) => i.id === selectedId) ?? null;
   const placing = state.incidents.find((i) => i.id === placingFor) ?? null;
   const stuckPeople = mainIncidents
     .filter((i) => ACTIVE_STATUSES.includes(i.status))
     .reduce((n, i) => n + (i.peopleCount ?? 0), 0);
-  const mapState = useMemo(
-    () => ({ ...state, incidents: state.incidents.filter((i) => !i.linkedTo), waterSurfaceElevation: waterLevel }),
-    [state, waterLevel],
-  );
+
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
@@ -184,6 +211,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
         </span>
         <span className="text-sm text-slate-400">{DEMO_AREA.name}</span>
         <div className="ml-auto flex items-center gap-4 text-sm">
+          {criticalWaiting > 0 && (
+            <span className="rounded bg-red-600 px-2 py-0.5 font-semibold">{criticalWaiting} critical waiting</span>
+          )}
           <span>
             <b className="text-red-400">{stuckPeople}</b> people awaiting rescue
           </span>
@@ -282,6 +312,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                     }`}
                   >
                     <div className="flex flex-wrap items-center gap-1.5">
+                      {i.status !== "resolved" && <TierPill priority={priorities.get(i.id)} />}
                       <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${st.cls}`}>
                         {st.icon} {STATUS_LABEL[i.status]}
                       </span>
@@ -304,6 +335,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
                       <GroupBadges incident={i} all={state.incidents} linked={linkedCount(i.id)} />
                     </div>
                     <p className="mt-1.5 text-sm font-medium">{i.reportedAddress}</p>
+                    {i.status !== "resolved" && !!priorities.get(i.id)?.reasons.length && (
+                      <p className="mt-0.5 text-xs text-red-300">{priorities.get(i.id)!.reasons.slice(0, 3).join(" · ")}</p>
+                    )}
                     <p className="mt-0.5 text-xs text-slate-400">
                       {i.peopleCount ?? "?"} {i.peopleCount === 1 ? "person" : "people"}
                       {i.reportedPosition ? ` · ${i.reportedPosition}` : ""}
@@ -386,6 +420,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                     waterSurface={waterLevel}
                     teams={state.teams}
                     allIncidents={state.incidents}
+                    priority={priorities.get(selected.linkedTo ?? selected.id) ?? null}
                     run={run}
                     onSelect={setSelectedId}
                     onPlace={() => {
@@ -432,6 +467,7 @@ function IncidentDetail({
   waterSurface,
   teams,
   allIncidents,
+  priority,
   run,
   onSelect,
   onPlace,
@@ -442,6 +478,7 @@ function IncidentDetail({
   waterSurface: number;
   teams: RescueTeam[];
   allIncidents: Incident[];
+  priority: Priority | null;
   run: Run;
   onSelect: (id: string) => void;
   onPlace: () => void;
@@ -479,6 +516,10 @@ function IncidentDetail({
         </button>
       </div>
 
+      {priority && incident.status !== "resolved" && !main && (
+        <PriorityPanel incident={incident} linked={allIncidents.filter((i) => i.linkedTo === incident.id)} priority={priority} run={run} />
+      )}
+
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
         <dt className="text-slate-400">People</dt>
         <dd>{incident.peopleCount ?? "Unknown"}</dd>
@@ -508,6 +549,7 @@ function IncidentDetail({
           <p className="text-sky-200">
             Linked to <b>{main.reportedAddress}</b>. This caller hears that incident&apos;s progress.
           </p>
+          {incident.linkNote && <p className="mt-0.5 text-sky-300/80">{incident.linkNote}</p>}
           <div className="mt-2 flex gap-2">
             <button onClick={() => onSelect(main.id)} className="rounded bg-sky-600 px-2.5 py-1 font-semibold">
               Open main report
@@ -626,6 +668,105 @@ function IncidentDetail({
   );
 }
 
+const TIER_STYLE: Record<PriorityTier, { label: string; cls: string }> = {
+  critical: { label: "CRITICAL", cls: "bg-red-600 text-white" },
+  high: { label: "HIGH", cls: "bg-orange-500 text-slate-950" },
+  standard: { label: "STANDARD", cls: "bg-slate-600 text-slate-100" },
+};
+
+function TierPill({ priority }: { priority?: Priority }) {
+  if (!priority) return null;
+  const t = TIER_STYLE[priority.tier];
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold tracking-wide ${t.cls}`}>
+      {t.label}
+      {priority.overrideReason != null && " ✎"}
+    </span>
+  );
+}
+
+/** Why the incident has its priority, with the caller's words, and a dispatcher override. */
+function PriorityPanel({
+  incident,
+  linked,
+  priority,
+  run,
+}: {
+  incident: Incident;
+  linked: Incident[];
+  priority: Priority;
+  run: Run;
+}) {
+  const [tier, setTier] = useState<PriorityTier>(priority.tier);
+  const [reason, setReason] = useState("");
+  const factors = [incident, ...linked].flatMap((i) =>
+    (i.riskFactors ?? []).map((r) => ({ ...r, fromLinked: i.id !== incident.id })),
+  );
+  const seen = new Set<string>();
+  const unique = factors.filter((f) => !seen.has(f.factor) && seen.add(f.factor));
+  const modelReasons = priority.reasons.filter((r) => r.startsWith("water model"));
+
+  return (
+    <div className="rounded bg-slate-800/70 p-2.5 text-xs">
+      <div className="flex items-center gap-2">
+        <TierPill priority={priority} />
+        <span className="text-slate-400">
+          {priority.overrideReason != null
+            ? `Set by dispatcher (rules say ${priority.computedTier}): ${priority.overrideReason}`
+            : "Priority from the rules below"}
+        </span>
+      </div>
+      {unique.length || modelReasons.length ? (
+        <ul className="mt-1.5 space-y-0.5">
+          {unique.map((f) => (
+            <li key={f.factor}>
+              <b>{FACTOR_LABEL[f.factor]}</b>
+              {f.evidence && <span className="text-slate-400"> — “{f.evidence}”</span>}
+              {f.fromLinked && <span className="text-slate-500"> (linked report)</span>}
+            </li>
+          ))}
+          {modelReasons.map((r) => (
+            <li key={r} className="text-sky-300">{r}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1.5 text-slate-500">No risk factors reported yet.</p>
+      )}
+      <form
+        className="mt-2 flex gap-1.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          run({ type: "setPriorityOverride", incidentId: incident.id, tier, reason });
+          setReason("");
+        }}
+      >
+        <select value={tier} onChange={(e) => setTier(e.target.value as PriorityTier)} className="rounded bg-slate-900 px-1.5">
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="standard">Standard</option>
+        </select>
+        <input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Reason for changing"
+          className="min-w-0 flex-1 rounded bg-slate-900 px-2 py-1"
+        />
+        <button type="submit" disabled={!reason.trim()} className="rounded bg-slate-600 px-2 disabled:opacity-40">
+          Set
+        </button>
+      </form>
+      {priority.overrideReason != null && (
+        <button
+          onClick={() => run({ type: "setPriorityOverride", incidentId: incident.id, tier: null, reason: "" })}
+          className="mt-1.5 text-slate-400 underline"
+        >
+          Use the rules again
+        </button>
+      )}
+    </div>
+  );
+}
+
 const ROLE_LABEL = { trapped: "Trapped caller", witness: "Witness", unknown: "Caller" } as const;
 
 function GroupBadges({ incident, all, linked }: { incident: Incident; all: Incident[]; linked: number }) {
@@ -729,13 +870,18 @@ function SameLocation({
       {linked.length > 0 && (
         <div>
           <p className="mb-1 text-sky-300">
-            {linked.length} linked report{linked.length > 1 ? "s" : ""} (same people, hear this incident&apos;s updates)
+            {linked.length} linked report{linked.length > 1 ? "s" : ""} (same people, hear this incident&apos;s updates).
+            Unlink keeps them apart from now on.
           </p>
           <ul className="space-y-1">
             {linked.map((r) => (
               <li key={r.id} className="flex items-center justify-between gap-2">
-                <span className="truncate text-slate-300">
-                  {ROLE_LABEL[r.callerRole ?? "unknown"]}: {r.reportedAddress}
+                <span className="min-w-0 text-slate-300">
+                  <span className="block truncate">
+                    {ROLE_LABEL[r.callerRole ?? "unknown"]}: {r.reportedAddress}
+                    {r.reportedPosition ? ` · ${r.reportedPosition}` : ""}
+                  </span>
+                  {r.linkNote && <span className="block truncate text-[10px] text-slate-500">{r.linkNote}</span>}
                 </span>
                 <button onClick={() => run({ type: "unlinkReport", reportId: r.id })} className="shrink-0 rounded bg-slate-700 px-2 py-0.5">
                   Unlink

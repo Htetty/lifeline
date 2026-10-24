@@ -34,12 +34,34 @@ export interface Incident {
   callerRole?: "trapped" | "witness" | "unknown";
   /** Main incident this report was linked to (same people), if any. */
   linkedTo?: string | null;
+  /** Why it was linked, e.g. "Auto-linked: same room 312". */
+  linkNote?: string | null;
   /** Nearby incidents a dispatcher marked as separate rescues. */
   separateFrom?: string[];
+  riskFactors?: { factor: RiskFactorKind; evidence: string | null }[];
+  priorityOverride?: { tier: PriorityTier; reason: string } | null;
+  /** Computed on the dashboard for display (not stored). */
+  priorityTier?: PriorityTier;
   createdAt: number;
   updatedAt: number;
   version: number;
 }
+
+export type PriorityTier = "critical" | "high" | "standard";
+
+export type RiskFactorKind =
+  | "serious_injury"
+  | "medical_need"
+  | "water_chest_or_higher"
+  | "water_rising_fast"
+  | "in_moving_water"
+  | "in_vehicle"
+  | "no_higher_ground"
+  | "on_roof"
+  | "child"
+  | "elderly"
+  | "limited_mobility"
+  | "pregnant";
 
 export type TeamCapability = "road_vehicle" | "high_water_vehicle" | "boat" | "air";
 

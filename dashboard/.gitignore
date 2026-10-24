@@ -43,3 +43,6 @@ public/maplibre-gl-worker.mjs
 
 # local Convex backend data
 .convex/
+
+# compiled test output
+.test-build/

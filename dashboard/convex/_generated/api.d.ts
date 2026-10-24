@@ -13,6 +13,7 @@ import type * as calls from "../calls.js";
 import type * as exercise from "../exercise.js";
 import type * as incidents from "../incidents.js";
 import type * as lib from "../lib.js";
+import type * as linking from "../linking.js";
 import type * as seedData from "../seedData.js";
 
 import type {
@@ -27,6 +28,7 @@ declare const fullApi: ApiFromModules<{
   exercise: typeof exercise;
   incidents: typeof incidents;
   lib: typeof lib;
+  linking: typeof linking;
   seedData: typeof seedData;
 }>;
 
