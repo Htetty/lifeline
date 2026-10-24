@@ -2,6 +2,7 @@ import { ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
+  DEFAULT_WATER_OBSERVED_AT,
   DEFAULT_WATER_SURFACE_ELEVATION,
   EXERCISE_ID,
   EXERCISE_NAME,
@@ -104,6 +105,7 @@ export async function seedExercise(ctx: MutationCtx) {
     exerciseId: EXERCISE_ID,
     name: EXERCISE_NAME,
     waterSurfaceElevation: DEFAULT_WATER_SURFACE_ELEVATION,
+    waterObservedAt: DEFAULT_WATER_OBSERVED_AT,
   });
 
   const teamIds = new Map<string, Id<"teams">>();

@@ -1,3 +1,5 @@
+import type { Trip } from "../../convex/tripMath";
+
 // Dashboard view of the shared data contract. The source of truth is
 // convex/schema.ts; ids are Convex document ids.
 
@@ -86,6 +88,7 @@ export interface RescueTeam {
   currentAssignment: string | null;
   updatedAt: number;
   simulated: boolean;
+  trip: Trip | null;
 }
 
 export interface ActivityEntry {
@@ -97,8 +100,10 @@ export interface ActivityEntry {
 
 export interface ExerciseState {
   exerciseId: string;
-  /** Simulated water surface elevation in metres above sea level (NAVD88-ish). */
+  /** Water surface at the river gauge in metres NAVD88. */
   waterSurfaceElevation: number;
+  /** Time of the replayed gauge reading behind the level; null when set by hand. */
+  waterObservedAt: number | null;
   incidents: Incident[];
   teams: RescueTeam[];
   activity: ActivityEntry[];

@@ -84,8 +84,10 @@ export default defineSchema({
   exercises: defineTable({
     exerciseId: v.string(),
     name: v.string(),
-    /** Simulated water surface elevation, metres above sea level. */
+    /** Water surface at the Fashion Valley river gauge, metres NAVD88. */
     waterSurfaceElevation: v.number(),
+    /** Time of the replayed gauge reading behind the level; null when set by hand. */
+    waterObservedAt: v.optional(v.union(v.number(), v.null())),
   }).index("by_exerciseId", ["exerciseId"]),
 
   incidents: defineTable({
@@ -140,6 +142,20 @@ export default defineSchema({
     available: v.boolean(),
     capabilities: v.array(capability),
     currentAssignment: v.union(v.id("incidents"), v.null()),
+    /** Simulated trip to an incident (see tripMath.ts); null when the team is stationary. */
+    trip: v.optional(
+      v.union(
+        v.object({
+          incidentId: v.id("incidents"),
+          path: v.array(v.array(v.number())),
+          departAt: v.number(),
+          arriveAt: v.number(),
+          route: v.union(v.literal("road"), v.literal("direct")),
+          realSeconds: v.number(),
+        }),
+        v.null(),
+      ),
+    ),
     simulated: v.literal(true),
     updatedAt: v.number(),
   }).index("by_exercise", ["exerciseId"]),

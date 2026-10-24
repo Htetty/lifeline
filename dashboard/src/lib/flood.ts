@@ -1,9 +1,10 @@
 import type { Bounds, ElevationGrid } from "./elevation";
 
-// Simulated "bathtub" flood: water at a single surface elevation fills every
-// cell that is lower than the surface AND connected to the river channel.
-// It ignores flow, levees, drainage and timing, so it is an exercise
-// assumption, not a hydraulic model.
+// Simplified flood: the water surface is set by the river gauge and runs parallel
+// to the river channel (same depth above the channel along the valley). Water fills
+// every cell lower than the surface AND connected to the channel. It ignores
+// flow, levees, drainage and backwater, so it is an approximation, not a
+// hydraulic model.
 
 const CELL_METERS = 15;
 const DEPTH_STEP = 0.2; // runs of cells are merged when depths round to the same step
@@ -17,9 +18,13 @@ export interface FloodGrid {
   ground: Float32Array; // NaN where unknown
   /** For each column, the row index of its lowest cell — used as river seeds. */
   seeds: number[];
+  /** River channel elevation per column, smoothed to rise steadily upstream (east). */
+  channel: Float32Array;
+  /** Column of the stream gauge the water level is measured at. */
+  gaugeCol: number;
 }
 
-export function buildFloodGrid(elevation: ElevationGrid, bounds: Bounds): FloodGrid {
+export function buildFloodGrid(elevation: ElevationGrid, bounds: Bounds, gaugeLon: number): FloodGrid {
   const midLat = (bounds.north + bounds.south) / 2;
   const dLat = CELL_METERS / 111_320;
   const dLon = CELL_METERS / (111_320 * Math.cos((midLat * Math.PI) / 180));
@@ -27,6 +32,7 @@ export function buildFloodGrid(elevation: ElevationGrid, bounds: Bounds): FloodG
   const rows = Math.floor((bounds.north - bounds.south) / dLat);
   const ground = new Float32Array(cols * rows);
   const seeds: number[] = [];
+  const lowestByCol: number[] = [];
 
   for (let c = 0; c < cols; c++) {
     let lowest = Infinity;
@@ -42,11 +48,50 @@ export function buildFloodGrid(elevation: ElevationGrid, bounds: Bounds): FloodG
       }
     }
     seeds.push(lowestRow);
+    lowestByCol.push(lowest);
   }
-  return { bounds, cols, rows, dLon, dLat, ground, seeds };
+  const gaugeCol = Math.min(cols - 1, Math.max(0, Math.floor((gaugeLon - bounds.west) / dLon)));
+  return { bounds, cols, rows, dLon, dLat, ground, seeds, channel: risingProfile(lowestByCol), gaugeCol };
+}
+
+/**
+ * Least-squares fit that never decreases (pool adjacent violators). The lowest cell
+ * of each column is noisy — bridges, pits, gaps — but the channel only climbs upstream.
+ */
+function risingProfile(values: number[]): Float32Array {
+  const blocks: { mean: number; count: number }[] = [];
+  for (const v of values) {
+    blocks.push({ mean: Number.isFinite(v) ? v : (blocks.at(-1)?.mean ?? 0), count: 1 });
+    while (blocks.length > 1 && blocks[blocks.length - 2].mean > blocks[blocks.length - 1].mean) {
+      const b = blocks.pop()!;
+      const a = blocks.pop()!;
+      blocks.push({ mean: (a.mean * a.count + b.mean * b.count) / (a.count + b.count), count: a.count + b.count });
+    }
+  }
+  const out = new Float32Array(values.length);
+  let i = 0;
+  for (const b of blocks) out.fill(b.mean, i, (i += b.count));
+  return out;
+}
+
+/** Water surface elevation in a column, given the water surface at the gauge. */
+function columnSurface(grid: FloodGrid, gaugeSurface: number, c: number) {
+  return grid.channel[c] + (gaugeSurface - grid.channel[grid.gaugeCol]);
+}
+
+/** Water surface elevation at a longitude, given the water surface at the gauge. */
+export function waterSurfaceAt(grid: FloodGrid, gaugeSurface: number, lon: number) {
+  const c = Math.min(grid.cols - 1, Math.max(0, Math.floor((lon - grid.bounds.west) / grid.dLon)));
+  return columnSurface(grid, gaugeSurface, c);
+}
+
+/** Depth of water above the river channel, the same everywhere along the valley. */
+export function channelDepth(grid: FloodGrid, gaugeSurface: number) {
+  return gaugeSurface - grid.channel[grid.gaugeCol];
 }
 
 export interface FloodResult {
+  /** Water surface at the gauge. */
   waterSurface: number;
   wet: Uint8Array;
   /** Water blocks with a `depth` property in metres. */
@@ -55,13 +100,14 @@ export interface FloodResult {
 
 export function computeFlood(grid: FloodGrid, waterSurface: number): FloodResult {
   const { cols, rows, ground, bounds, dLon, dLat } = grid;
+  const surface = Float32Array.from({ length: cols }, (_, c) => columnSurface(grid, waterSurface, c));
   const wet = new Uint8Array(cols * rows);
   const queue: number[] = [];
 
   grid.seeds.forEach((r, c) => {
     if (r < 0) return;
     const i = r * cols + c;
-    if (ground[i] < waterSurface) {
+    if (ground[i] < surface[c]) {
       wet[i] = 1;
       queue.push(i);
     }
@@ -78,7 +124,7 @@ export function computeFlood(grid: FloodGrid, waterSurface: number): FloodResult
       c < cols - 1 ? i + 1 : -1,
     ];
     for (const n of neighbours) {
-      if (n >= 0 && !wet[n] && ground[n] < waterSurface) {
+      if (n >= 0 && !wet[n] && ground[n] < surface[n % cols]) {
         wet[n] = 1;
         queue.push(n);
       }
@@ -94,12 +140,12 @@ export function computeFlood(grid: FloodGrid, waterSurface: number): FloodResult
         c++;
         continue;
       }
-      const step = Math.round((waterSurface - ground[i]) / DEPTH_STEP);
+      const step = Math.round((surface[c] - ground[i]) / DEPTH_STEP);
       let end = c + 1;
       while (
         end < cols &&
         wet[r * cols + end] &&
-        Math.round((waterSurface - ground[r * cols + end]) / DEPTH_STEP) === step
+        Math.round((surface[end] - ground[r * cols + end]) / DEPTH_STEP) === step
       ) {
         end++;
       }
@@ -140,6 +186,8 @@ export function isFlooded(grid: FloodGrid, flood: FloodResult, lon: number, lat:
 }
 
 export interface BuildingWaterReport {
+  /** Local water surface elevation, metres NAVD88. */
+  waterSurface: number;
   groundElevation: number | null;
   depth: number | null; // metres of water at the building; null when unknown
   buildingHeight: number | null;
@@ -162,6 +210,7 @@ export function waterAtBuilding(
   const floorsUnderwater =
     depth == null || totalFloors == null ? null : Math.min(totalFloors, Math.ceil(depth / FLOOR_HEIGHT_M - 0.01));
   return {
+    waterSurface,
     groundElevation,
     depth,
     buildingHeight,

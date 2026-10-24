@@ -13,7 +13,7 @@ import type { ExerciseState, Incident, IncidentStatus, PriorityTier, RescueTeam 
 // earlier local store.
 
 export type Action =
-  | { type: "setWaterLevel"; meters: number }
+  | { type: "setWaterLevel"; meters: number; observedAt?: number | null }
   | {
       type: "reportFromMap";
       latitude: number;
@@ -42,7 +42,7 @@ function toTeam(d: Doc<"teams">): RescueTeam {
   const { _id, _creationTime, exerciseId, ...rest } = d;
   void _creationTime;
   void exerciseId;
-  return { ...rest, id: _id };
+  return { ...rest, id: _id, trip: rest.trip ?? null };
 }
 
 // The dispatcher passcode is typed in at runtime and kept for this browser tab only,
@@ -114,6 +114,7 @@ export function useExercise(token: string): ExerciseState | undefined {
     return {
       exerciseId: data.exercise.exerciseId,
       waterSurfaceElevation: data.exercise.waterSurfaceElevation,
+      waterObservedAt: data.exercise.waterObservedAt ?? null,
       incidents: data.incidents.map(toIncident),
       teams: data.teams.map(toTeam),
       activity: data.activity.map((a) => ({ id: a._id, at: a.at, message: a.message, incidentId: a.incidentId })),
@@ -127,7 +128,11 @@ export async function dispatch(action: Action): Promise<void> {
   const dispatcherToken = currentToken();
   switch (action.type) {
     case "setWaterLevel":
-      await convex.mutation(api.exercise.setWaterLevel, { dispatcherToken, meters: action.meters });
+      await convex.mutation(api.exercise.setWaterLevel, {
+        dispatcherToken,
+        meters: action.meters,
+        observedAt: action.observedAt ?? null,
+      });
       return;
     case "reportFromMap": {
       const { type, ...args } = action;

@@ -7,7 +7,16 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
-import { buildFloodGrid, computeFlood, isFlooded, waterAtBuilding, type FloodGrid } from "@/lib/flood";
+import {
+  buildFloodGrid,
+  channelDepth,
+  computeFlood,
+  isFlooded,
+  waterAtBuilding,
+  waterSurfaceAt,
+  type FloodGrid,
+} from "@/lib/flood";
+import { formatGaugeTime, GAUGE, readingAt, readingIndex, REPLAY_LENGTH, surfaceToStage } from "@/lib/gauge";
 import {
   currentDispatcherToken,
   dispatch,
@@ -22,6 +31,7 @@ import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types"
 import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
 import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
+import { TRIP_SPEEDUP } from "../../convex/tripMath";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
 
@@ -43,10 +53,14 @@ const STATUS_STYLE: Record<IncidentStatus, { icon: string; cls: string }> = {
   resolved: { icon: "✓", cls: "bg-green-100 text-green-800 ring-green-300" },
 };
 
-const WATER_MIN = 8;
-const WATER_MAX = 22;
+// Water surface at the gauge, metres NAVD88: normal flow is ~6 m, the 2017 record ~9.3 m.
+const WATER_MIN = 5.5;
+const WATER_MAX = 12;
 const WATER_COMMIT_MS = 150;
-const LIVE_FEED_INTERVAL_MS = 9000;
+// Each tick replays 30 minutes of the storm (two 15-minute gauge readings).
+const REPLAY_TICK_MS = 3000;
+const READINGS_PER_TICK = 2;
+const TEAM_UPDATE_EVERY_TICKS = 3;
 
 function fmt(m: number | null, digits = 1) {
   return m == null ? "unknown" : `${m.toFixed(digits)} m`;
@@ -154,31 +168,25 @@ function DashboardView({ state }: { state: ExerciseState }) {
   }, []);
 
   const grid: FloodGrid | null = useMemo(
-    () => (elevation ? buildFloodGrid(elevation, DEMO_AREA.floodBounds) : null),
+    () => (elevation ? buildFloodGrid(elevation, DEMO_AREA.floodBounds, GAUGE.longitude) : null),
     [elevation],
   );
   const flood = useMemo(() => (grid ? computeFlood(grid, waterLevel) : null), [grid, waterLevel]);
-  const riverBed = useMemo(() => {
-    if (!grid) return null;
-    let min = Infinity;
-    grid.seeds.forEach((r, c) => {
-      const g = grid.ground[r * grid.cols + c];
-      if (g < min) min = g;
-    });
-    return Number.isFinite(min) ? min : null;
-  }, [grid]);
+  const depthOverChannel = grid ? Math.max(0, channelDepth(grid, waterLevel)) : null;
+  const observedAt = waterDraft == null ? state.waterObservedAt : null;
 
   const waterReport = useCallback(
     (incident: Incident) => {
       if (!elevation || !grid || !flood || incident.latitude == null || incident.longitude == null) return null;
       const ground = elevation.sample(incident.longitude, incident.latitude);
       const wet = isFlooded(grid, flood, incident.longitude, incident.latitude);
-      return waterAtBuilding(ground, waterLevel, wet, resolved[incident.id]?.height ?? null);
+      const surface = waterSurfaceAt(grid, waterLevel, incident.longitude);
+      return waterAtBuilding(ground, surface, wet, resolved[incident.id]?.height ?? null);
     },
     [elevation, grid, flood, resolved, waterLevel],
   );
 
-  // Simulated conditions: the water rises and assigned teams set off.
+  // Replays the recorded storm at the gauge and sets assigned teams off.
   // New calls come from the FastAPI backend (backend/scripts/simulate_call.py).
   const stateRef = useRef(state);
   useEffect(() => {
@@ -190,10 +198,16 @@ function DashboardView({ state }: { state: ExerciseState }) {
     const timer = setInterval(() => {
       const s = stateRef.current;
       tick++;
-      if (s.waterSurfaceElevation < 16) run({ type: "setWaterLevel", meters: s.waterSurfaceElevation + 0.2 });
+      const current = readingIndex(s.waterObservedAt);
+      if (current < REPLAY_LENGTH - 1) {
+        const next = readingAt(current < 0 ? 0 : current + READINGS_PER_TICK);
+        run({ type: "setWaterLevel", meters: next.surface, observedAt: next.time });
+      }
       const assigned = s.incidents.find((i) => i.status === "assigned");
-      if (tick % 3 === 0 && assigned) run({ type: "setStatus", incidentId: assigned.id, status: "en_route" });
-    }, LIVE_FEED_INTERVAL_MS);
+      if (tick % TEAM_UPDATE_EVERY_TICKS === 0 && assigned) {
+        run({ type: "setStatus", incidentId: assigned.id, status: "en_route" });
+      }
+    }, REPLAY_TICK_MS);
     return () => clearInterval(timer);
   }, [liveFeed, run]);
 
@@ -272,8 +286,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
           <span>
             <b className="text-red-400">{stuckPeople}</b> people awaiting rescue
           </span>
-          <span className="text-slate-400">
-            Water surface <b className="text-sky-300">{waterLevel.toFixed(1)} m</b>
+          <span className="text-slate-400" title={`USGS ${GAUGE.site} ${GAUGE.name}`}>
+            River gauge <b className="text-sky-300">{surfaceToStage(waterLevel).toFixed(1)} ft</b>
+            {observedAt != null ? ` · ${formatGaugeTime(observedAt)}` : " · set by hand"}
           </span>
         </div>
       </header>
@@ -283,22 +298,25 @@ function DashboardView({ state }: { state: ExerciseState }) {
         <aside className="flex w-80 shrink-0 flex-col border-r border-slate-800">
           <section className="space-y-3 border-b border-slate-800 p-4">
             <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">
-              Water surface elevation
+              River level at Fashion Valley gauge
             </label>
             <input
               type="range"
               min={WATER_MIN}
               max={WATER_MAX}
-              step={0.1}
+              step={0.05}
               value={waterLevel}
               onChange={(e) => setWaterDraft(Number(e.target.value))}
               className="w-full accent-sky-400"
             />
             <p className="text-xs text-slate-400">
-              {waterLevel.toFixed(1)} m above sea level
-              {riverBed != null && (
-                <> · up to {Math.max(0, waterLevel - riverBed).toFixed(1)} m deep at the river channel</>
-              )}
+              {surfaceToStage(waterLevel).toFixed(2)} ft gauge height ({waterLevel.toFixed(2)} m above sea level)
+              {depthOverChannel != null && <> · {depthOverChannel.toFixed(1)} m above the river channel</>}
+            </p>
+            <p className="text-[10px] leading-snug text-slate-500">
+              {observedAt != null
+                ? `Recorded by USGS gauge ${GAUGE.site} at ${formatGaugeTime(observedAt)} during the ${GAUGE.event}.`
+                : `Set by hand. Replay uses USGS gauge ${GAUGE.site} readings from the ${GAUGE.event}.`}
             </p>
             <div className="flex flex-wrap gap-2">
               <button
@@ -307,7 +325,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                   liveFeed ? "bg-emerald-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700"
                 }`}
               >
-                {liveFeed ? "● Rising water on" : "Simulate rising water"}
+                {liveFeed ? "● Replaying 2017 storm" : "Replay 2017 storm"}
               </button>
               <button
                 onClick={() => {
@@ -472,7 +490,6 @@ function DashboardView({ state }: { state: ExerciseState }) {
                     key={selected.id}
                     incident={selected}
                     water={waterReport(selected)}
-                    waterSurface={waterLevel}
                     teams={state.teams}
                     allIncidents={state.incidents}
                     priority={priorities.get(selected.linkedTo ?? selected.id) ?? null}
@@ -507,6 +524,7 @@ function Legend() {
       {row("#f59e0b", "Team assigned / en route")}
       {row("#4caf50", "Resolved")}
       {row("#2563eb", "Simulated rescue team")}
+      {row("#f59e0b", `Team moving (simulated, ${TRIP_SPEEDUP}× speed)`)}
       <div className="flex items-center gap-2">
         <span className="inline-block h-3 w-12 rounded-sm bg-gradient-to-r from-[#9fd8f5] via-[#1f7fc4] to-[#174a8f]" />
         Water depth 0 → 6 m+
@@ -519,7 +537,6 @@ function Legend() {
 function IncidentDetail({
   incident,
   water,
-  waterSurface,
   teams,
   allIncidents,
   priority,
@@ -530,7 +547,6 @@ function IncidentDetail({
 }: {
   incident: Incident;
   water: ReturnType<typeof waterAtBuilding> | null;
-  waterSurface: number;
   teams: RescueTeam[];
   allIncidents: Incident[];
   priority: Priority | null;
@@ -651,7 +667,7 @@ function IncidentDetail({
         </details>
       )}
 
-      {onMap && <WaterPanel water={water} waterSurface={waterSurface} />}
+      {onMap && <WaterPanel water={water} />}
 
       {main ? null : !onMap ? (
         <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
@@ -1034,9 +1050,10 @@ function CallerUpdates({ incident, run }: { incident: Incident; run: Run }) {
   );
 }
 
-function WaterPanel({ water, waterSurface }: { water: ReturnType<typeof waterAtBuilding> | null; waterSurface: number }) {
+function WaterPanel({ water }: { water: ReturnType<typeof waterAtBuilding> | null }) {
   if (!water) return <p className="text-xs text-slate-500">Water depth: loading…</p>;
-  const { depth, buildingHeight, floorsUnderwater, totalFloors, submerged, dryClearance, groundElevation } = water;
+  const { depth, buildingHeight, floorsUnderwater, totalFloors, submerged, dryClearance, groundElevation, waterSurface } =
+    water;
   const pct = depth != null && buildingHeight ? Math.min(100, (depth / buildingHeight) * 100) : 0;
 
   return (
@@ -1064,8 +1081,9 @@ function WaterPanel({ water, waterSurface }: { water: ReturnType<typeof waterAtB
         </dl>
       </div>
       <p className="mt-2 text-[10px] leading-snug text-slate-400">
-        Simulated depth = water surface − bare-earth ground elevation. Heights come from OpenStreetMap and may be
-        estimated; floors assume ~3 m each.
+        Estimated depth = local water surface − bare-earth ground elevation. The water surface comes from the river
+        gauge and slopes with the river channel. Heights come from OpenStreetMap and may be estimated; floors assume
+        ~3 m each.
       </p>
     </div>
   );

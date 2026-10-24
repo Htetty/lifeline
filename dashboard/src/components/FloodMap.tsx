@@ -8,12 +8,14 @@ import type { FloodResult } from "@/lib/flood";
 import { distanceToPolygon, expandPolygon, interiorPoint, pointInPolygon, polygons } from "@/lib/geo";
 import type { ExerciseState, Incident } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES } from "@/lib/types";
+import { TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const BUILDING_SOURCE = { source: "openmaptiles", sourceLayer: "building" } as const;
 const BUILDING_LAYER = "building-3d";
 const INCIDENT_BUILDING_LAYER = "incident-buildings";
 const SNAP_DISTANCE_M = 25;
+const TEAM_FRAME_MS = 200;
 
 // The bundler can't serve MapLibre's worker next to its chunk, so it is copied
 // to public/ by the postinstall script.
@@ -73,15 +75,44 @@ function incidentPoints(state: ExerciseState, selectedId: string | null): GeoJSO
   };
 }
 
-function teamPoints(state: ExerciseState): GeoJSON.FeatureCollection {
+function teamPoints(state: ExerciseState, now: number): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
-    features: state.teams.map((t) => ({
-      type: "Feature",
-      properties: { name: `${t.name}${t.available ? "" : " (busy)"}`, available: t.available },
-      geometry: { type: "Point", coordinates: [t.longitude, t.latitude] },
-    })),
+    features: state.teams.map((t) => {
+      const moving = t.trip != null && now < t.trip.arriveAt;
+      const position = t.trip ? tripProgress(t.trip, now).position : [t.longitude, t.latitude];
+      // ETA in real-world minutes; the simulation plays the trip TRIP_SPEEDUP times faster.
+      const eta = moving ? Math.max(1, Math.ceil(((t.trip!.arriveAt - now) * TRIP_SPEEDUP) / 60_000)) : 0;
+      return {
+        type: "Feature",
+        properties: {
+          name: moving ? `${t.name} · ETA ${eta} min` : `${t.name}${t.available ? "" : " (busy)"}`,
+          available: t.available,
+          moving,
+        },
+        geometry: { type: "Point", coordinates: position },
+      };
+    }),
   };
+}
+
+function teamRoutes(state: ExerciseState, now: number): GeoJSON.FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: state.teams
+      .filter((t) => t.trip && now < t.trip.arriveAt)
+      .map((t) => ({
+        type: "Feature",
+        properties: { route: t.trip!.route },
+        geometry: { type: "LineString", coordinates: tripProgress(t.trip!, now).remaining },
+      })),
+  };
+}
+
+function drawTeams(map: MLMap, state: ExerciseState) {
+  const now = Date.now();
+  (map.getSource("teams") as GeoJSONSource).setData(teamPoints(state, now));
+  (map.getSource("team-routes") as GeoJSONSource).setData(teamRoutes(state, now));
 }
 
 export default function FloodMap(props: Props) {
@@ -231,14 +262,27 @@ export default function FloodMap(props: Props) {
         },
       });
 
-      map.addSource("teams", { type: "geojson", data: teamPoints(propsRef.current.state) });
+      map.addSource("team-routes", { type: "geojson", data: teamRoutes(propsRef.current.state, Date.now()) });
+      map.addLayer({
+        id: "team-routes-line",
+        type: "line",
+        source: "team-routes",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#f59e0b",
+          "line-width": 4,
+          "line-opacity": 0.9,
+          "line-dasharray": ["case", ["==", ["get", "route"], "road"], ["literal", [1, 0]], ["literal", [2, 1.5]]],
+        },
+      });
+      map.addSource("teams", { type: "geojson", data: teamPoints(propsRef.current.state, Date.now()) });
       map.addLayer({
         id: "teams-dot",
         type: "circle",
         source: "teams",
         paint: {
-          "circle-radius": 7,
-          "circle-color": ["case", ["get", "available"], "#2563eb", "#64748b"],
+          "circle-radius": ["case", ["get", "moving"], 9, 7],
+          "circle-color": ["case", ["get", "moving"], "#f59e0b", ["get", "available"], "#2563eb", "#64748b"],
           "circle-stroke-color": "#fff",
           "circle-stroke-width": 2,
         },
@@ -363,9 +407,20 @@ export default function FloodMap(props: Props) {
     const map = mapRef.current;
     if (!map || !readyRef.current) return;
     (map.getSource("incidents") as GeoJSONSource).setData(incidentPoints(props.state, props.selectedId));
-    (map.getSource("teams") as GeoJSONSource).setData(teamPoints(props.state));
+    drawTeams(map, props.state);
     syncBuildings.current();
   }, [props.state, props.selectedId]);
+
+  // Moving teams are redrawn from the clock while any trip is under way.
+  const anyTrip = props.state.teams.some((t) => t.trip);
+  useEffect(() => {
+    if (!anyTrip) return;
+    const timer = setInterval(() => {
+      const map = mapRef.current;
+      if (map && readyRef.current) drawTeams(map, propsRef.current.state);
+    }, TEAM_FRAME_MS);
+    return () => clearInterval(timer);
+  }, [anyTrip]);
 
   // Centre on the selected incident.
   useEffect(() => {
