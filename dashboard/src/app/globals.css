@@ -75,11 +75,6 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .how-section article + article { border-left: 1px solid #aaccff18; }
 .how-section h2 { font-size: 21px; font-weight: 500; letter-spacing: -.025em; margin: 16px 0 12px; }
 .how-section p { color: #9cabc4; line-height: 1.75; font-size: 14px; }
-.pipeline-section { padding: 56px 48px 72px; }
-.pipeline-section > div { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
-.pipeline-section > div > div { display: flex; gap: 10px; align-items: center; color: #8190ab; }
-.pipeline-step { border: 1px solid #aaccff24; background: #111a2c; color: #e6edf7; padding: 12px 16px; border-radius: 10px; font-size: 13px; }
-.pipeline-step.highlighted { border-color: #79b4ff; background: #79b4ff14; }
 .landing-footer { display: flex; justify-content: space-between; gap: 20px; border-top: 1px solid #aaccff18; padding: 24px 48px; color: #8190ab; font-size: 12px; }
 .console-header { display: flex; align-items: center; gap: 20px; padding: 0 22px; min-height: 62px; flex-shrink: 0; border-bottom: 1px solid #aaccff18; }
 .console-region { font-size: 12px; color: #8190ab; border-left: 1px solid #aaccff24; padding-left: 20px; }
@@ -108,7 +103,7 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .dispatcher button { transition: background .15s, opacity .15s; }
 @media (min-width: 1600px) { .incident-detail { width: 400px; } }
 @media (max-width: 1150px) { .console-region { display: none; } .console-metrics { gap: 12px; } .incident-sidebar { width: 290px; } .incident-detail { width: 310px; } .hero { gap: 32px; padding-top: 60px; } }
-@media (max-width: 900px) { .console-header { flex-wrap: wrap; padding: 12px 16px; gap: 12px; } .console-metrics { width: 100%; justify-content: space-between; } .operations-bar { flex-wrap: wrap; } .incident-detail { position: absolute; inset: 0 0 0 auto; z-index: 5; width: min(360px, 100%); } .hero { grid-template-columns: 1fr; padding: 48px 24px; } .hero h1 { max-width: 650px; } .landing-nav { padding: 20px 24px; } .landing-nav > div > a:not(.button) { display: none; } .how-section { margin: 0 24px; grid-template-columns: 1fr; } .how-section article + article { border-left: 0; border-top: 1px solid #aaccff18; } .pipeline-section { padding: 40px 24px; } .landing-footer { padding: 24px; flex-wrap: wrap; } }
+@media (max-width: 900px) { .console-header { flex-wrap: wrap; padding: 12px 16px; gap: 12px; } .console-metrics { width: 100%; justify-content: space-between; } .operations-bar { flex-wrap: wrap; } .incident-detail { position: absolute; inset: 0 0 0 auto; z-index: 5; width: min(360px, 100%); } .hero { grid-template-columns: 1fr; padding: 48px 24px; } .hero h1 { max-width: 650px; } .landing-nav { padding: 20px 24px; } .landing-nav > div > a:not(.button) { display: none; } .how-section { margin: 0 24px; grid-template-columns: 1fr; } .how-section article + article { border-left: 0; border-top: 1px solid #aaccff18; } .landing-footer { padding: 24px; flex-wrap: wrap; } }
 @media (max-width: 600px) { .dispatcher { min-height: 650px; height: 100dvh; } .dispatcher > .flex.min-h-0 { flex-direction: column; } .incident-sidebar { width: 100%; height: 38%; min-height: 190px; } .queue-heading { padding: 10px 16px; } .simulation-controls { padding: 8px 16px; } .incident-sidebar > section:last-child { display: none; } .queue-filters { margin: 6px 12px; } .console-metrics { flex-wrap: wrap; justify-content: flex-start; gap: 8px 16px; } .operations-bar { padding: 8px 16px; } .map-workspace { min-height: 300px; } .hero-actions .button { width: 100%; } }
 
 /* Incident reading order: identity, key numbers, summary, facts, decision. */
@@ -185,3 +180,32 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 @media (min-width: 1500px) { .incident-content > .detail-heading, .detail-section, .assignment-section { padding-left: 30px; padding-right: 30px; } .detail-stats > div { padding-left: 30px; } }
 @media (max-width: 1150px) { .incident-detail { width: 370px; } .fact-table > div { grid-template-columns: 62px minmax(0, 1fr); gap: 8px 12px; } .fact-table > div > dd:last-child { grid-column: 2; text-align: left; } }
 @media (max-width: 900px) { .incident-detail { width: min(520px, 100%); } }
+
+/* The illustrative call stays readable while its audio indicator moves. */
+@keyframes intake-wave {
+  0%, 100% { transform: scaleY(.25); }
+  50% { transform: scaleY(1); }
+}
+@keyframes intake-status {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+.landing .waveform i {
+  transform-origin: center;
+  animation: intake-wave 1s ease-in-out infinite;
+  will-change: transform;
+}
+.landing .live-dot { animation: intake-status 1.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .landing .waveform i, .landing .live-dot { animation: none; will-change: auto; }
+  .landing .button { transition: none; }
+  .landing .button:hover { transform: none; }
+}
+
+.pipeline-section { padding: 56px 48px 72px; }
+.pipeline-section > div { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.pipeline-section > div > div { display: flex; gap: 10px; align-items: center; color: #8190ab; }
+.pipeline-step { border: 1px solid #aaccff24; background: #111a2c; color: #e6edf7; padding: 12px 16px; border-radius: 10px; font-size: 13px; }
+.pipeline-step.highlighted { border-color: #79b4ff; background: #79b4ff14; }
+@media (max-width: 900px) { .pipeline-section { padding: 40px 24px; } }
