@@ -20,7 +20,8 @@ async function load(ctx: MutationCtx, id: Id<"incidents">) {
 }
 
 async function bump(ctx: MutationCtx, incident: Doc<"incidents">, patch: Partial<Doc<"incidents">>) {
-  await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1 });
+  await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1,
+    decisionRevision: (incident.decisionRevision ?? 0) + 1 });
 }
 
 /** Queue a spoken update for the caller. Only for incidents that came from a call. */
@@ -39,6 +40,7 @@ async function emitEvent(
     teamName,
     createdAt: Date.now(),
     announcedAt: null,
+    decisionRevision: (incident.decisionRevision ?? 0) + 1,
   });
 }
 
@@ -88,6 +90,7 @@ export const verifyLocation = mutation({
   },
   handler: async (ctx, { incidentId, latitude, longitude }) => {
     const incident = await load(ctx, incidentId);
+    if (incident.locationVerified && latitude == null && longitude == null) return;
     const moving = latitude != null && (latitude !== incident.latitude || longitude !== incident.longitude);
     if (moving && incident.status !== "needs_review" && incident.status !== "awaiting_assignment") {
       throw new ConvexError("A team is already dispatched here. Unassign the team before moving the location.");

@@ -11,20 +11,26 @@ Cartesia (voice) ──POST utterance──► FastAPI ──Claude extraction�
 
 ## Run
 
-```bash
-# 1. Convex: the team shares the cloud deployment elegant-lark-857.
-#    Only needed after editing dashboard/convex/*.ts (requires CONVEX_DEPLOY_KEY in dashboard/.env.local):
-cd dashboard && npx convex deploy
+For the browser microphone → live dashboard → spoken dispatcher assignment flow,
+use [the voice bridge guide](../docs/integration/live-voice-dashboard.md). It starts
+an isolated local Convex deployment and does not change the working phone agent.
 
-# 2. Backend
+```bash
+# Backend against an ALREADY PREPARED ISOLATED Convex deployment:
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env      # fill in BACKEND_SECRET (ask the team) and ANTHROPIC_API_KEY
+cp .env.example .env      # only if .env does not already exist; fill it privately
 .venv/bin/uvicorn app.main:app --reload --port 8000
 
-# 3. Simulate a call (no microphone needed)
+# Text simulation, no microphone or real playback; writes to configured Convex:
 .venv/bin/python scripts/simulate_call.py --scenario upstairs --listen 120
 ```
+
+All `/calls/*` endpoints require `Authorization: Bearer <BACKEND_SECRET>`.
+Keep that credential server-side. The separate browser session boundary uses
+`VOICE_BRIDGE_TOKEN`; the browser never receives a provider key or backend secret.
+Do not run `scripts/check_call_rules.py` against the shared deployment: it changes
+and deletes test incidents. Prefer the isolated fixture tests in the bridge guide.
 
 Then in the dashboard: select the new incident, place it on its building, confirm the
 location, approve a team. The simulator prints the confirmed update the caller would hear.
@@ -45,5 +51,8 @@ location, approve a team. The simulator prints the confirmed update the caller w
 - If extraction fails, the transcript is still saved and the incident still appears.
 - A corrected address after review sends the incident back to `needs_review`.
 - Assignment requires a dispatcher-confirmed location; a team can't be double-booked.
-- The caller only hears updates the dispatcher confirmed, once each.
+- The bridge checks that a dispatcher update is current before starting audio,
+  retains interrupted updates, and acknowledges naturally completed browser playback.
+  See the bridge guide for disconnect/crash limits; this is not a global exactly-once
+  audible-delivery guarantee.
 - Backend-only Convex functions (`convex/calls.ts`) require `BACKEND_SECRET`.

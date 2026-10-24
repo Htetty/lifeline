@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Lifeline voice simulation</title>
+<style>body{font:17px system-ui;max-width:760px;margin:40px auto;padding:20px;background:#101820;color:#eee}input,button{font:inherit;padding:10px;margin:5px}button{cursor:pointer}pre{white-space:pre-wrap;border-top:1px solid #555;padding-top:15px}#status{color:#9ed}</style>
+<h1>Lifeline voice simulation</h1>
+<p>Fictional flood reports only. For a real emergency, contact local emergency services.</p>
+<p>Use headphones to prevent speaker audio being transcribed as caller speech. Open the dispatcher dashboard alongside this page.</p>
+<label>Bridge access token <input id="token" type="password" autocomplete="off"></label>
+<button id="start">Start microphone</button><button id="end" disabled>End session</button>
+<p id="status" role="status">Ready</p><pre id="log" aria-live="polite"></pre>
+<script>
+"use strict";
+let ws, context, stream, worklet, source, playback, ended = true, closing = false;
+const $ = id => document.getElementById(id);
+function log(text) { $("log").textContent += text + "\n"; }
+function send(data) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); }
+function stopPlayback(notify = true) {
+  const p = playback;
+  playback = null;
+  if (p) {
+    p.interrupted = true;
+    try { p.node?.stop(); } catch {}
+    if (notify) send({type:"playback_interrupted",playback_id:p.id});
+  }
+}
+function cleanup() {
+  ended = true;
+  stopPlayback();
+  stream?.getTracks().forEach(track => track.stop());
+  source?.disconnect(); worklet?.disconnect();
+  if (context?.state !== "closed") context?.close();
+  context = null; stream = null; source = null; worklet = null;
+  $("start").disabled = false; $("end").disabled = true;
+}
+$("end").onclick = () => {
+  if (closing) return;
+  closing = true;
+  send({type:"end"});
+  cleanup();
+  $("status").textContent = "Finishing transcript and saving; waiting for server disconnect…";
+  $("start").disabled = true;
+};
+$("start").onclick = async () => {
+  $("start").disabled = true;
+  $("log").textContent = "";
+  closing = false;
+  try {
+    // Resume inside the click gesture so later dispatcher audio can play.
+    context = new AudioContext(); await context.resume();
+    await context.audioWorklet.addModule("/voice/capture.js");
+    stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
+    const response = await fetch("/voice/sessions", {method:"POST",headers:{Authorization:"Bearer " + $("token").value}});
+    if (!response.ok) throw Error("Session authorization failed (" + response.status + ")");
+    const session = await response.json();
+    $("token").value = "";
+    log("Call: " + session.call_id);
+    ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/voice/socket", [session.ticket]);
+    await new Promise((resolve,reject) => { ws.onopen=resolve; ws.onerror=()=>reject(Error("WebSocket connection failed")); });
+    ended = false;
+    ws.onclose = () => { cleanup(); $("status").textContent="Session ended. The saved incident remains on the dashboard."; };
+    ws.onerror = () => { log("Connection failed; check the last saved incident on the dashboard."); cleanup(); };
+    ws.onmessage = async event => {
+      const data = JSON.parse(event.data);
+      if (data.type === "audio_offer") {
+        stopPlayback();
+        const p = {id:data.playback_id,text:data.text,interrupted:false};
+        playback = p;
+        try {
+          const bytes = Uint8Array.from(atob(data.audio), c => c.charCodeAt(0));
+          p.buffer = await context.decodeAudioData(bytes.buffer);
+          if (playback === p && !ended) send({type:"playback_ready",playback_id:p.id});
+        } catch {
+          send({type:"playback_failed",playback_id:p.id});
+          if (playback === p) playback = null;
+        }
+      } else if (data.type === "audio_go") {
+        const p = playback;
+        if (!p || p.id !== data.playback_id || ended) return;
+        if (context.state !== "running") { send({type:"playback_failed",playback_id:p.id}); stopPlayback(false); return; }
+        p.node = context.createBufferSource(); p.node.buffer = p.buffer; p.node.connect(context.destination);
+        p.node.onended = () => {
+          p.node.disconnect();
+          if (!p.interrupted && playback === p && !ended) {
+            send({type:"playback_complete",playback_id:p.id}); playback=null;
+            log("Assistant (played): " + p.text);
+          }
+        };
+        p.node.start();
+      } else if (data.type === "audio_stop") {
+        if (playback?.id === data.playback_id) stopPlayback(false);
+      } else if (data.type === "transcript") log("Caller (final): " + data.text);
+      else if (data.type === "saved") {
+        $("status").textContent = "Saved to dispatcher dashboard. Keep this session open for approved updates.";
+        if (data.extraction_error) log("Extraction delayed; transcript saved.");
+      } else if (data.text) {
+        log(data.text);
+        if (data.type === "fatal") { send({type:"end"}); cleanup(); }
+      }
+    };
+    send({type:"start",sample_rate:context.sampleRate});
+    worklet = new AudioWorkletNode(context,"capture");
+    worklet.port.onmessage = event => {
+      if (!ended && ws.readyState === WebSocket.OPEN) {
+        if (ws.bufferedAmount > 1024*1024) { log("Audio connection too slow; ending session."); $("end").click(); return; }
+        ws.send(event.data);
+      }
+    };
+    source = context.createMediaStreamSource(stream); source.connect(worklet); worklet.connect(context.destination);
+    $("end").disabled=false; $("status").textContent="Connected. Listen for the disclosure, then describe your fictional flood.";
+  } catch (error) {
+    log(error.message);
+    if (ws) ws.onclose = () => cleanup();
+    ws?.close(); cleanup();
+    $("status").textContent = "Session could not start. Fix the error below and try again.";
+  }
+};
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && playback) stopPlayback();
+});
+window.addEventListener("pagehide", () => { send({type:"end"}); cleanup(); ws?.close(); });
+</script></html>

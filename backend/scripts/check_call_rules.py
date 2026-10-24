@@ -124,7 +124,7 @@ def convex_rules() -> None:
 
 
 def live_calls(api: str) -> None:
-    with httpx.Client(base_url=api, timeout=120) as http:
+    with httpx.Client(base_url=api, timeout=120, headers={"Authorization": f"Bearer {SECRET}"}) as http:
         def say(call_id: str, speaker: str, text: str) -> dict:
             r = http.post(f"/calls/{call_id}/utterances", json={"speaker": speaker, "text": text})
             r.raise_for_status()

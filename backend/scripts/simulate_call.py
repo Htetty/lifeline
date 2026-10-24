@@ -13,6 +13,9 @@ suggested follow-up question, then (with --listen) polls for confirmed updates a
 import argparse
 import time
 import uuid
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
 import httpx
 
@@ -43,6 +46,7 @@ SCENARIOS = {
 
 
 def main() -> None:
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8000")
     parser.add_argument("--scenario", choices=SCENARIOS, default="upstairs")
@@ -64,7 +68,7 @@ def main() -> None:
         while line := input("Caller: ").strip():
             yield line
 
-    with httpx.Client(base_url=args.api, timeout=120) as http:
+    with httpx.Client(base_url=args.api, timeout=120, headers={"Authorization": f"Bearer {os.environ['BACKEND_SECRET']}"}) as http:
         for line in caller_lines():
             if not args.interactive:
                 print(f"Caller: {line}")

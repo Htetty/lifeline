@@ -24,6 +24,8 @@ async function confirmedStatus(ctx: QueryCtx, incident: Doc<"incidents">) {
     locationVerified: incident.locationVerified,
     assignedTeamName: team?.name ?? null,
     version: incident.version,
+    callConnected: incident.callConnected,
+    decisionRevision: incident.decisionRevision ?? 0,
   };
 }
 
@@ -51,9 +53,35 @@ export const upsertFromCall = mutation({
      * Rewording the same place is not a change.
      */
     locationChanged: v.optional(v.boolean()),
+    turnId: v.optional(v.string()),
+    sequence: v.optional(v.number()),
+    fingerprint: v.optional(v.string()),
+    response: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
+    const hasTurn = args.turnId !== undefined;
+    if (hasTurn !== (args.sequence !== undefined) || hasTurn !== (args.fingerprint !== undefined) ||
+        (hasTurn && args.response === undefined)) throw new Error("Incomplete voice turn identity");
+    const call = await ctx.db.query("voiceCalls").withIndex("by_call", q => q.eq("callId", args.callId)).unique();
+    if (args.turnId !== undefined) {
+      const receipt = await ctx.db.query("voiceTurns").withIndex("by_call_turn", q => q.eq("callId", args.callId).eq("turnId", args.turnId!)).unique();
+      if (receipt) {
+        if (receipt.fingerprint !== args.fingerprint || receipt.sequence !== args.sequence) throw new Error("Turn identity conflict");
+        return receipt.result;
+      }
+      if (!call || call.ended) throw new Error("Voice call is not active");
+      if (!Number.isInteger(args.sequence) || args.sequence !== call.nextSequence || !args.fingerprint) throw new Error("Out of order voice turn");
+    }
+    async function finish(incident: Doc<"incidents">) {
+      const status = await confirmedStatus(ctx, incident);
+      if (args.turnId === undefined) return status;
+      const result = { ...args.response, incident: status };
+      await ctx.db.insert("voiceTurns", {callId: args.callId, turnId: args.turnId,
+        sequence: args.sequence!, fingerprint: args.fingerprint!, result});
+      await ctx.db.patch(call!._id, {nextSequence: args.sequence! + 1});
+      return result;
+    }
     const now = Date.now();
     const existing = await byCall(ctx, args.callId);
 
@@ -80,7 +108,7 @@ export const upsertFromCall = mutation({
         version: 1,
       });
       await logActivity(ctx, `Incoming call: ${args.reportedAddress ?? "location not given yet"}.`, id);
-      return await confirmedStatus(ctx, (await ctx.db.get(id))!);
+      return await finish((await ctx.db.get(id))!);
     }
 
     const patch: Partial<Doc<"incidents">> = { transcript: args.transcript, callConnected: true };
@@ -103,6 +131,7 @@ export const upsertFromCall = mutation({
       norm(args.reportedAddress) !== norm(existing.reportedAddress);
 
     if (corrected) {
+      patch.decisionRevision = (existing.decisionRevision ?? 0) + 1;
       if (dispatched) {
         // Don't silently move a team's destination; flag it for the dispatcher.
         await logActivity(
@@ -126,7 +155,7 @@ export const upsertFromCall = mutation({
     }
 
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });
-    return await confirmedStatus(ctx, (await ctx.db.get(existing._id))!);
+    return await finish((await ctx.db.get(existing._id))!);
   },
 });
 
@@ -135,6 +164,8 @@ export const callEnded = mutation({
   args: { secret: v.string(), callId: v.string() },
   handler: async (ctx, { secret, callId }) => {
     requireBackend(secret);
+    const call = await ctx.db.query("voiceCalls").withIndex("by_call", q => q.eq("callId", callId)).unique();
+    if (call) await ctx.db.patch(call._id, {ended: true});
     const incident = await byCall(ctx, callId);
     if (!incident || !incident.callConnected) return;
     await ctx.db.patch(incident._id, { callConnected: false, updatedAt: Date.now() });
@@ -166,10 +197,13 @@ export const pendingEvents = query({
   args: { secret: v.string(), callId: v.string() },
   handler: async (ctx, { secret, callId }) => {
     requireBackend(secret);
-    return await ctx.db
+    const incident = await byCall(ctx, callId);
+    if (!incident || !incident.callConnected) return [];
+    const events = await ctx.db
       .query("events")
       .withIndex("by_call_announced", (q) => q.eq("callId", callId).eq("announcedAt", null))
       .collect();
+    return events.filter(event => currentEvent(incident, event)).sort((a,b) => a.createdAt - b.createdAt);
   },
 });
 
@@ -178,9 +212,45 @@ export const markAnnounced = mutation({
   handler: async (ctx, { secret, callId, eventId }) => {
     requireBackend(secret);
     const event = await ctx.db.get(eventId);
+    if (event?.callId === callId && event.announcedAt != null) return {acknowledged: true};
+    const incident = await byCall(ctx, callId);
+    if (!event || event.callId !== callId || !incident || !incident.callConnected || !currentEvent(incident, event)) return {acknowledged: false};
     if (event && event.callId === callId && event.announcedAt == null) {
       await ctx.db.patch(eventId, { announcedAt: Date.now() });
     }
+    return {acknowledged: true};
+  },
+});
+
+function currentEvent(incident: Doc<"incidents">, event: Doc<"events">) {
+  if (event.decisionRevision == null || event.decisionRevision !== (incident.decisionRevision ?? 0)) return false;
+  if (event.type === "assignment_approved") return incident.locationVerified && incident.status === "assigned" && incident.assignedTeamId != null;
+  if (event.type === "team_en_route") return incident.locationVerified && incident.status === "en_route";
+  return event.type === "rescue_resolved" && incident.status === "resolved";
+}
+
+export const startVoiceCall = mutation({
+  args: {secret: v.string(), callId: v.string()},
+  handler: async (ctx, {secret, callId}) => {
+    requireBackend(secret);
+    const call = await ctx.db.query("voiceCalls").withIndex("by_call", q => q.eq("callId", callId)).unique();
+    if (call) {
+      if (call.ended) throw new Error("Voice call has ended");
+      return {nextSequence: call.nextSequence};
+    }
+    await ctx.db.insert("voiceCalls", {callId, nextSequence: 1, ended: false});
+    return {nextSequence: 1};
+  },
+});
+
+export const turnReceipt = query({
+  args: {secret: v.string(), callId: v.string(), turnId: v.string(), sequence: v.number(), fingerprint: v.string()},
+  handler: async (ctx, args) => {
+    requireBackend(args.secret);
+    const receipt = await ctx.db.query("voiceTurns").withIndex("by_call_turn", q => q.eq("callId", args.callId).eq("turnId", args.turnId)).unique();
+    if (!receipt) return null;
+    if (receipt.fingerprint !== args.fingerprint || receipt.sequence !== args.sequence) throw new Error("Turn identity conflict");
+    return receipt.result;
   },
 });
 

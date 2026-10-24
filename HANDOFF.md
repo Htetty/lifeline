@@ -2,6 +2,15 @@
 
 Updated: 2026-10-23. Read `PROJECT_PLAN.md` for the product plan; this file is the current state.
 
+**2026-10-24 voice bridge increment:** See
+[`docs/integration/live-voice-dashboard.md`](docs/integration/live-voice-dashboard.md)
+for the browser microphone path, isolated startup, authentication changes, and
+recorded validation. The existing Managed Agent / Twilio setup is unchanged.
+New Convex tables `voiceCalls` and `voiceTurns` provide atomic ordering and retry
+receipts. All FastAPI `/calls/*` routes now require the backend bearer secret.
+Use fixture tests or the isolated local exercise; the shared reset/regression
+commands below are historical and must not be run as part of bridge verification.
+
 ## What works now
 
 ```

@@ -62,6 +62,8 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
     version: v.number(),
+    /** Changes only when a dispatcher decision or its location basis changes. */
+    decisionRevision: v.optional(v.number()),
   })
     .index("by_exercise", ["exerciseId"])
     .index("by_callId", ["callId"]),
@@ -97,5 +99,14 @@ export default defineSchema({
     teamName: v.union(v.string(), v.null()),
     createdAt: v.number(),
     announcedAt: v.union(v.number(), v.null()),
+    decisionRevision: v.optional(v.number()),
   }).index("by_call_announced", ["callId", "announcedAt"]),
+
+  voiceCalls: defineTable({
+    callId: v.string(), nextSequence: v.number(), ended: v.boolean(),
+  }).index("by_call", ["callId"]),
+  voiceTurns: defineTable({
+    callId: v.string(), turnId: v.string(), sequence: v.number(),
+    fingerprint: v.string(), result: v.any(),
+  }).index("by_call_turn", ["callId", "turnId"]),
 });
