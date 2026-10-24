@@ -4,10 +4,13 @@ import { mutation, query, type QueryCtx } from "./_generated/server";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { isCurrentEvent, logActivity, requireBackend } from "./lib";
 import { autoGroup } from "./linking";
-import { advisoryTags, callerRole, hazard, incidentSource, riskFactor } from "./schema";
+import { advisoryTags, callerRole, hazard, incidentSource, riskFactor, withdrawal } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
+
+/** Same hazard or factor name, ignoring case and spacing. */
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 const NO_ADDRESS_YET = "Location not given yet";
 
@@ -61,6 +64,8 @@ export const upsertFromCall = mutation({
     sequence: v.optional(v.number()),
     fingerprint: v.optional(v.string()),
     response: v.optional(v.any()),
+    /** Explicit caller retractions. Null or missing values are never treated as one. */
+    withdrawn: v.optional(v.array(withdrawal)),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
@@ -122,21 +127,69 @@ export const upsertFromCall = mutation({
     // callConnected is left alone: a late utterance after hang-up is saved, but must not
     // reopen the call and restart announcements to a caller who is gone.
     const patch: Partial<Doc<"incidents">> = { transcript: args.transcript };
+    const history: Doc<"incidents">["factHistory"] = [];
+    const withdrawn = args.withdrawn ?? [];
+    const withdrawnNames = (fact: "hazard" | "risk_factor") =>
+      withdrawn.filter((w) => w.fact === fact && w.name);
+
     if (args.peopleCount != null) patch.peopleCount = args.peopleCount;
+    // "I don't know how many" makes the count unknown; a new number is a correction instead.
+    const countWithdrawal = withdrawn.find((w) => w.fact === "people_count");
+    if (countWithdrawal && args.peopleCount == null && existing.peopleCount != null) {
+      patch.peopleCount = null;
+      history.push({ at: now, field: "peopleCount", previous: String(existing.peopleCount), evidence: null,
+        withdrawnBy: countWithdrawal.evidence });
+      await logActivity(ctx, `Caller withdrew the people count (was ${existing.peopleCount}); now unknown.`, existing._id);
+    }
     if (args.reportedPosition != null) patch.reportedPosition = args.reportedPosition;
     if (args.summary) patch.summary = args.summary;
     if (args.callerRole && args.callerRole !== "unknown") patch.callerRole = args.callerRole;
+    // A fact the caller withdrew comes back only with new words, not a re-read of the old ones.
+    const stale = (field: string, name: string, evidence: string | null) =>
+      (existing.factHistory ?? []).some(
+        (h) => h.withdrawnBy != null && h.field === field && same(h.previous, name) && h.evidence === evidence,
+      );
+
     // Risk factors only accumulate: a model omission must never quietly lower priority.
-    // The dispatcher's override is the way to lower it.
+    // Only an explicit caller withdrawal removes one (the dispatcher's override is the other way).
     const known = new Map((existing.riskFactors ?? []).map((r) => [r.factor, r]));
-    for (const r of args.riskFactors ?? []) if (!known.has(r.factor)) known.set(r.factor, r);
-    if (known.size !== (existing.riskFactors ?? []).length) patch.riskFactors = [...known.values()];
+    for (const r of args.riskFactors ?? []) {
+      if (!known.has(r.factor) && !stale("riskFactor", r.factor, r.evidence)) known.set(r.factor, r);
+    }
+    for (const w of withdrawnNames("risk_factor")) {
+      const r = [...known.values()].find((x) => same(x.factor, w.name!));
+      if (!r) continue;
+      known.delete(r.factor);
+      if ((existing.riskFactors ?? []).some((e) => e.factor === r.factor)) {
+        history.push({ at: now, field: "riskFactor", previous: r.factor, evidence: r.evidence, withdrawnBy: w.evidence });
+        await logActivity(ctx, `Caller withdrew "${r.factor.replaceAll("_", " ")}"; check the priority.`, existing._id);
+      }
+    }
+    const currentRisks = [...known.values()];
+    if (JSON.stringify(currentRisks) !== JSON.stringify(existing.riskFactors ?? [])) patch.riskFactors = currentRisks;
 
     // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
-    if (args.hazards.length) patch.hazards = args.hazards;
+    // An empty list means "nothing new", unless the caller explicitly withdrew a hazard.
+    const hazardWithdrawals = withdrawnNames("hazard");
+    let hazards = (args.hazards.length ? args.hazards : existing.hazards).filter(
+      (h) => !stale("hazard", h.hazard, h.evidence),
+    );
+    const withdrawnHazards: Doc<"incidents">["hazards"] = [];
+    for (const w of hazardWithdrawals) {
+      const match = (h: { hazard: string }) => same(h.hazard, w.name!);
+      // Record the stored hazard, with the words that originally supported it.
+      for (const h of existing.hazards.filter(match)) {
+        withdrawnHazards.push(h);
+        history.push({ at: now, field: "hazard", previous: h.hazard, evidence: h.evidence, withdrawnBy: w.evidence });
+        await logActivity(ctx, `Caller withdrew hazard "${h.hazard}".`, existing._id);
+      }
+      hazards = hazards.filter((h) => !match(h));
+    }
+    if (args.hazards.length || hazardWithdrawals.length || hazards.length !== existing.hazards.length) {
+      patch.hazards = hazards;
+    }
 
     // Keep every known fact the caller changed, with its evidence, so a correction loses nothing.
-    const history: Doc<"incidents">["factHistory"] = [];
     const changed = (field: string, previous: unknown, next: unknown) => {
       if (previous == null || next == null || previous === next) return;
       history.push({ at: now, field, previous: String(previous), evidence: null });
@@ -145,7 +198,7 @@ export const upsertFromCall = mutation({
     changed("reportedPosition", existing.reportedPosition, patch.reportedPosition);
     if (existing.reportedAddress !== NO_ADDRESS_YET) changed("reportedAddress", existing.reportedAddress, args.reportedAddress);
     if (patch.hazards) {
-      const kept = new Set(patch.hazards.map((h) => h.hazard.trim().toLowerCase()));
+      const kept = new Set([...patch.hazards, ...withdrawnHazards].map((h) => h.hazard.trim().toLowerCase()));
       for (const h of existing.hazards) {
         if (!kept.has(h.hazard.trim().toLowerCase())) {
           history.push({ at: now, field: "hazard", previous: h.hazard, evidence: h.evidence });
@@ -268,6 +321,15 @@ export const callState = query({
         .sort((a, b) => a.createdAt - b.createdAt)
         .map((e) => ({ eventId: e._id, type: e.type, text: e.text ?? e.type, createdAt: e.createdAt })),
     };
+  },
+});
+
+/** Names of the call's current hazards, so the extractor can name one the caller withdraws. */
+export const recordedHazards = query({
+  args: { secret: v.string(), callId: v.string() },
+  handler: async (ctx, { secret, callId }) => {
+    requireBackend(secret);
+    return (await byCall(ctx, callId))?.hazards.map((h) => h.hazard) ?? [];
   },
 });
 
