@@ -149,3 +149,39 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .maplibregl-ctrl-scale { background: #0b1220cc; color: #b8c6dd; border-color: #8190ab; }
 @media (max-width: 1150px) { .incident-detail { width: 340px; } .detail-heading h2 { font-size: 20px; } }
 @media (max-width: 900px) { .incident-detail { width: min(390px, 100%); } }
+
+/* Reference-aligned incident panel, with room for readable evidence and conversation. */
+.incident-detail { width: clamp(390px, 35vw, 650px); }
+.detail-heading h2 { font-size: clamp(23px, 1.8vw, 30px); line-height: 1.3; margin: 20px 0 16px; }
+.detail-heading > p { font-size: 15px; line-height: 1.6; }
+.detail-priority { display: inline-block; padding: 5px 10px; border-radius: 8px; font-size: 13px; font-weight: 600; text-transform: capitalize; }
+.detail-priority-critical { background: #ef444421; color: #ff575e; }
+.detail-priority-high { background: #f59e0b21; color: #f9af45; }
+.detail-priority-standard { background: #b1a1f321; color: #b1a1f3; }
+.detail-id { font-size: 12px; margin-left: 4px; }
+.detail-status-needs_review, .detail-status-awaiting_assignment { background: #e6edf7; color: #0b1220; }
+.detail-status-assigned, .detail-status-en_route, .detail-status-resolved { background: #53bf7610; color: #66c985; border: 1px solid #53bf764d; }
+.detail-stats > div { padding-top: 20px; padding-bottom: 20px; }
+.detail-stats dt, .detail-section h3, .assignment-section h3 { font-size: 11px; letter-spacing: .08em; }
+.detail-stats dd { font-size: 18px; }
+.detail-section { padding-top: 26px; }
+.detail-summary { font-size: 16px; line-height: 1.75; margin-top: 16px; }
+.fact-table { margin-top: 18px; }
+.fact-table > div { grid-template-columns: 82px minmax(0, 1fr) 96px; gap: 14px; padding: 14px 0; font-size: 14px; }
+.fact-table .fact-source, .fact-table .fact-confirmed, .fact-table .fact-verify { font-size: 10px; max-width: none; }
+.transcript-section { padding-bottom: 24px; }
+.transcript-card { margin-top: 18px; padding: 20px; border: 1px solid #aaccff18; border-radius: 14px; background: #10192b; display: grid; gap: 20px; }
+.transcript-turn { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 14px; align-items: baseline; }
+.transcript-speaker { font: 10px var(--font-geist-mono), monospace; color: #8190ab; text-transform: uppercase; }
+.transcript-turn p { font-size: 14px; line-height: 1.75; color: #e0e6f0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.transcript-agent .transcript-speaker { color: #52d7d7; }
+.transcript-agent p { color: #9cabc4; }
+.transcript-turn .transcript-unattributed { grid-column: 1 / -1; }
+.transcript-empty { margin-top: 16px; color: #8190ab; font-size: 13px; }
+.assignment-section { margin-top: 0; padding-top: 26px; }
+.assignment-team { margin: 0 0 20px; }
+.assignment-team strong { font-size: 20px; font-weight: 600; }
+.assignment-team p { color: #9cabc4; font-size: 13px; margin-top: 6px; text-transform: capitalize; }
+@media (min-width: 1500px) { .incident-content > .detail-heading, .detail-section, .assignment-section { padding-left: 30px; padding-right: 30px; } .detail-stats > div { padding-left: 30px; } }
+@media (max-width: 1150px) { .incident-detail { width: 370px; } .fact-table > div { grid-template-columns: 62px minmax(0, 1fr); gap: 8px 12px; } .fact-table > div > dd:last-child { grid-column: 2; text-align: left; } }
+@media (max-width: 900px) { .incident-detail { width: min(520px, 100%); } }

@@ -550,20 +550,27 @@ function IncidentDetail({
   const assigned = teams.find((t) => t.id === incident.assignedTeamId);
   const st = STATUS_STYLE[incident.status];
   const onMap = incident.latitude != null && incident.longitude != null;
+  const headline = incident.summary.trim().split(/(?<=[.!?])\s+/)[0] || incident.reportedAddress;
+  const medical = (incident.riskFactors ?? []).filter((r) => ["serious_injury", "medical_need"].includes(r.factor));
+  const mobility = (incident.riskFactors ?? []).filter((r) => ["limited_mobility", "no_higher_ground"].includes(r.factor));
+  const waterFacts = (incident.riskFactors ?? []).filter((r) => ["water_chest_or_higher", "water_rising_fast", "in_moving_water"].includes(r.factor));
+  const describeFactors = (factors: NonNullable<Incident["riskFactors"]>) => factors.map((r) => r.evidence || FACTOR_LABEL[r.factor]).join(" · ");
+  const chosenTeam = available.find((t) => t.id === teamId);
+
 
   return (
     <div className="incident-content text-sm">
       <header className="detail-heading">
         <div className="flex flex-wrap items-center gap-2">
-          <TierPill priority={priority ?? undefined} />
+          <span className={`detail-priority detail-priority-${priority?.tier ?? "standard"}`}>{priority ? TIER_STYLE[priority.tier].label.toLowerCase() : "Standard"}</span>
           <span className="detail-id" title={incident.id}>{incident.id.slice(-8).toUpperCase()}</span>
-          <span className={`ml-auto rounded-full px-2.5 py-1 text-[11px] font-semibold ${st.cls}`}>
+          <span className={`detail-status detail-status-${incident.status} ml-auto rounded-full px-2.5 py-1 text-[11px] font-semibold ${st.cls}`}>
             {STATUS_LABEL[incident.status]}
           </span>
           <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close incident details">✕</button>
         </div>
-        <h2>{incident.reportedAddress}</h2>
-        <p>{incident.reportedPosition ?? "Position not reported"}</p>
+        <h2>{headline}</h2>
+        <p>{incident.reportedAddress}{incident.reportedPosition ? ` · ${incident.reportedPosition}` : ""}</p>
         {incident.callId && <span className="detail-call-status"><i className={incident.callConnected ? "live-dot" : "ended-dot"} />{incident.callConnected ? "Caller on the line" : "Call ended"}</span>}
       </header>
 
@@ -583,9 +590,17 @@ function IncidentDetail({
           <div><dt>Location</dt><dd>{incident.reportedAddress}</dd><dd className={incident.locationVerified ? "fact-confirmed" : "fact-verify"}>{incident.locationVerified ? "Dispatcher verified" : "Verify"}</dd></div>
           <div><dt>People</dt><dd>{incident.peopleCount ?? "Unknown"}</dd><dd className="fact-source">{incident.peopleCount == null ? "Not reported" : "Reported"}</dd></div>
           <div><dt>Position</dt><dd>{incident.reportedPosition ?? "Unknown"}</dd><dd className="fact-source">{incident.reportedPosition ? "Reported" : "Not reported"}</dd></div>
+          <div><dt>Medical</dt><dd>{medical.length ? describeFactors(medical) : "Not reported"}</dd><dd className="fact-source">{medical.length ? "Reported" : "Unknown"}</dd></div>
+          <div><dt>Mobility</dt><dd>{mobility.length ? describeFactors(mobility) : "Not reported"}</dd><dd className={mobility.length ? "fact-verify" : "fact-source"}>{mobility.length ? "Verify" : "Unknown"}</dd></div>
+          <div><dt>Water</dt><dd>{waterFacts.length ? describeFactors(waterFacts) : "Not reported"}</dd><dd className={waterFacts.length ? "fact-verify" : "fact-source"}>{waterFacts.length ? "Verify" : "Unknown"}</dd></div>
           <div><dt>Hazards</dt><dd>{incident.hazards.length ? <ul>{incident.hazards.map((h) => <li key={h.hazard}>{h.hazard}{h.evidence && <q className="fact-evidence">{h.evidence}</q>}</li>)}</ul> : "None reported"}</dd><dd className="fact-source">{incident.hazards.length ? "Reported" : "—"}</dd></div>
         </dl>
         {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && <p className="mt-3 text-xs text-slate-400">Advisory topic tags: {incident.advisoryTags.tags.join(", ")} (not verified facts)</p>}
+      </section>
+
+      <section className="detail-section transcript-section">
+        <h3>Transcript</h3>
+        <IncidentTranscript transcript={incident.transcript} />
       </section>
 
       {priority && incident.status !== "resolved" && !main && (
@@ -631,18 +646,12 @@ function IncidentDetail({
 
       {incident.callId && <details className="detail-disclosure"><summary>Caller updates & messages</summary><CallerUpdates incident={incident} run={run} /></details>}
 
-      {incident.transcript && (
-        <details className="detail-disclosure text-xs" open={incident.callConnected}>
-          <summary className="cursor-pointer text-slate-400">Call transcript</summary>
-          <pre className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap font-sans text-slate-300">
-            {incident.transcript}
-          </pre>
-        </details>
-      )}
 
       {onMap && <details className="detail-disclosure"><summary>Flood model details</summary><WaterPanel water={water} waterSurface={waterSurface} /></details>}
 
-      <section className="assignment-section"><h3>{assigned ? "Assigned team" : "Location & assignment"}</h3>
+      <section className="assignment-section"><h3>{assigned ? "Assigned team" : "Team assignment"}</h3>
+      {(assigned || chosenTeam) && <div className="assignment-team"><strong>{(assigned || chosenTeam)!.name}</strong><p>{(assigned || chosenTeam)!.capabilities.join(" · ").replaceAll("_", " ")}</p></div>}
+
 
       {main ? null : !onMap ? (
         <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
@@ -736,6 +745,26 @@ function IncidentDetail({
       </section>
     </div>
   );
+}
+
+/** Render the saved speaker-prefixed text without inventing turns or dropping lines. */
+function IncidentTranscript({ transcript }: { transcript: string | null }) {
+  if (!transcript?.trim()) return <p className="transcript-empty">No transcript available for this report.</p>;
+  const turns: { speaker: string | null; text: string }[] = [];
+  for (const line of transcript.split("\n")) {
+    const match = /^(caller|agent|ai):\s*(.*)$/i.exec(line);
+    if (match) {
+      turns.push({ speaker: match[1].toLowerCase() === "caller" ? "Caller" : "AI", text: match[2] });
+    } else if (turns.length) {
+      turns[turns.length - 1].text += `\n${line}`;
+    } else {
+      turns.push({ speaker: null, text: line });
+    }
+  }
+  return <div className="transcript-card">{turns.map((turn, index) => <div className={`transcript-turn ${turn.speaker === "AI" ? "transcript-agent" : ""}`} key={index}>
+    {turn.speaker && <span className="transcript-speaker">{turn.speaker}</span>}
+    <p className={turn.speaker ? undefined : "transcript-unattributed"}>{turn.text}</p>
+  </div>)}</div>;
 }
 
 const TIER_STYLE: Record<PriorityTier, { label: string; cls: string }> = {
