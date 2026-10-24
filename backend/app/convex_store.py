@@ -88,6 +88,10 @@ async def recorded_hazards(call_id: str) -> list[str]:
     return await _query("calls:recordedHazards", {"callId": call_id})
 
 
+async def current_announcement(call_id: str) -> dict[str, Any] | None:
+    return await _query("calls:currentAnnouncement", {"callId": call_id})
+
+
 async def transcript_for_call(call_id: str) -> str | None:
     return await _query("calls:transcriptForCall", {"callId": call_id})
 

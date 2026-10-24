@@ -107,6 +107,18 @@ describe("approved announcement lifecycle", () => {
     expect(await t.query(api.calls.pendingEvents,{secret,callId:"a"})).toEqual([]);
     expect(await t.query(api.calls.statusForCall,{secret,callId:"a"})).toMatchObject({status:"assigned",callConnected:false});
   });
+
+  test("explicit replay can read a completed update only while current and connected",async()=>{
+    const {t,incidentId}=await assigned();
+    const [event]=await t.query(api.calls.pendingEvents,{secret,callId:"a"});
+    await t.mutation(api.calls.markAnnounced,{secret,callId:"a",eventId:event._id});
+    expect(await t.query(api.calls.pendingEvents,{secret,callId:"a"})).toEqual([]);
+    expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"a"})).toMatchObject({_id:event._id,teamName:event.teamName});
+    expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"other"})).toBeNull();
+    await expect(t.query(api.calls.currentAnnouncement,{secret:"wrong",callId:"a"})).rejects.toThrow();
+    await t.mutation(api.incidents.setStatus,{dispatcherToken,incidentId,status:"awaiting_assignment"});
+    expect(await t.query(api.calls.currentAnnouncement,{secret,callId:"a"})).toBeNull();
+  });
 });
 
 describe("open demo mode", () => {
