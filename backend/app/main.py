@@ -40,8 +40,20 @@ ANNOUNCEMENTS = {
 
 # Per-call transcript lines and a lock so overlapping utterances are processed in order.
 # In-memory is fine for the demo; Convex keeps the saved transcript.
-_transcripts: dict[str, list[str]] = defaultdict(list)
+_transcripts: dict[str, list[str]] = {}
 _locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+# Calls that already have an incident in Convex.
+_has_incident: set[str] = set()
+
+
+async def _load_transcript(call_id: str) -> list[str]:
+    """Transcript lines for a call, restored from Convex after a backend restart."""
+    if call_id not in _transcripts:
+        saved = await convex_store.transcript_for_call(call_id)
+        _transcripts[call_id] = saved.split("\n") if saved else []
+        if saved:
+            _has_incident.add(call_id)
+    return _transcripts[call_id]
 
 
 class Utterance(BaseModel):
@@ -66,9 +78,14 @@ async def health():
 @app.post("/calls/{call_id}/utterances", response_model=UtteranceResult)
 async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
     async with _locks[call_id]:
+        lines = await _load_transcript(call_id)
         label = "Caller" if utterance.speaker == "caller" else "Agent"
-        _transcripts[call_id].append(f"{label}: {utterance.text.strip()}")
-        transcript = "\n".join(_transcripts[call_id])
+        lines.append(f"{label}: {utterance.text.strip()}")
+        transcript = "\n".join(lines)
+
+        # The agent's greeting alone shouldn't create an incident; keep it for the transcript.
+        if utterance.speaker == "agent" and call_id not in _has_incident:
+            return UtteranceResult(incident=None, extraction=None, next_question=None)
 
         extraction: Extraction | None = None
         error: str | None = None
@@ -104,6 +121,7 @@ async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
                         reported_position=extraction.reported_position,
                         hazards=[h.model_dump() for h in extraction.hazards],
                         summary=extraction.summary,
+                        location_changed=extraction.location_changed,
                         candidate=(
                             (candidate.latitude, candidate.longitude, f"Map search: {candidate.label}")
                             if candidate
@@ -116,6 +134,7 @@ async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
             )
         except ConvexError as e:
             raise HTTPException(status_code=502, detail=f"Convex rejected the update: {e.data}") from e
+        _has_incident.add(call_id)
 
         return UtteranceResult(
             incident=incident,
@@ -130,6 +149,9 @@ async def add_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
 async def end_call(call_id: str):
     """The caller hung up. The incident stays open until a dispatcher resolves it."""
     await convex_store.call_ended(call_id)
+    # Free per-call memory; a late utterance reloads the transcript from Convex.
+    _transcripts.pop(call_id, None)
+    _has_incident.discard(call_id)
     return {"ok": True}
 
 
@@ -160,5 +182,5 @@ async def announcements(call_id: str):
 @app.post("/calls/{call_id}/announcements/{event_id}/ack")
 async def ack_announcement(call_id: str, event_id: str):
     """Call after the update was actually played to the caller."""
-    await convex_store.mark_announced(event_id)
+    await convex_store.mark_announced(call_id, event_id)
     return {"ok": True}

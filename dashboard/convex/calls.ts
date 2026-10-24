@@ -7,6 +7,8 @@ import { EXERCISE_ID } from "./seedData";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
 
+const NO_ADDRESS_YET = "Location not given yet";
+
 async function byCall(ctx: QueryCtx, callId: string) {
   return await ctx.db
     .query("incidents")
@@ -44,6 +46,11 @@ export const upsertFromCall = mutation({
     candidateLatitude: v.optional(v.number()),
     candidateLongitude: v.optional(v.number()),
     candidateLabel: v.optional(v.string()),
+    /**
+     * True only when the caller changed or took back a location they gave earlier.
+     * Rewording the same place is not a change.
+     */
+    locationChanged: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
@@ -55,7 +62,7 @@ export const upsertFromCall = mutation({
         exerciseId: EXERCISE_ID,
         callId: args.callId,
         source: args.source,
-        reportedAddress: args.reportedAddress ?? "Location not given yet",
+        reportedAddress: args.reportedAddress ?? NO_ADDRESS_YET,
         latitude: args.candidateLatitude ?? null,
         longitude: args.candidateLongitude ?? null,
         locationVerified: false,
@@ -84,26 +91,34 @@ export const upsertFromCall = mutation({
     // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
     if (args.hazards.length) patch.hazards = args.hazards;
 
-    const addressChanged =
+    const hadAddress = existing.reportedAddress !== NO_ADDRESS_YET;
+    if (args.reportedAddress != null) patch.reportedAddress = args.reportedAddress;
+    const dispatched = existing.status === "assigned" || existing.status === "en_route";
+
+    const norm = (a: string) => a.trim().toLowerCase();
+    const corrected =
+      args.locationChanged === true &&
+      hadAddress &&
       args.reportedAddress != null &&
-      args.reportedAddress.trim().toLowerCase() !== existing.reportedAddress.trim().toLowerCase();
-    if (addressChanged) {
-      patch.reportedAddress = args.reportedAddress!;
-      if (existing.status === "needs_review" || existing.status === "awaiting_assignment") {
+      norm(args.reportedAddress) !== norm(existing.reportedAddress);
+
+    if (corrected) {
+      if (dispatched) {
+        // Don't silently move a team's destination; flag it for the dispatcher.
+        await logActivity(
+          ctx,
+          `Caller gave a different location after dispatch: "${args.reportedAddress}". Check with the team.`,
+          existing._id,
+        );
+      } else {
         // The caller corrected their location: the old pin can't be trusted any more.
         patch.locationVerified = false;
         patch.status = "needs_review";
         patch.latitude = args.candidateLatitude ?? null;
         patch.longitude = args.candidateLongitude ?? null;
         patch.locationNote = args.candidateLabel ?? null;
+        await logActivity(ctx, `Caller corrected location to "${args.reportedAddress}". Needs review.`, existing._id);
       }
-      await logActivity(
-        ctx,
-        existing.status === "assigned" || existing.status === "en_route"
-          ? `Caller gave a different location after dispatch: "${args.reportedAddress}". Check with the team.`
-          : `Caller location updated to "${args.reportedAddress}". Needs review.`,
-        existing._id,
-      );
     } else if (!existing.locationVerified && args.candidateLatitude != null && args.candidateLongitude != null) {
       patch.latitude = args.candidateLatitude;
       patch.longitude = args.candidateLongitude;
@@ -137,6 +152,15 @@ export const statusForCall = query({
   },
 });
 
+/** Saved transcript, so a restarted backend can continue a call where it left off. */
+export const transcriptForCall = query({
+  args: { secret: v.string(), callId: v.string() },
+  handler: async (ctx, { secret, callId }) => {
+    requireBackend(secret);
+    return (await byCall(ctx, callId))?.transcript ?? null;
+  },
+});
+
 /** Updates waiting to be spoken to this caller, oldest first. */
 export const pendingEvents = query({
   args: { secret: v.string(), callId: v.string() },
@@ -150,10 +174,41 @@ export const pendingEvents = query({
 });
 
 export const markAnnounced = mutation({
-  args: { secret: v.string(), eventId: v.id("events") },
-  handler: async (ctx, { secret, eventId }) => {
+  args: { secret: v.string(), callId: v.string(), eventId: v.id("events") },
+  handler: async (ctx, { secret, callId, eventId }) => {
     requireBackend(secret);
     const event = await ctx.db.get(eventId);
-    if (event && event.announcedAt == null) await ctx.db.patch(eventId, { announcedAt: Date.now() });
+    if (event && event.callId === callId && event.announcedAt == null) {
+      await ctx.db.patch(eventId, { announcedAt: Date.now() });
+    }
+  },
+});
+
+/** Delete incidents created by the regression checks (callId starting "check-" or "review-test-"), once resolved. */
+export const purgeCheckIncidents = mutation({
+  args: { secret: v.string() },
+  handler: async (ctx, { secret }) => {
+    requireBackend(secret);
+    const incidents = await ctx.db
+      .query("incidents")
+      .withIndex("by_exercise", (q) => q.eq("exerciseId", EXERCISE_ID))
+      .collect();
+    let removed = 0;
+    for (const incident of incidents) {
+      if (!/^(check|review-test)-/.test(incident.callId ?? "") || incident.status !== "resolved") continue;
+      const activity = await ctx.db
+        .query("activity")
+        .withIndex("by_exercise_at", (q) => q.eq("exerciseId", EXERCISE_ID))
+        .collect();
+      for (const a of activity) if (a.incidentId === incident._id) await ctx.db.delete(a._id);
+      const events = await ctx.db
+        .query("events")
+        .withIndex("by_call_announced", (q) => q.eq("callId", incident.callId!))
+        .collect();
+      for (const e of events) await ctx.db.delete(e._id);
+      await ctx.db.delete(incident._id);
+      removed++;
+    }
+    return removed;
   },
 });

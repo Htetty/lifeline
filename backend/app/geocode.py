@@ -81,6 +81,6 @@ async def find_candidate(queries: list[str]) -> Candidate | None:
                 candidate = await _search(http, query)
                 if candidate:
                     return candidate
-    except httpx.HTTPError as e:
-        log.warning("geocoding failed: %s", e)
+    except Exception:  # map search is best-effort and must never block saving a report
+        log.exception("geocoding failed for %r", queries)
     return None

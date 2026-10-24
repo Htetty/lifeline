@@ -560,9 +560,22 @@ function IncidentDetail({
                 Mark en route
               </button>
             )}
+            {(incident.status === "assigned" || incident.status === "en_route") && (
+              <button
+                onClick={() => run({ type: "setStatus", incidentId: incident.id, status: "awaiting_assignment" })}
+                className="rounded bg-slate-700 px-2.5 py-1 hover:bg-slate-600"
+              >
+                Unassign team
+              </button>
+            )}
             {incident.status !== "resolved" && (
               <button
-                onClick={() => run({ type: "setStatus", incidentId: incident.id, status: "resolved" })}
+                onClick={() => {
+                  const notice = incident.callConnected ? " The caller will be told their rescue is complete." : "";
+                  if (confirm(`Mark "${incident.reportedAddress}" as resolved? This can't be undone.${notice}`)) {
+                    run({ type: "setStatus", incidentId: incident.id, status: "resolved" });
+                  }
+                }}
                 className="rounded bg-green-700 px-2.5 py-1 hover:bg-green-600"
               >
                 Mark resolved

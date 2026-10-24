@@ -88,6 +88,10 @@ export const verifyLocation = mutation({
   },
   handler: async (ctx, { incidentId, latitude, longitude }) => {
     const incident = await load(ctx, incidentId);
+    const moving = latitude != null && (latitude !== incident.latitude || longitude !== incident.longitude);
+    if (moving && incident.status !== "needs_review" && incident.status !== "awaiting_assignment") {
+      throw new ConvexError("A team is already dispatched here. Unassign the team before moving the location.");
+    }
     const lat = latitude ?? incident.latitude;
     const lon = longitude ?? incident.longitude;
     if (lat == null || lon == null) throw new ConvexError("Place the incident on the map first");
@@ -120,18 +124,39 @@ export const assignTeam = mutation({
   },
 });
 
+/** Allowed status changes. Assignment itself goes through assignTeam. */
+const TRANSITIONS: Record<Doc<"incidents">["status"], Doc<"incidents">["status"][]> = {
+  needs_review: ["resolved"],
+  awaiting_assignment: ["resolved"],
+  assigned: ["en_route", "awaiting_assignment", "resolved"],
+  en_route: ["awaiting_assignment", "resolved"],
+  resolved: [],
+};
+
 export const setStatus = mutation({
   args: { incidentId: v.id("incidents"), status: incidentStatus },
   handler: async (ctx, { incidentId, status }) => {
     const incident = await load(ctx, incidentId);
     if (incident.status === status) return;
-    await bump(ctx, incident, { status });
+    if (!TRANSITIONS[incident.status].includes(status)) {
+      throw new ConvexError(`Can't change from "${STATUS_LABEL[incident.status]}" to "${STATUS_LABEL[status]}"`);
+    }
 
     const team = incident.assignedTeamId ? await ctx.db.get(incident.assignedTeamId) : null;
-    if (status === "resolved" && team) {
+    const unassigning = status === "awaiting_assignment";
+    // Leaving dispatch (unassigned or resolved) frees the team.
+    if (team && (unassigning || status === "resolved") && team.currentAssignment === incident._id) {
       await ctx.db.patch(team._id, { available: true, currentAssignment: null, updatedAt: Date.now() });
     }
-    await logActivity(ctx, `${incident.reportedAddress}: ${STATUS_LABEL[status]}.`, incident._id);
+    await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status });
+
+    await logActivity(
+      ctx,
+      unassigning && team
+        ? `${team.name} unassigned from ${incident.reportedAddress}; awaiting a team.`
+        : `${incident.reportedAddress}: ${STATUS_LABEL[status]}.`,
+      incident._id,
+    );
     if (status === "en_route") await emitEvent(ctx, incident, "team_en_route", team?.name ?? null);
     if (status === "resolved") await emitEvent(ctx, incident, "rescue_resolved", team?.name ?? null);
   },

@@ -44,6 +44,8 @@ cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn app.main:app --port 8000
 # Test a call (type caller lines; then assign a team on the dashboard):
 .venv/bin/python scripts/simulate_call.py --interactive --listen 120
+# Regression checks for the call rules (add --live to include real Claude calls):
+.venv/bin/python scripts/check_call_rules.py --live
 ```
 
 New teammate: `NEXT_PUBLIC_CONVEX_URL` in `dashboard/.env.local`; `CONVEX_URL`, `BACKEND_SECRET` (shared privately) and

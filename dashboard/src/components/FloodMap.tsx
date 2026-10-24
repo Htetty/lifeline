@@ -133,17 +133,23 @@ export default function FloodMap(props: Props) {
         resolved[incident.id] = { footprints, height };
       }
 
-      const overlay: GeoJSON.Feature[] = [];
+      // One overlay per footprint, coloured by its most urgent incident, so stacked
+      // incidents on one building can't z-fight (a resolved one must never hide an active one).
+      const byFootprint = new Map<string, GeoJSON.Feature>();
       for (const incident of state.incidents) {
         const kind = buildingStateFor(incident);
+        const selected = incident.id === selectedId && kind !== "resolved";
+        const rank = (kind === "stuck" ? 3 : kind === "dispatched" ? 2 : 1) * 2 + (selected ? 1 : 0);
         for (const fp of resolved[incident.id]?.footprints ?? []) {
-          overlay.push({
+          const [x, y] = fp.polygon[0][0];
+          const key = `${x.toFixed(6)},${y.toFixed(6)},${fp.height},${fp.base}`;
+          if ((byFootprint.get(key)?.properties?.rank ?? -1) >= rank) continue;
+          byFootprint.set(key, {
             type: "Feature",
             properties: {
               incidentId: incident.id,
-              kind: incident.id === selectedId && kind !== "resolved" ? "selected" : kind,
-              // Active rescues draw on top of other incidents in the same building.
-              rank: kind === "stuck" ? 2 : kind === "dispatched" ? 1 : 0,
+              kind: selected ? "selected" : kind,
+              rank,
               height: fp.height + 0.4,
               base: fp.base,
             },
@@ -151,7 +157,7 @@ export default function FloodMap(props: Props) {
           });
         }
       }
-      overlay.sort((x, y) => x.properties!.rank - y.properties!.rank);
+      const overlay = [...byFootprint.values()];
       (map.getSource("incident-buildings") as GeoJSONSource).setData({ type: "FeatureCollection", features: overlay });
 
       const summary: Record<string, number | null> = {};
@@ -287,6 +293,7 @@ export default function FloodMap(props: Props) {
         id: "incidents-label",
         type: "symbol",
         source: "incidents",
+        filter: ["!=", ["get", "kind"], "resolved"],
         layout: {
           "text-field": ["get", "label"],
           "text-font": ["Noto Sans Bold"],

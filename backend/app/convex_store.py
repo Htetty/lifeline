@@ -28,6 +28,7 @@ async def upsert_from_call(
     hazards: list[dict[str, str | None]] | None = None,
     summary: str | None = None,
     candidate: tuple[float, float, str] | None = None,
+    location_changed: bool = False,
 ) -> dict[str, Any]:
     location = (
         {"candidateLatitude": candidate[0], "candidateLongitude": candidate[1], "candidateLabel": candidate[2]}
@@ -38,6 +39,7 @@ async def upsert_from_call(
         "calls:upsertFromCall",
         {
             **location,
+            "locationChanged": location_changed,
             "callId": call_id,
             "source": source,
             "transcript": transcript,
@@ -63,5 +65,9 @@ async def pending_events(call_id: str) -> list[dict[str, Any]]:
     return await _query("calls:pendingEvents", {"callId": call_id})
 
 
-async def mark_announced(event_id: str) -> None:
-    await _mutation("calls:markAnnounced", {"eventId": event_id})
+async def transcript_for_call(call_id: str) -> str | None:
+    return await _query("calls:transcriptForCall", {"callId": call_id})
+
+
+async def mark_announced(call_id: str, event_id: str) -> None:
+    await _mutation("calls:markAnnounced", {"callId": call_id, "eventId": event_id})

@@ -21,6 +21,11 @@ they repeat them. Keep the caller's own wording for the location
 (e.g. "the blue apartment building behind the gas station"); do not invent a
 street address or coordinates.
 
+`location_changed` is true only when the caller's most recent message changes or
+takes back a location they gave earlier ("sorry, it's actually the north side").
+Rewording, adding detail to the same place, or giving a location for the first time
+is not a change.
+
 For each hazard, include the caller's words that support it as `evidence`.
 
 `location_queries` are up to three map-search strings for the caller's current
@@ -52,6 +57,7 @@ class Extraction(BaseModel):
     people_count: int | None = Field(description="Number of people needing rescue, if stated")
     reported_position: str | None = Field(description="Where they are in the building: floor, roof, attic, vehicle")
     location_queries: list[str] = Field(description="Map-search strings for the current location, most specific first")
+    location_changed: bool = Field(description="Caller's latest message changed or took back an earlier location")
     hazards: list[HazardFact]
     summary: str = Field(description="One sentence summarising only the stated facts")
     missing: list[str] = Field(description="Important facts still unknown")
