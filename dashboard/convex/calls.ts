@@ -79,9 +79,8 @@ export const upsertFromCall = mutation({
     if (args.reportedPosition != null) patch.reportedPosition = args.reportedPosition;
     if (args.summary) patch.summary = args.summary;
 
-    const known = new Set(existing.hazards.map((h) => h.hazard.toLowerCase()));
-    const newHazards = args.hazards.filter((h) => !known.has(h.hazard.toLowerCase()));
-    if (newHazards.length) patch.hazards = [...existing.hazards, ...newHazards];
+    // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
+    if (args.hazards.length) patch.hazards = args.hazards;
 
     const addressChanged =
       args.reportedAddress != null &&
