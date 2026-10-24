@@ -1,5 +1,10 @@
 # Handoff — Flood Rescue Dispatcher
 
+**Twilio phone adapter:** [`docs/integration/twilio-media-streams.md`](docs/integration/twilio-media-streams.md)
+documents the PR #8-based bidirectional phone transport, native μ-law/8 kHz,
+signature/identity checks, clear/mark semantics, public setup and rollback.
+Human phone verification is recorded separately from protocol/provider tests.
+
 Updated: 2026-10-23. Read `PROJECT_PLAN.md` for the product plan; this file is the current state.
 
 **2026-10-24 voice bridge increment:** See

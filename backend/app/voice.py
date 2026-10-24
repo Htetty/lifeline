@@ -41,6 +41,8 @@ class Session:
         self.queue = asyncio.Queue(maxsize=64)
         self.sequence = 1
         self.turn_number = 0
+        self.turn_prefix = "ink"
+        self.audio_frame_alignment = 4
         self.open_turn = False
         self.last_speech = time.monotonic()
         self.generation = 0
@@ -90,7 +92,7 @@ class Session:
             self.last_speech = time.monotonic()
             text = (event.get("transcript") or "").strip()
             if text:
-                await self.queue.put((f"ink-{number}", "caller", text, self.generation))
+                await self.queue.put((f"{self.turn_prefix}-{number}", "caller", text, self.generation))
                 await self.notify(type="transcript", text=text)
 
     async def persist(self, item):
@@ -222,6 +224,20 @@ class Session:
             self.sequence = state["nextSequence"]
             await self.speech.configure()
             async with self.speech.listen(sample_rate) as stt:
+                controls = asyncio.Queue(maxsize=32)
+
+                async def handle_controls():
+                    while True:
+                        data = await controls.get()
+                        try:
+                            await self.playback_event(data["type"], data.get("playback_id"))
+                        except Exception:
+                            # Completed playback must only retry its ack.
+                            if not self.playback or self.playback.phase != "completed":
+                                raise
+                        finally:
+                            controls.task_done()
+
                 async def receive_provider():
                     async for event in stt:
                         await self.provider_event(event if isinstance(event, dict) else event.model_dump())
@@ -233,7 +249,7 @@ class Session:
                             return
                         if message.get("bytes") is not None:
                             audio = message["bytes"]
-                            if len(audio) > 131072 or len(audio) % 4:
+                            if len(audio) > 131072 or len(audio) % self.audio_frame_alignment:
                                 raise ValueError("Invalid audio frame")
                             await stt.send_raw(audio)
                         elif message.get("text"):
@@ -242,22 +258,21 @@ class Session:
                             if data.get("type") == "end":
                                 return
                             if data.get("type") in {"playback_ready", "playback_complete", "playback_interrupted", "playback_failed"}:
-                                try:
-                                    await self.playback_event(data["type"], data.get("playback_id"))
-                                except Exception:
-                                    # A completed announcement stays completed for
-                                    # poll() to retry acknowledgement safely.
-                                    if not self.playback or self.playback.phase != "completed":
-                                        raise
+                                controls.put_nowait(data)
 
                 receiver = asyncio.create_task(receive_provider())
                 worker = asyncio.create_task(self.worker())
                 poller = asyncio.create_task(self.poll())
                 browser = asyncio.create_task(receive_browser())
-                tasks = [receiver, worker, poller, browser]
+                control_worker = asyncio.create_task(handle_controls())
+                tasks = [receiver, worker, poller, browser, control_worker]
                 self.speak(GREETING)
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=1800)
                 self.stopping = True
+                # Marks already received before hangup can finish acknowledgement;
+                # incoming audio never waits on these database operations.
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(controls.join(), 5)
                 await self.interrupt()
                 poller.cancel()
                 browser.cancel()

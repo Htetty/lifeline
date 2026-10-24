@@ -11,6 +11,11 @@ Cartesia (voice) ──POST utterance──► FastAPI ──Claude extraction�
 
 ## Run
 
+For the phone product path, see [Twilio bidirectional Media Streams](../docs/integration/twilio-media-streams.md).
+It adds `POST /twilio/voice` and `WSS /twilio/media` to this same FastAPI app,
+reusing Claude, Convex and the shared session controller. Follow its signed
+readiness checks and routing backup before changing the existing number.
+
 For the browser microphone → live dashboard → spoken dispatcher assignment flow,
 use [the voice bridge guide](../docs/integration/live-voice-dashboard.md). It starts
 an isolated local Convex deployment and does not change the working phone agent.

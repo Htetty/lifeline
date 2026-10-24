@@ -292,3 +292,6 @@ async def ack_announcement(call_id: str, event_id: str):
 
 from .voice import router as voice_router
 app.include_router(voice_router)
+
+from .twilio_media import router as twilio_router
+app.include_router(twilio_router)
