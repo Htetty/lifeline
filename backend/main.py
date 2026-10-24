@@ -3,7 +3,10 @@
 from fastapi import FastAPI, Response
 from twilio.twiml.voice_response import VoiceResponse
 
+from backend.report_tools import router as report_router
+
 app = FastAPI(title="FloodLine")
+app.include_router(report_router)
 
 GREETING = (
     "Hello, you’ve reached FloodLine, a non-emergency hackathon demonstration. "

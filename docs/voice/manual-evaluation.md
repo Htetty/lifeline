@@ -2,14 +2,15 @@
 
 Run [all eight scenarios](caller-scenarios-v0.1.0.md) in fresh Claude
 conversations using the [v0.1.0 system prompt](system-prompt-v0.1.0.md) as the
-system message. Use fictional data and no tools. Record the exact model
+system message. Deliver its separate welcome message once before caller input
+(or let the prompt supply it when no welcome is configured). Use fictional data and no tools. Record the exact model
 identifier shown by the test environment, prompt version, date, and any exposed
 generation settings. Preserve the transcript and note any script deviations.
 
 For each case, mark these checks **pass**, **fail**, or **not exercised**:
 
-- [ ] Opens with the non-emergency simulation disclosure and inability to send
-  help; handles a real-emergency claim by redirecting and pausing intake.
+- [ ] Uses the brief demo welcome once, without a second greeting or repeated
+  warnings; redirects explicit actual emergencies outside the demo and stops intake.
 - [ ] Uses concise language and asks one question about one detail per turn.
 - [ ] Collects available location and incident details without demanding answers
   the caller cannot provide or adding unsupported facts.

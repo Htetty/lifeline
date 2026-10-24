@@ -7,6 +7,13 @@ reads the fixed demonstration greeting using Twilio `<Say>`, then executes
 The existing Next.js frontend lives in `src/`; the Python FastAPI service lives
 in `backend/` and runs independently.
 
+The report-tool checkpoint is documented in
+[Cartesia report tools](docs/integration/cartesia-report-tools.md), with a proposed
+[storage interface for the Convex owner](docs/integration/report-storage.md).
+It adds authenticated context/update routes with in-memory storage; the greeting
+below remains available and unchanged. No Cartesia or Twilio configuration is
+applied by this repository.
+
 ## Run the voice server
 
 From the repository root, with Python 3.10+:
@@ -18,10 +25,10 @@ python -m pip install -r backend/requirements.txt
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-No environment variables are required. `.env.example` intentionally contains
-only comments. No Account SID, Auth Token, API key, or phone number is needed by
-this service because it makes no Twilio REST API calls. Keep future credentials
-server-side in ignored `.env` files; never use `NEXT_PUBLIC_*` for secrets.
+The greeting and health endpoints require no environment variables, Account SID,
+Auth Token, API key, or phone number. Report tools require the server variables in
+`.env.example`; see their setup guide above. Keep credentials server-side in
+ignored `.env` files; never use `NEXT_PUBLIC_*` for secrets.
 
 Endpoints:
 
