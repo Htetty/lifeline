@@ -460,7 +460,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
 
           </div>
           {(selected || pendingPick) && (
-            <section aria-label="Incident details" className="incident-detail overflow-y-auto bg-slate-900/95 p-5">
+            <section aria-label="Incident details" className="incident-detail overflow-y-auto">
               {pendingPick ? (
                 <NewReportForm
                   pick={pendingPick}
@@ -552,66 +552,48 @@ function IncidentDetail({
   const onMap = incident.latitude != null && incident.longitude != null;
 
   return (
-    <div className="space-y-3 text-sm">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="flex flex-wrap gap-1.5">
-            <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${st.cls}`}>
-              {st.icon} {STATUS_LABEL[incident.status]}
-            </span>
-            {incident.callId && (
-              <span
-                className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
-                  incident.callConnected ? "bg-emerald-400 text-slate-900" : "bg-slate-700 text-slate-300"
-                }`}
-              >
-                {incident.callConnected ? "● Caller on the line" : "Call ended"}
-              </span>
-            )}
-          </div>
-          <h2 className="mt-1.5 font-semibold">{incident.reportedAddress}</h2>
+    <div className="incident-content text-sm">
+      <header className="detail-heading">
+        <div className="flex flex-wrap items-center gap-2">
+          <TierPill priority={priority ?? undefined} />
+          <span className="detail-id" title={incident.id}>{incident.id.slice(-8).toUpperCase()}</span>
+          <span className={`ml-auto rounded-full px-2.5 py-1 text-[11px] font-semibold ${st.cls}`}>
+            {STATUS_LABEL[incident.status]}
+          </span>
+          <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close incident details">✕</button>
         </div>
-        <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close">
-          ✕
-        </button>
-      </div>
+        <h2>{incident.reportedAddress}</h2>
+        <p>{incident.reportedPosition ?? "Position not reported"}</p>
+        {incident.callId && <span className="detail-call-status"><i className={incident.callConnected ? "live-dot" : "ended-dot"} />{incident.callConnected ? "Caller on the line" : "Call ended"}</span>}
+      </header>
+
+      <dl className="detail-stats">
+        <div><dt>People</dt><dd>{incident.peopleCount == null ? "Unknown" : `${incident.peopleCount} ${incident.peopleCount === 1 ? "person" : "people"}`}</dd></div>
+        <div><dt>Modeled water depth</dt><dd>{water?.depth == null ? "Unknown" : `${water.depth.toFixed(1)} m`}</dd></div>
+      </dl>
+
+      <section className="detail-section">
+        <h3>AI summary</h3>
+        <p className="detail-summary">{incident.summary || "Waiting for a caller report. No summary available yet."}</p>
+      </section>
+
+      <section className="detail-section">
+        <h3>Extracted facts</h3>
+        <dl className="fact-table">
+          <div><dt>Location</dt><dd>{incident.reportedAddress}</dd><dd className={incident.locationVerified ? "fact-confirmed" : "fact-verify"}>{incident.locationVerified ? "Dispatcher verified" : "Verify"}</dd></div>
+          <div><dt>People</dt><dd>{incident.peopleCount ?? "Unknown"}</dd><dd className="fact-source">{incident.peopleCount == null ? "Not reported" : "Reported"}</dd></div>
+          <div><dt>Position</dt><dd>{incident.reportedPosition ?? "Unknown"}</dd><dd className="fact-source">{incident.reportedPosition ? "Reported" : "Not reported"}</dd></div>
+          <div><dt>Hazards</dt><dd>{incident.hazards.length ? <ul>{incident.hazards.map((h) => <li key={h.hazard}>{h.hazard}{h.evidence && <q className="fact-evidence">{h.evidence}</q>}</li>)}</ul> : "None reported"}</dd><dd className="fact-source">{incident.hazards.length ? "Reported" : "—"}</dd></div>
+        </dl>
+        {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && <p className="mt-3 text-xs text-slate-400">Advisory topic tags: {incident.advisoryTags.tags.join(", ")} (not verified facts)</p>}
+      </section>
 
       {priority && incident.status !== "resolved" && !main && (
-        <PriorityPanel incident={incident} linked={allIncidents.filter((i) => i.linkedTo === incident.id)} priority={priority} run={run} />
+        <details className="detail-disclosure">
+          <summary>Priority assessment & override</summary>
+          <PriorityPanel incident={incident} linked={allIncidents.filter((i) => i.linkedTo === incident.id)} priority={priority} run={run} />
+        </details>
       )}
-
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-        <dt className="text-slate-400">People</dt>
-        <dd>{incident.peopleCount ?? "Unknown"}</dd>
-        <dt className="text-slate-400">Position</dt>
-        <dd>{incident.reportedPosition ?? "Unknown"}</dd>
-        <dt className="text-slate-400">Hazards</dt>
-        <dd>
-          {incident.hazards.length ? (
-            <ul className="space-y-0.5">
-              {incident.hazards.map((h) => (
-                <li key={h.hazard}>
-                  {h.hazard}
-                  {h.evidence && <span className="text-slate-500"> — “{h.evidence}”</span>}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            "None reported"
-          )}
-        </dd>
-        <dt className="text-slate-400">Summary</dt>
-        <dd>{incident.summary || "—"}</dd>
-        {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && (
-          <>
-            <dt className="text-slate-400">Topic tags</dt>
-            <dd>
-              {incident.advisoryTags.tags.join(", ")}
-              <span className="text-slate-500"> (advisory, ModernBERT; not verified facts)</span>
-            </dd>
-          </>
-        )}
-      </dl>
 
       {incident.factHistory && incident.factHistory.length > 0 && (
         <details className="rounded bg-slate-800/70 p-2 text-xs">
@@ -647,10 +629,10 @@ function IncidentDetail({
         <SameLocation incident={incident} all={allIncidents} run={run} onSelect={onSelect} />
       )}
 
-      {incident.callId && <CallerUpdates incident={incident} run={run} />}
+      {incident.callId && <details className="detail-disclosure"><summary>Caller updates & messages</summary><CallerUpdates incident={incident} run={run} /></details>}
 
       {incident.transcript && (
-        <details className="rounded bg-slate-800/70 p-2 text-xs" open={incident.callConnected}>
+        <details className="detail-disclosure text-xs" open={incident.callConnected}>
           <summary className="cursor-pointer text-slate-400">Call transcript</summary>
           <pre className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap font-sans text-slate-300">
             {incident.transcript}
@@ -658,7 +640,9 @@ function IncidentDetail({
         </details>
       )}
 
-      {onMap && <WaterPanel water={water} waterSurface={waterSurface} />}
+      {onMap && <details className="detail-disclosure"><summary>Flood model details</summary><WaterPanel water={water} waterSurface={waterSurface} /></details>}
+
+      <section className="assignment-section"><h3>{assigned ? "Assigned team" : "Location & assignment"}</h3>
 
       {main ? null : !onMap ? (
         <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
@@ -705,7 +689,7 @@ function IncidentDetail({
           <button
             disabled={!teamId}
             onClick={() => run({ type: "assignTeam", incidentId: incident.id, teamId })}
-            className="w-full rounded bg-red-600 px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40"
+            className="approve-assignment w-full rounded px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40"
           >
             Approve assignment
           </button>
@@ -749,6 +733,7 @@ function IncidentDetail({
           </div>
         </div>
       )}
+      </section>
     </div>
   );
 }
