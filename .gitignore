@@ -45,3 +45,13 @@ __pycache__/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local Python environment and generated model files
+ml/.venv/
+ml/outputs/
+__pycache__/
+*.pyc
+
+# Downloaded and prepared disaster response data
+ml/data/raw/
+ml/data/processed/

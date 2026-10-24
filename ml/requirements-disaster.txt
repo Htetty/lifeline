@@ -1,0 +1,7 @@
+# Portable direct dependencies, not a platform environment lock.
+# Install the appropriate CPU/CUDA torch wheel first; see README.md.
+torch
+transformers==4.57.6
+datasets==5.0.1
+accelerate==1.15.0
+scikit-learn==1.9.1

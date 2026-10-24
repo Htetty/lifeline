@@ -1,0 +1,10 @@
+{
+    "model_name": "answerdotai/ModernBERT-base",
+    "data_file": "data/sample.jsonl",
+    "output_dir": "outputs/smoke_test",
+    "max_length": 128,
+    "batch_size": 1,
+    "learning_rate": 0.00002,
+    "max_steps": 2,
+    "use_cpu": true
+}
