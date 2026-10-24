@@ -29,6 +29,8 @@ export interface SeedIncident {
   reportedPosition: string | null;
   hazards: string[];
   riskFactors?: { factor: RiskFactorKind; evidence: string }[];
+  /** What the caller said about the water depth; see waterReports.ts. */
+  waterReport?: { level: "ankle" | "knee" | "waist" | "chest"; floor: number; evidence: string };
   summary: string;
   status: "needs_review" | "awaiting_assignment" | "assigned";
   /** Seed team key, when the incident starts already assigned. */
@@ -113,6 +115,7 @@ export const SEED_INCIDENTS: SeedIncident[] = [
     reportedPosition: "Ground floor, standing on furniture",
     hazards: ["Elderly caller", "Water at waist height"],
     riskFactors: [{ factor: "elderly", evidence: "elderly resident" }],
+    waterReport: { level: "waist", floor: 0, evidence: "the water's up to my waist" },
     summary: "Elderly resident trapped on the ground floor.",
     status: "awaiting_assignment",
     minutesAgo: 1,

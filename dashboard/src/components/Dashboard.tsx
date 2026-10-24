@@ -11,10 +11,16 @@ import {
   buildFloodGrid,
   channelDepth,
   computeFlood,
+  depthAt,
+  FLOOR_HEIGHT_M,
   isFlooded,
+  OBSERVATION_RADIUS_M,
+  observationAt,
+  surfaceAtPoint,
   waterAtBuilding,
-  waterSurfaceAt,
   type FloodGrid,
+  type FloodResult,
+  type WaterObservation,
 } from "@/lib/flood";
 import { formatGaugeTime, GAUGE, readingAt, readingIndex, REPLAY_LENGTH, surfaceToStage } from "@/lib/gauge";
 import {
@@ -44,6 +50,7 @@ import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } f
 import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
 import { TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
+import { LEVEL_LABEL } from "../../convex/waterReports";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
 
@@ -169,6 +176,8 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [roads, setRoads] = useState<RoadGraph | null>(null);
   /** Team whose route is previewed for an incident. */
   const [preview, setPreview] = useState<{ incidentId: string; teamId: string } | null>(null);
+  /** Team the map shows and follows; `key` lets the same team be re-centred. */
+  const [focusTeam, setFocusTeam] = useState<{ id: string; key: number } | null>(null);
   /** Clock for where moving teams are, refreshed while any team is travelling. */
   const [now, setNow] = useState(() => Date.now());
 
@@ -207,7 +216,30 @@ function DashboardView({ state }: { state: ExerciseState }) {
     () => (elevation ? buildFloodGrid(elevation, DEMO_AREA.floodBounds, GAUGE.longitude) : null),
     [elevation],
   );
-  const flood = useMemo(() => (grid ? computeFlood(grid, waterLevel) : null), [grid, waterLevel]);
+  // Callers' descriptions of the water, placed where they are.
+  const observations: WaterObservation[] = useMemo(() => {
+    if (!grid) return [];
+    return state.incidents.flatMap((i) => {
+      if (!i.waterReport || i.latitude == null || i.longitude == null) return [];
+      const at = observationAt(grid, i.waterReport, i.longitude, i.latitude, FLOOR_HEIGHT_M);
+      return at ? [{ lon: i.longitude, lat: i.latitude, ...at, weight: i.locationVerified ? 1 : 0.5 }] : [];
+    });
+  }, [grid, state.incidents]);
+  const callerZones = useMemo(
+    () =>
+      state.incidents.flatMap((i) =>
+        i.waterReport && i.latitude != null && i.longitude != null && !i.linkedTo
+          ? [{ lon: i.longitude, lat: i.latitude, label: `Caller: ${LEVEL_LABEL[i.waterReport.level]}` }]
+          : [],
+      ),
+    [state.incidents],
+  );
+  // The river model alone, and corrected by what callers report.
+  const riverFlood = useMemo(() => (grid ? computeFlood(grid, waterLevel) : null), [grid, waterLevel]);
+  const flood = useMemo(
+    () => (grid && observations.length ? computeFlood(grid, waterLevel, observations) : riverFlood),
+    [grid, waterLevel, observations, riverFlood],
+  );
   const depthOverChannel = grid ? Math.max(0, channelDepth(grid, waterLevel)) : null;
   const observedAt = waterDraft == null ? state.waterObservedAt : null;
 
@@ -216,10 +248,10 @@ function DashboardView({ state }: { state: ExerciseState }) {
       if (!elevation || !grid || !flood || incident.latitude == null || incident.longitude == null) return null;
       const ground = elevation.sample(incident.longitude, incident.latitude);
       const wet = isFlooded(grid, flood, incident.longitude, incident.latitude);
-      const surface = waterSurfaceAt(grid, waterLevel, incident.longitude);
+      const surface = surfaceAtPoint(grid, flood, incident.longitude, incident.latitude);
       return waterAtBuilding(ground, surface, wet, resolved[incident.id]?.height ?? null);
     },
-    [elevation, grid, flood, resolved, waterLevel],
+    [elevation, grid, flood, resolved],
   );
 
   /** Fastest flood-aware route for a team to an incident, from where the team is now. */
@@ -555,6 +587,16 @@ function DashboardView({ state }: { state: ExerciseState }) {
             }}
             onReportBuilding={onReportBuilding}
             onBuildingsResolved={setResolved}
+            callerZones={callerZones}
+            focusTeam={focusTeam}
+            onFocusTeam={(id) => setFocusTeam(id ? { id, key: Date.now() } : null)}
+          />
+          <UnitsPanel
+            teams={state.teams}
+            incidents={state.incidents}
+            now={now}
+            focusedId={focusTeam?.id ?? null}
+            onFocus={(id) => setFocusTeam({ id, key: Date.now() })}
           />
           {!flood && (
             <div className="absolute left-1/2 top-4 -translate-x-1/2 rounded bg-slate-900/90 px-3 py-2 text-sm">
@@ -594,6 +636,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                     key={selected.id}
                     incident={selected}
                     water={waterReport(selected)}
+                    riverDepth={riverDepthAt(grid, riverFlood, selected)}
                     teams={state.teams}
                     options={teamOptions}
                     routeAlert={routeAlert}
@@ -619,6 +662,81 @@ function DashboardView({ state }: { state: ExerciseState }) {
           )}
         </main>
       </div>
+    </div>
+  );
+}
+
+const KIND_LABEL: Record<ReturnType<typeof moverFor>, string> = {
+  road_vehicle: "Vehicle",
+  high_water_vehicle: "High-water truck",
+  boat: "Boat",
+  air: "Helicopter",
+};
+
+/** Every team at a glance; clicking one shows it on the map and follows it while it moves. */
+function UnitsPanel({
+  teams,
+  incidents,
+  now,
+  focusedId,
+  onFocus,
+}: {
+  teams: RescueTeam[];
+  incidents: Incident[];
+  now: number;
+  focusedId: string | null;
+  onFocus: (teamId: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const available = teams.filter((t) => t.available).length;
+  const status = (t: RescueTeam): { text: string; color: string } => {
+    const incident = incidents.find((i) => i.id === t.currentAssignment);
+    const where = incident ? ` · ${incident.reportedAddress}` : "";
+    if (t.available) return { text: "Available", color: "#2563eb" };
+    if (t.trip && now < t.trip.arriveAt) {
+      const eta = Math.max(1, Math.ceil(((t.trip.arriveAt - now) * TRIP_SPEEDUP) / 60_000));
+      return { text: `En route, ETA ${eta} min${where}`, color: "#f59e0b" };
+    }
+    if (incident?.status === "en_route") return { text: `On scene${where}`, color: "#16a34a" };
+    return { text: `Assigned, not yet sent${where}`, color: "#64748b" };
+  };
+  return (
+    <div className="absolute left-3 top-3 w-72 rounded bg-slate-900/90 text-xs ring-1 ring-slate-700">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between px-3 py-2 font-semibold uppercase tracking-wide text-slate-300"
+      >
+        <span>Units</span>
+        <span className="font-normal normal-case text-slate-400">
+          {available} of {teams.length} available {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <ul className="border-t border-slate-700">
+          {teams.map((t) => {
+            const s = status(t);
+            return (
+              <li key={t.id}>
+                <button
+                  onClick={() => onFocus(t.id)}
+                  title="Show on map"
+                  className={`flex w-full items-start gap-2 px-3 py-1.5 text-left hover:bg-slate-800 ${
+                    focusedId === t.id ? "bg-slate-800 ring-1 ring-inset ring-sky-400" : ""
+                  }`}
+                >
+                  <span className="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} />
+                  <span className="min-w-0">
+                    <span className="font-semibold">{t.name}</span>{" "}
+                    <span className="text-slate-400">{KIND_LABEL[moverFor(t.capabilities)]}</span>
+                    <span className="block truncate text-slate-300">{s.text}</span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
@@ -657,6 +775,7 @@ function Legend() {
 function IncidentDetail({
   incident,
   water,
+  riverDepth,
   teams,
   options,
   routeAlert,
@@ -671,6 +790,7 @@ function IncidentDetail({
 }: {
   incident: Incident;
   water: ReturnType<typeof waterAtBuilding> | null;
+  riverDepth: number | null;
   teams: RescueTeam[];
   options: TeamOption[];
   routeAlert: RouteAlert | null;
@@ -797,6 +917,9 @@ function IncidentDetail({
       )}
 
       {onMap && <WaterPanel water={water} />}
+      {incident.waterReport && (
+        <CallerWater report={incident.waterReport} riverDepth={riverDepth} verified={incident.locationVerified} />
+      )}
 
       {main ? null : !onMap ? (
         <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
@@ -1269,9 +1392,54 @@ function WaterPanel({ water }: { water: ReturnType<typeof waterAtBuilding> | nul
       </div>
       <p className="mt-2 text-[10px] leading-snug text-slate-400">
         Estimated depth = local water surface − bare-earth ground elevation. The water surface comes from the river
-        gauge and slopes with the river channel. Heights come from OpenStreetMap and may be estimated; floors assume
-        ~3 m each.
+        gauge, slopes with the river channel, and is corrected around callers who describe the water. Heights come
+        from OpenStreetMap and may be estimated; floors assume ~3 m each.
       </p>
+    </div>
+  );
+}
+
+function riverDepthAt(grid: FloodGrid | null, riverFlood: FloodResult | null, incident: Incident) {
+  if (!grid || !riverFlood || incident.latitude == null || incident.longitude == null) return null;
+  return depthAt(grid, riverFlood, incident.longitude, incident.latitude);
+}
+
+/** Flags a gap this big between the caller and the river model. */
+const DISAGREE_M = 0.5;
+
+function CallerWater({
+  report,
+  riverDepth,
+  verified,
+}: {
+  report: NonNullable<Incident["waterReport"]>;
+  riverDepth: number | null;
+  verified: boolean;
+}) {
+  const floor = report.floor ?? 0;
+  // Depth above the street, to compare with the model.
+  const callerDepth = report.meters + floor * FLOOR_HEIGHT_M;
+  const gap = riverDepth == null ? null : callerDepth - riverDepth;
+  return (
+    <div className="rounded bg-slate-800/70 p-2.5 text-xs">
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Caller vs. river model</div>
+      <p>
+        Caller: <b className="text-sky-300">{LEVEL_LABEL[report.level]}</b> (~{report.meters.toFixed(1)} m
+        {floor > 0 ? ` on floor ${floor}, ~${callerDepth.toFixed(1)} m above the street` : ""})
+        {report.evidence && <span className="text-slate-400"> — &ldquo;{report.evidence}&rdquo;</span>}
+      </p>
+      <p>
+        River model alone: <b>{riverDepth == null ? "loading…" : `${riverDepth.toFixed(1)} m`}</b>
+      </p>
+      {gap != null &&
+        (Math.abs(gap) > DISAGREE_M ? (
+          <p className="mt-1 text-amber-300">
+            They differ by {Math.abs(gap).toFixed(1)} m. The map uses the caller&apos;s report within ~
+            {OBSERVATION_RADIUS_M} m{verified ? "" : " (location not yet confirmed)"}.
+          </p>
+        ) : (
+          <p className="mt-1 text-slate-400">The caller and the model agree.</p>
+        ))}
     </div>
   );
 }

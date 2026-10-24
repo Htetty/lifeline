@@ -1,4 +1,5 @@
 import type { Trip } from "../../convex/tripMath";
+import type { StoredWaterReport } from "../../convex/waterReports";
 
 // Dashboard view of the shared data contract. The source of truth is
 // convex/schema.ts; ids are Convex document ids.
@@ -41,6 +42,8 @@ export interface Incident {
   /** Nearby incidents a dispatcher marked as separate rescues. */
   separateFrom?: string[];
   riskFactors?: { factor: RiskFactorKind; evidence: string | null }[];
+  /** Latest water depth the caller described (see convex/waterReports.ts). */
+  waterReport?: StoredWaterReport | null;
   priorityOverride?: { tier: PriorityTier; reason: string } | null;
   /** Computed on the dashboard for display (not stored). */
   priorityTier?: PriorityTier;

@@ -190,6 +190,7 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
                         location_changed=extraction.location_changed,
                         caller_role=extraction.caller_role,
                         risk_factors=[r.model_dump() for r in extraction.risk_factors],
+                        water_report=extraction.water_report.model_dump() if extraction.water_report else None,
                         candidate=(
                             (candidate.latitude, candidate.longitude, f"Map search: {candidate.label}")
                             if candidate

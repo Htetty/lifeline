@@ -9,6 +9,7 @@ import {
   SEED_INCIDENTS,
   SEED_TEAMS,
 } from "./seedData";
+import { LEVEL_METERS } from "./waterReports";
 
 export async function logActivity(
   ctx: MutationCtx,
@@ -139,6 +140,9 @@ export async function seedExercise(ctx: MutationCtx) {
       reportedPosition: s.reportedPosition,
       hazards: s.hazards.map((hazard) => ({ hazard, evidence: null })),
       riskFactors: s.riskFactors ?? [],
+      waterReport: s.waterReport
+        ? { ...s.waterReport, meters: LEVEL_METERS[s.waterReport.level], at, gaugeSurface: DEFAULT_WATER_SURFACE_ELEVATION }
+        : null,
       summary: s.summary,
       transcript: null,
       status: s.status,

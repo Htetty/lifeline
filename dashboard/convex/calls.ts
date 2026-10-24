@@ -2,10 +2,11 @@ import { ConvexError, v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
-import { isCurrentEvent, logActivity, requireBackend } from "./lib";
+import { getExercise, isCurrentEvent, logActivity, requireBackend } from "./lib";
 import { autoGroup } from "./linking";
 import { advisoryTags, callerRole, hazard, incidentSource, riskFactor } from "./schema";
 import { EXERCISE_ID } from "./seedData";
+import { LEVEL_LABEL, reportMeters, waterLevel, type StoredWaterReport } from "./waterReports";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
 
@@ -57,6 +58,15 @@ export const upsertFromCall = mutation({
     locationChanged: v.optional(v.boolean()),
     callerRole: v.optional(callerRole),
     riskFactors: v.optional(v.array(riskFactor)),
+    /** How deep the caller says the water is where they are. */
+    waterReport: v.optional(
+      v.object({
+        level: waterLevel,
+        measuredMeters: v.union(v.number(), v.null()),
+        floor: v.union(v.number(), v.null()),
+        evidence: v.union(v.string(), v.null()),
+      }),
+    ),
     turnId: v.optional(v.string()),
     sequence: v.optional(v.number()),
     fingerprint: v.optional(v.string()),
@@ -89,6 +99,22 @@ export const upsertFromCall = mutation({
     const now = Date.now();
     const existing = await byCall(ctx, args.callId);
 
+    // Keep the gauge level at the time of the report, so it stays a local correction as the river changes.
+    let water: StoredWaterReport | null = null;
+    const meters = args.waterReport ? reportMeters(args.waterReport.level, args.waterReport.measuredMeters) : null;
+    if (args.waterReport && meters != null) {
+      const exercise = await getExercise(ctx);
+      const floor = args.waterReport.floor;
+      water = {
+        level: args.waterReport.level,
+        meters,
+        floor: floor != null && floor >= 0 && floor < 60 ? Math.round(floor) : null,
+        evidence: args.waterReport.evidence,
+        at: now,
+        gaugeSurface: exercise?.waterSurfaceElevation ?? 0,
+      };
+    }
+
     if (!existing) {
       const id = await ctx.db.insert("incidents", {
         exerciseId: EXERCISE_ID,
@@ -108,6 +134,7 @@ export const upsertFromCall = mutation({
         assignedTeamId: null,
         callerRole: args.callerRole ?? "unknown",
         riskFactors: args.riskFactors ?? [],
+        waterReport: water,
         callConnected: true,
         createdAt: now,
         updatedAt: now,
@@ -132,6 +159,12 @@ export const upsertFromCall = mutation({
     for (const r of args.riskFactors ?? []) if (!known.has(r.factor)) known.set(r.factor, r);
     if (known.size !== (existing.riskFactors ?? []).length) patch.riskFactors = [...known.values()];
 
+    // A later description replaces the earlier one; a missing one keeps it.
+    const prior = existing.waterReport;
+    if (water && (!prior || prior.level !== water.level || prior.meters !== water.meters || prior.floor !== water.floor)) {
+      patch.waterReport = water;
+    }
+
     // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
     if (args.hazards.length) patch.hazards = args.hazards;
 
@@ -144,6 +177,9 @@ export const upsertFromCall = mutation({
     changed("peopleCount", existing.peopleCount, patch.peopleCount);
     changed("reportedPosition", existing.reportedPosition, patch.reportedPosition);
     if (existing.reportedAddress !== NO_ADDRESS_YET) changed("reportedAddress", existing.reportedAddress, args.reportedAddress);
+    if (patch.waterReport && prior) {
+      history.push({ at: now, field: "waterReport", previous: LEVEL_LABEL[prior.level], evidence: prior.evidence });
+    }
     if (patch.hazards) {
       const kept = new Set(patch.hazards.map((h) => h.hazard.trim().toLowerCase()));
       for (const h of existing.hazards) {

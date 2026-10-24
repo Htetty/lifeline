@@ -52,7 +52,7 @@ TRACE = os.environ.get("LIFELINE_TRACE") == "1"
 def facts(**updates) -> extraction.Extraction:
     data = dict(
         reported_address="18 Lantern Lane (fictional)", people_count=3, reported_position="upstairs",
-        location_queries=[], location_changed=False, caller_role="trapped", risk_factors=[], caller_asked_status=False,
+        location_queries=[], location_changed=False, caller_role="trapped", risk_factors=[], water_report=None, caller_asked_status=False,
         hazards=[{"hazard": "Water on stairs", "evidence": "water is on the stairs"}],
         summary="Three people upstairs; water on the stairs.", missing=[], next_question="Is anyone hurt?",
     )

@@ -316,12 +316,7 @@ export function planRoute(
   const TARGET = START + 1;
   const total = TARGET + 1;
 
-  const cellDepth = (c: number) => {
-    if (!flood.wet[c]) return 0;
-    const col = c % grid.cols;
-    const surface = grid.channel[col] + (flood.waterSurface - grid.channel[grid.gaugeCol]);
-    return Math.max(0, surface - grid.ground[c]);
-  };
+  const cellDepth = (c: number) => flood.depth[c];
   const cellCenter = (c: number) => [
     grid.bounds.west + ((c % grid.cols) + 0.5) * grid.dLon,
     grid.bounds.north - (Math.floor(c / grid.cols) + 0.5) * grid.dLat,

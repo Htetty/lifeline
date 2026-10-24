@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { callerUpdateType } from "./callerUpdates";
+import { storedWaterReport } from "./waterReports";
 
 // Shared data contract for the dashboard (Next.js) and the voice backend (FastAPI).
 // Unknown facts stay null rather than being guessed.
@@ -109,6 +110,8 @@ export default defineSchema({
     assignedTeamId: v.union(v.id("teams"), v.null()),
     callerRole: v.optional(callerRole),
     riskFactors: v.optional(v.array(riskFactor)),
+    /** Latest water depth the caller described; corrects the simulated flood around them. */
+    waterReport: v.optional(v.union(storedWaterReport, v.null())),
     /** Dispatcher's override of the computed priority, with their reason. */
     priorityOverride: v.optional(v.union(v.object({ tier: priorityTier, reason: v.string() }), v.null())),
     /**
