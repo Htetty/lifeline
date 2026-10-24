@@ -48,7 +48,8 @@ For each hazard, include the caller's words that support it as `evidence`.
 needing rescue; never infer one ("water's coming in" is not water at chest height):
 - serious_injury: heavy bleeding, unconscious, not breathing, chest pain, broken bone
 - medical_need: needs medication or equipment, a medical condition, minor injury
-- water_chest_or_higher: water at their chest, shoulders, neck or above them
+- water_chest_or_higher: water at their chest, shoulders, neck or above them, or the caller
+  says someone is drowning, going under, or can't keep their head above water
 - water_rising_fast: the caller says the water is rising quickly or fast-moving
 - in_moving_water: a person is in or being carried by moving water
 - in_vehicle: they are in a car or other vehicle

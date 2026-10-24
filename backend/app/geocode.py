@@ -25,6 +25,19 @@ VIEWBOX = "-117.185,32.776,-117.135,32.752"
 
 # OSM categories that point at a specific building or venue.
 PLACE_CATEGORIES = {"building", "tourism", "amenity", "shop", "office", "healthcare", "craft", "leisure", "man_made"}
+# Named stops and stations are precise points too, even though OSM files some under
+# "highway"/"railway". Roads in those categories (primary, residential, ...) stay rejected.
+POINT_TYPES = {
+    "highway": {"bus_stop", "platform"},
+    "railway": {"station", "halt", "tram_stop", "platform", "stop"},
+    "public_transport": {"station", "platform", "stop_position", "stop_area"},
+    "place": {"house"},
+}
+
+
+def _is_precise(hit: dict) -> bool:
+    category, kind = hit.get("category"), hit.get("type")
+    return category in PLACE_CATEGORIES or kind in POINT_TYPES.get(category, set())
 
 
 @dataclass(frozen=True)
@@ -54,14 +67,7 @@ async def _search(http: httpx.AsyncClient, query: str) -> Candidate | None:
             params={"q": query, "format": "jsonv2", "limit": 5, "viewbox": VIEWBOX, "bounded": 1},
         )
     r.raise_for_status()
-    match = next(
-        (
-            hit
-            for hit in r.json()
-            if hit.get("category") in PLACE_CATEGORIES or (hit.get("category") == "place" and hit.get("type") == "house")
-        ),
-        None,
-    )
+    match = next((hit for hit in r.json() if _is_precise(hit)), None)
     result = (
         Candidate(float(match["lat"]), float(match["lon"]), match.get("display_name", query).split(",")[0], query)
         if match
