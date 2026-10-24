@@ -70,6 +70,10 @@ async def pending_events(call_id: str) -> list[dict[str, Any]]:
     return await _query("calls:pendingEvents", {"callId": call_id})
 
 
+async def current_announcement(call_id: str) -> dict[str, Any] | None:
+    return await _query("calls:currentAnnouncement", {"callId": call_id})
+
+
 async def transcript_for_call(call_id: str) -> str | None:
     return await _query("calls:transcriptForCall", {"callId": call_id})
 

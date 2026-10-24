@@ -63,6 +63,17 @@ polling run separately; slow Claude/Convex operations do not block audio transpo
    retries the ack, not the audio. Caller/agent turn persistence uses the existing
    atomic Convex sequence/receipt transaction.
 
+Verified caller requests such as “can you repeat that?” replay the last spoken
+reply. After an assignment, or when the caller explicitly asks about the team,
+the backend queries `calls:currentAnnouncement` and rechecks that approval is still
+current before speaking. This query may return an already acknowledged event;
+explicit replay never resets its acknowledgement. An interrupted requested replay
+stays requested until natural completion. Ordinary polling still excludes completed
+announcements. Neither a model-generated team name nor old speech authorizes replay.
+Output is reserved before synthesis; a pending approved update suppresses a new,
+unsent intake question, and an update waits at least two seconds after the current
+reply finishes. It never deliberately clears a playing question to insert an update.
+
 Stop/disconnect drains final STT turns and queued saves within the shared bounds,
 closes provider/audio/poll/control tasks and persists `callConnected=false`.
 Hangup never resolves the incident. Input-pump cancellation handles a full queue.
@@ -187,20 +198,23 @@ requirements before attributing failure to this adapter.
    still here.” The backend must clear audio and ignore the clear-returned mark.
    The current event must remain unacknowledged. Stay quiet for its retry.
 5. Hear the complete update naming the approved team. Confirm it matches the
-   dashboard; confirm the completed update does not repeat.
+   dashboard; confirm the completed update does not repeat automatically. Then
+   say “Can you repeat that?” and verify that the same current assignment plays.
+   Interrupt that requested replay, stay quiet, and hear its complete retry.
 6. Hang up. Verify `callConnected=false`, the incident remains assigned, and
    transcript/history remain readable. Do not resolve the incident to end a call.
 
 ### Recorded verification (2026-10-24)
 
-- `backend/.venv/bin/pytest -q backend/tests`: **41 passed, 3 skipped**, plus 17
+- `backend/.venv/bin/pytest -q backend/tests`: **47 passed, 3 skipped**, plus 17
   subtests. Skips include deployment-only integration and optional real weights.
 - Disposable Convex regression: **38 tests, OK, one optional local-model skip**.
 - New signed phone-flow test with **real local Convex**: passed creation,
   correction/history, duplicate audio, dispatcher approval, interruption/clear,
-  rejected cleared mark, later completion ack and hangup retention. Speech,
+  rejected cleared mark, later completion ack, explicit replay of the acknowledged
+  assignment, interrupted replay/retry, and hangup retention. Speech,
   Claude and playback were mocked in this protocol test.
-- Dashboard fixture tests: **7 passed**; TypeScript passed.
+- Dashboard fixture tests: **8 passed**; TypeScript passed.
 - `backend/.venv/bin/python backend/scripts/probe_voice_path.py --phone`: live
   Cartesia Ink final turn during an open native μ-law/8 kHz stream; Sonic produced
   35,200 bytes of raw μ-law assignment audio while input remained open. No call.
@@ -216,8 +230,7 @@ requirements before attributing failure to this adapter.
   Twilio-originated signature and stream identity were accepted, native Sonic
   playback received a natural Twilio completion mark. Call
   `CA5793b974aec81175ef79091a42519aff` ended after 25 seconds without a saved caller
-  utterance. Full correction/assignment/interruption/hangup exercise is still
-  pending. Do not count synthetic/provider tests as hearing.
+  utterance. Do not count synthetic/provider tests as hearing.
 - **Second human call, live intake and corrections:** call
   `CA29c5d1a6981a55e5de5c92f61d17f6b1` created incident
   `jh72kmvyszetz77egx7me99tbx8gwyxt` before hangup. It updated from three/South to
@@ -226,8 +239,28 @@ requirements before attributing failure to this adapter.
   logged `playback cleared` and `cleared mark ignored`; subsequent replies received
   natural completion marks. After disconnect the same incident remained readable,
   `needs_review`, with four people and `callConnected=false`. No dispatcher approval
-  occurred before hangup, so **matching assignment hearing and assignment-specific
-  interruption/retry are not yet human-verified**. The PR remains draft for these.
+  occurred before hangup.
+- **Third human call: initial assignment heard; explicit replay FAILED.** Call
+  `CA9ced573f9a8029143f30b380d059dde0`, incident
+  `jh7e8gne7vzapzwheyeq1mx68d8gwk41`, saved the same three/South → four/North
+  correction. The user specifically approved the simulated pin and Swift Water
+  Boat 1 for this call; those exact decisions were applied after the correction.
+  The user heard Swift Water Boat 1 once, reported that it cut off an injury
+  question, and did not hear the requested repeat. Transcript inspection confirms
+  “Wait, sorry, can you repeat that?” was followed by another injury question.
+  The incident remains assigned, four people, disconnected, with earlier evidence.
+  The approval was consumed for this call; it does not authorize another dispatch.
+- **Inspected third-call timeline (UTC):** correction saved 19:35:41.086;
+  approval event 19:35:41.311; completed injury question saved 19:35:44.348;
+  assignment acknowledged 19:35:53.722; repeat request saved 19:36:00.268;
+  incorrect injury-question response saved 19:36:03.426. There was no assignment
+  clear between the question and assignment marks. These records prove the missing
+  replay path but cannot establish the acoustic cutoff without a recording.
+- The replay fix and stronger output reservation/response pause are locally
+  verified and deployed to the same isolated test state. Correlated UTC playback
+  IDs, reply/announcement/replay labels, bytes and mark elapsed times now support
+  inspecting the next call without logging speech or secrets. **Human verification
+  of fixed repeat and assignment interruption/retry remains pending; PR #9 is draft.**
 
 Reproduce the deployment-dependent tests only against the disposable runner:
 

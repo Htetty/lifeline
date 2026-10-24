@@ -20,17 +20,21 @@ STREAM = 'MZ'+'c'*32
 TOKEN = 'local-signing-fixture-only'
 WORDS = ['Three upstairs at 123 Hotel Circle South in Mission Valley.',
          'Correction, four upstairs at 456 Hotel Circle North in Mission Valley.',
-         'Wait, I am interrupting this simulated announcement.']
+         'Wait, I am interrupting this simulated announcement.',
+         'Wait, sorry, can you repeat that?', 'Wait, I am still here.']
 
 
 class ProviderFixture:
+    output=[]
     def __init__(self,**kwargs):
         assert kwargs['input_encoding']=='pcm_mulaw'
         self.events=asyncio.Queue()
         self.turn=0
     async def configure(self): pass
     async def close(self): pass
-    async def synthesize(self,text): return bytes([255])*2400
+    async def synthesize(self,text):
+        self.output.append(text)
+        return bytes([255])*2400
     @asynccontextmanager
     async def listen(self,rate):
         assert rate==8000
@@ -50,6 +54,7 @@ class ProviderFixture:
 
 class PhoneFlow(Base):
     def test_signed_phone_correction_interrupt_ack_and_hangup(self):
+        ProviderFixture.output=[]
         self.call='CA'+uuid.uuid4().hex
         env={'TWILIO_ACCOUNT_SID':ACCOUNT,'TWILIO_AUTH_TOKEN':TOKEN,
              'TWILIO_PHONE_NUMBER':'+15555550123','TWILIO_PUBLIC_BASE_URL':ORIGIN}
@@ -115,6 +120,19 @@ class PhoneFlow(Base):
             send('mark',mark=second_assignment)
             until(lambda:not self.announcements())
             send('mark',mark=second_assignment) # repeated mark doesn't repeat persistence
+            self.extract(facts(reported_address='456 Hotel Circle North',people_count=4,next_question='Is anyone hurt?'))
+            send('media',media=media) # actual failed-call request: "can you repeat that?"
+            requested_replay=receive('mark')['mark']
+            self.assertIn(team['name'],ProviderFixture.output[-1])
+            self.assertEqual(self.announcements(),[]) # prior delivery stays acknowledged
+            send('media',media=media) # interrupt the explicitly requested replay
+            receive('clear')
+            send('mark',mark=requested_replay)
+            final_replay=receive('mark')['mark']
+            self.assertNotEqual(requested_replay['name'],final_replay['name'])
+            self.assertIn(team['name'],ProviderFixture.output[-1])
+            send('mark',mark=final_replay)
+            until(lambda:sum(line.startswith('Agent:') and team['name'] in line for line in self.incident()['transcript'].splitlines())==2)
             send('stop',stop={'callSid':self.call,'accountSid':ACCOUNT})
             try: ws.receive_json()
             except Exception: pass

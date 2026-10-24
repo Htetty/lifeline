@@ -7,6 +7,7 @@ import asyncio
 import base64
 import contextlib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import logging
 import re
@@ -96,6 +97,8 @@ class TwilioTransport:
         self.send_lock = asyncio.Lock()
         self.offers = {}
         self.marks = {}  # name -> pending | cleared | complete
+        self.labels = {}
+        self.queued_at = {}
         self.reader = None
 
     async def wire(self, message):
@@ -106,6 +109,7 @@ class TwilioTransport:
         name = message.get("playback_id")
         if kind == "audio_offer":
             self.offers[name] = message["audio"]
+            self.labels[name] = ("announcement-replay" if message.get("replay") else "announcement") if message.get("event_id") else "reply"
             await self.inbox.put({"type":"websocket.receive", "text":json.dumps({"type":"playback_ready", "playback_id":name})})
         elif kind == "audio_go":
             audio = self.offers.pop(name, None)
@@ -123,7 +127,8 @@ class TwilioTransport:
                     await self.wire({"event":"media", "media":{"payload":base64.b64encode(raw[offset:offset+800]).decode()}})
                 if self.marks.get(name) == "pending":
                     await self.wire({"event":"mark", "mark":{"name":name}})
-                    log.info("call %s: playback queued (%s)", self.call_id, name[:8])
+                    self.queued_at[name] = time.monotonic()
+                    log.info("call %s: playback queued (%s) kind=%s bytes=%s at=%s", self.call_id, name[:8], self.labels.get(name), len(raw), datetime.now(timezone.utc).isoformat(timespec="milliseconds"))
         elif kind == "audio_stop":
             self.offers.pop(name, None)
             # Invalidate BEFORE awaiting the clear write. Any already in-flight
@@ -133,7 +138,7 @@ class TwilioTransport:
                     self.marks[pending] = "cleared"
             async with self.send_lock:
                 await self.wire({"event":"clear"})
-            log.info("call %s: playback cleared", self.call_id)
+            log.info("call %s: playback cleared at=%s", self.call_id, datetime.now(timezone.utc).isoformat(timespec="milliseconds"))
         elif kind in {"notice", "fatal"}:
             log.warning("call %s: %s", self.call_id, kind)
         elif kind == "saved":
@@ -161,10 +166,10 @@ class TwilioTransport:
                     name = data.get("mark", {}).get("name")
                     if self.marks.get(name) == "pending":
                         self.marks[name] = "complete"
-                        log.info("call %s: playback mark completed (%s)", self.call_id, str(name)[:8])
+                        log.info("call %s: playback mark completed (%s) kind=%s elapsed_ms=%s at=%s", self.call_id, str(name)[:8], self.labels.get(name), round((time.monotonic()-self.queued_at.get(name,time.monotonic()))*1000), datetime.now(timezone.utc).isoformat(timespec="milliseconds"))
                         await self.inbox.put({"type":"websocket.receive", "text":json.dumps({"type":"playback_complete", "playback_id":name})})
                     elif self.marks.get(name) == "cleared":
-                        log.info("call %s: cleared mark ignored (%s)", self.call_id, str(name)[:8])
+                        log.info("call %s: cleared mark ignored (%s) kind=%s at=%s", self.call_id, str(name)[:8], self.labels.get(name), datetime.now(timezone.utc).isoformat(timespec="milliseconds"))
                 elif kind == "stop":
                     if data["stop"].get("callSid") != self.call_id:
                         raise ValueError("Stop call identity mismatch")

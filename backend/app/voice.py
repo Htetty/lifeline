@@ -1,4 +1,4 @@
-"""Browser speech bridge. Only Cartesia turn.end text enters incident extraction.
+"""Shared browser/phone speech bridge. Only Cartesia turn.end enters extraction.
 
 Audio reception, ordered persistence, and playback are independent tasks. No
 Managed Agent lifecycle hooks or model-generated transcript are used here.
@@ -7,6 +7,7 @@ import asyncio
 import base64
 import contextlib
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -25,6 +26,9 @@ router = APIRouter()
 GREETING = ("Hello, this is Lifeline, a non-emergency hackathon simulation. "
             "If this is a real emergency, contact local emergency services. "
             "Please describe your fictional flood incident and where you are.")
+QUIET_SECONDS = 2.0
+REPEAT = re.compile(r"\brepeat\b|\bsay (?:that|it) again\b|\b(?:did not|didn't|couldn't|could not) hear\b|\bwhat did you say\b", re.I)
+TEAM_STATUS = re.compile(r"\b(?:what|which|where|who)\b.{0,80}\b(?:team|assigned|coming)\b|\b(?:is|has)\b.{0,25}\bteam\b", re.I)
 
 
 @dataclass
@@ -33,6 +37,8 @@ class Playback:
     text: str
     event_id: str | None = None
     phase: str = "offered"
+    replay: bool = False
+    request_id: str | None = None
 
 
 class Session:
@@ -54,6 +60,23 @@ class Session:
         self.failure = None
         self.processing = False
         self.completion_lock = asyncio.Lock()
+        self.last_output_end = 0.0
+        self.last_audible = None
+        self.requested_repeat = None
+
+    def repeat_request(self, text, turn_id):
+        """Narrow playback/status intents from verified caller text, not LLM IDs."""
+        team = TEAM_STATUS.search(text)
+        if not team and not REPEAT.search(text):
+            return False
+        previous = self.last_audible
+        if team or (previous and previous.event_id):
+            self.requested_repeat = {"kind":"announcement", "id":turn_id, "event_id":None}
+        elif previous:
+            self.requested_repeat = {"kind":"reply", "id":turn_id, "text":previous.text}
+        else:
+            self.requested_repeat = {"kind":"reply", "id":turn_id, "text":GREETING}
+        return True
 
     async def notify(self, **message):
         if not self.stopping:
@@ -122,6 +145,10 @@ class Session:
                 await self.notify(type="saved", incident=result.incident,
                                   extraction_error=result.extraction_error)
                 if item[1] == "caller" and not self.stopping:
+                    if self.repeat_request(item[2], item[0]) or self.requested_repeat:
+                        # Do not answer "repeat that/team?" with an unrelated
+                        # intake question. Persistence still happened first.
+                        continue
                     text = result.next_question
                     if result.extraction_error:
                         text = "Your words have been saved for the dispatcher. You can add more details."
@@ -138,45 +165,60 @@ class Session:
                 self.processing = False
                 self.queue.task_done()
 
-    async def current(self, event_id):
+    async def current(self, event_id, *, include_announced=False):
+        if include_announced:
+            event = await convex_store.current_announcement(self.call_id)
+            return bool(event and event["_id"] == event_id)
         return any(e["_id"] == event_id for e in await convex_store.pending_events(self.call_id))
 
-    def speak(self, text, event_id=None):
+    def speak(self, text, event_id=None, *, replay=False, request_id=None):
         if self.stopping or self.playback or (self.audio_task and not self.audio_task.done()):
             return False
-        self.audio_task = asyncio.create_task(self.offer(text, event_id))
+        self.audio_task = asyncio.create_task(self.offer(text, event_id, replay=replay, request_id=request_id))
         return True
 
-    async def offer(self, text, event_id):
+    async def offer(self, text, event_id, *, replay=False, request_id=None):
         generation = self.generation
+        p = Playback(uuid.uuid4().hex, text, event_id, "synthesizing", replay, request_id)
+        self.playback = p  # reserve the output slot before ANY provider await
         try:
             audio = await self.speech.synthesize(text)
             if self.stopping or generation != self.generation or self.open_turn:
                 return
-            if event_id and not await self.current(event_id):
+            if event_id and not await self.current(event_id, include_announced=replay):
                 return
-            self.playback = Playback(uuid.uuid4().hex, text, event_id)
-            await self.notify(type="audio_offer", playback_id=self.playback.id,
-                              text=text, audio=base64.b64encode(audio).decode())
+            if not event_id and not replay and text != GREETING and await convex_store.pending_events(self.call_id):
+                return  # approved update wins before a new question starts
+            if self.playback is not p or generation != self.generation or self.open_turn:
+                return
+            p.phase = "offered"
+            await self.notify(type="audio_offer", playback_id=p.id, event_id=event_id,
+                              replay=replay, text=text, audio=base64.b64encode(audio).decode())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("Speech generation failed (%s)", type(exc).__name__)
             await self.notify(type="notice", text="Audio generation failed; approved updates remain pending.")
+        finally:
+            if self.playback is p and p.phase == "synthesizing":
+                self.playback = None
 
     async def playback_event(self, kind, playback_id):
         p = self.playback
         if not p or p.id != playback_id:
             return
         if kind == "playback_ready" and p.phase == "offered":
-            if self.open_turn or self.processing or not self.queue.empty() or (p.event_id and not await self.current(p.event_id)):
+            if self.open_turn or self.processing or not self.queue.empty() or (p.event_id and not await self.current(p.event_id, include_announced=p.replay)):
                 await self.interrupt()
                 return
+            if self.playback is not p or self.open_turn or self.processing or not self.queue.empty():
+                return
             p.phase = "playing"
+            self.last_audible = p
             await self.notify(type="audio_go", playback_id=p.id)
         elif kind == "playback_complete" and p.phase == "playing":
-            # This message comes from AudioBufferSourceNode.onended ONLY on a
-            # natural end. Synthesized/received bytes never acknowledge playback.
+            # Natural browser onended or an uncleared Twilio mark only.
+            # Synthesized/received bytes never acknowledge playback.
             p.phase = "completed"
             await self.complete(p)
         elif kind in {"playback_interrupted", "playback_failed"} and p.phase != "completed":
@@ -186,35 +228,55 @@ class Session:
         async with self.completion_lock:
             if self.playback is not p:
                 return
-            if p.event_id:
+            if p.event_id and not p.replay:
                 # If this mutation commits but its response is lost, keep phase
                 # completed and retry the ack, never the audio.
                 await convex_store.mark_announced(self.call_id, p.event_id)
                 self.acknowledged.add(p.event_id)
+            self.last_output_end = time.monotonic()
+            if self.requested_repeat and p.request_id == self.requested_repeat["id"]:
+                self.requested_repeat = None
             if not self.stopping and p.text != GREETING:
                 await self.queue.put((f"spoken-{p.id}", "agent", p.text, self.generation))
             self.playback = None
 
     async def poll(self):
-        from .main import announcements
         while True:
-            try:
-                p = self.playback
-                if p and p.phase == "completed":
-                    await self.complete(p)
-                elif p and p.event_id and not await self.current(p.event_id):
-                    await self.interrupt()
-                elif not p and not self.open_turn and not self.processing and self.queue.empty() and time.monotonic() - self.last_speech > 1:
-                    pending = await announcements(self.call_id)
-                    for event in pending:
-                        if event["eventId"] not in self.acknowledged:
-                            self.speak(event["text"], event["eventId"])
-                            break
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log.warning("Announcement check delayed (%s)", type(exc).__name__)
+            await self.poll_once()
             await asyncio.sleep(0.5)
+
+    async def poll_once(self):
+        from .main import announcements, ANNOUNCEMENTS
+        try:
+            p = self.playback
+            if p and p.phase == "completed":
+                await self.complete(p)
+            elif p and p.event_id and not await self.current(p.event_id, include_announced=p.replay):
+                await self.interrupt()
+            elif not p and not self.open_turn and not self.processing and self.queue.empty() and time.monotonic() - max(self.last_speech, self.last_output_end) >= QUIET_SECONDS:
+                request = self.requested_repeat
+                if request:
+                    if request["kind"] == "reply":
+                        self.speak(request["text"], replay=True, request_id=request["id"])
+                    else:
+                        event = await convex_store.current_announcement(self.call_id)
+                        if not event or (request["event_id"] and request["event_id"] != event["_id"]):
+                            self.requested_repeat = None
+                            self.speak("There is no current dispatcher-approved assignment to repeat.")
+                        else:
+                            request["event_id"] = event["_id"]
+                            text = ANNOUNCEMENTS[event["type"]].format(team=f", {event['teamName']}," if event.get("teamName") else "")
+                            self.speak(text, event["_id"], replay=event.get("announcedAt") is not None, request_id=request["id"])
+                    return
+                pending = await announcements(self.call_id)
+                for event in pending:
+                    if event["eventId"] not in self.acknowledged:
+                        self.speak(event["text"], event["eventId"])
+                        break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Announcement check delayed (%s)", type(exc).__name__)
 
     async def run(self, socket, sample_rate):
         from .main import end_call

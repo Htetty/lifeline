@@ -230,6 +230,20 @@ export const pendingEvents = query({
   },
 });
 
+/** Explicit caller replay may include an already heard event, only if still true. */
+export const currentAnnouncement = query({
+  args: { secret: v.string(), callId: v.string() },
+  handler: async (ctx, { secret, callId }) => {
+    requireBackend(secret);
+    const incident = await byCall(ctx, callId);
+    if (!incident || !incident.callConnected) return null;
+    const events = await ctx.db.query("events")
+      .withIndex("by_call_announced", q => q.eq("callId", callId)).collect();
+    return events.filter(e => isCurrentEvent(incident, e))
+      .sort((a,b) => b.createdAt - a.createdAt)[0] ?? null;
+  },
+});
+
 export const markAnnounced = mutation({
   args: { secret: v.string(), callId: v.string(), eventId: v.id("events") },
   handler: async (ctx, { secret, callId, eventId }) => {
