@@ -35,8 +35,6 @@ button:disabled { cursor: not-allowed; }
 a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 2px solid #79b4ff; outline-offset: 4px; }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; letter-spacing: -.03em; text-decoration: none; color: #e6edf7; }
-.brand-mark { display: inline-grid; place-items: center; width: 23px; height: 23px; border: 2px solid #79b4ff; border-radius: 50%; flex-shrink: 0; }
-.brand-mark::after { content: ""; width: 8px; height: 8px; background: #79b4ff; border-radius: 50%; }
 .live-dot { display: inline-block; width: 7px; height: 7px; background: #6cdacb; border-radius: 50%; flex-shrink: 0; }
 .muted { color: #8190ab; }
 .mono, .eyebrow { font-family: var(--font-geist-mono), monospace; }

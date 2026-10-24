@@ -4,7 +4,7 @@ export default function Home() {
   return (
     <main className="landing">
       <nav className="landing-nav" aria-label="Main navigation">
-        <Link href="/" className="brand"><span className="brand-mark" />Lifeline</Link>
+        <Link href="/" className="brand">Lifeline</Link>
         <div><a href="#how">How it works</a><Link className="button button-light" href="/console">Open dispatcher console <span>↗</span></Link></div>
       </nav>
       <section className="hero">

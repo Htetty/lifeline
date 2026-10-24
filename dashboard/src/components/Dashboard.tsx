@@ -261,7 +261,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
   return (
     <div className="dispatcher flex h-screen flex-col bg-slate-950 text-slate-100">
       <header className="console-header">
-        <Link href="/" className="brand"><span className="brand-mark" />Lifeline</Link>
+        <Link href="/" className="brand">Lifeline</Link>
         <span className="console-region">{DEMO_AREA.name} · Flood ops</span>
         <span className="exercise-label">Simulated exercise</span>
         <div className="console-metrics">
