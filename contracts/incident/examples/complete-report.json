@@ -1,0 +1,112 @@
+{
+  "schema_version": "1.0.0",
+  "simulated": true,
+  "report_id": "sim-incident-001",
+  "provider_call_id": "sim-call-001",
+  "version": 2,
+  "created_at": "2026-10-23T18:00:10Z",
+  "updated_at": "2026-10-23T18:00:40Z",
+  "transcript": [
+    {
+      "turn_id": "turn-001",
+      "speaker": "assistant",
+      "recorded_at": "2026-10-23T18:00:00Z",
+      "text": "This is a FloodLine simulation. Please describe the fictional flooding and its location."
+    },
+    {
+      "turn_id": "turn-002",
+      "speaker": "caller",
+      "recorded_at": "2026-10-23T18:00:08Z",
+      "text": "For this simulation, water is rising inside our building on Juniper Lane in fictional Millhaven."
+    },
+    {
+      "turn_id": "turn-003",
+      "speaker": "assistant",
+      "recorded_at": "2026-10-23T18:00:15Z",
+      "text": "What is the fictional house number? How many people are affected, including children? Is the water moving fast, is anyone trapped, or is there electrical danger?"
+    },
+    {
+      "turn_id": "turn-004",
+      "speaker": "caller",
+      "recorded_at": "2026-10-23T18:00:35Z",
+      "text": "For the simulation, the address is 18 Juniper Lane in fictional Millhaven. Four people are affected, including one child. The water is rising slowly, not moving fast. Nobody is trapped, and there is no electrical danger."
+    }
+  ],
+  "summary": {
+    "text": "Simulated caller reports slowly rising indoor water at 18 Juniper Lane, fictional Millhaven, affecting four people including one child. Caller denies fast-moving water, trapped people and electrical danger. Coordinates are synthetic fixture data, not a verified address match.",
+    "generated_by": "model",
+    "source_turn_ids": [
+      "turn-002",
+      "turn-004"
+    ]
+  },
+  "reported_location": {
+    "description": "18 Juniper Lane, fictional Millhaven",
+    "precision": "address",
+    "coordinates": {
+      "latitude": 12.3456,
+      "longitude": -45.6789,
+      "source": "simulation_fixture",
+      "source_turn_ids": []
+    },
+    "source_turn_ids": [
+      "turn-004"
+    ]
+  },
+  "people_affected": {
+    "count": 4,
+    "includes_children": true,
+    "source_turn_ids": [
+      "turn-004"
+    ]
+  },
+  "hazards": {
+    "rising_water": true,
+    "fast_moving_water": false,
+    "trapped_people": false,
+    "electrical_danger": false,
+    "source_turn_ids": [
+      "turn-004"
+    ]
+  },
+  "unknown_fields": [],
+  "review_status": "pending_review",
+  "revisions": [
+    {
+      "version": 1,
+      "recorded_at": "2026-10-23T18:00:10Z",
+      "kind": "created",
+      "changed_fields": [
+        "/provider_call_id",
+        "/transcript",
+        "/summary",
+        "/reported_location",
+        "/people_affected",
+        "/hazards",
+        "/unknown_fields",
+        "/review_status"
+      ],
+      "source_turn_ids": [
+        "turn-002"
+      ],
+      "note": "Created a fictional simulation report from the initial caller statement."
+    },
+    {
+      "version": 2,
+      "recorded_at": "2026-10-23T18:00:40Z",
+      "kind": "updated",
+      "changed_fields": [
+        "/transcript",
+        "/summary",
+        "/reported_location",
+        "/people_affected",
+        "/hazards",
+        "/unknown_fields"
+      ],
+      "source_turn_ids": [
+        "turn-004"
+      ],
+      "note": "Completed fictional report answers and attached explicitly synthetic fixture coordinates; no verification implied."
+    }
+  ]
+}

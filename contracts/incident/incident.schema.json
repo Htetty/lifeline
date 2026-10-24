@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:floodline:incident:1.0.0",
+  "title": "FloodLine simulated incident report",
+  "description": "A full, versioned snapshot of a fictional flood report. Caller evidence is retained in transcript turns; current facts and model summaries are interpretations. Cross-version and evidence rules are documented in README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "simulated", "report_id", "provider_call_id", "version",
+    "created_at", "updated_at", "transcript", "summary", "reported_location",
+    "people_affected", "hazards", "unknown_fields", "review_status", "revisions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract version, independent of the report revision number."
+    },
+    "simulated": {
+      "const": true,
+      "description": "This initial contract accepts simulated reports only."
+    },
+    "report_id": {
+      "$ref": "#/$defs/id",
+      "description": "Opaque application-assigned identifier, stable across all updates."
+    },
+    "provider_call_id": {
+      "description": "Opaque call correlation identifier, with no provider-specific format. Null until available; never use it as the report ID.",
+      "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Starts at 1 and increases by exactly one per accepted update."
+    },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" },
+    "transcript": {
+      "type": "array",
+      "description": "Append-only evidence in conversation order. Preserve recognized wording, including uncertainty and superseded statements. An empty array permits creation before speech.",
+      "items": { "$ref": "#/$defs/turn" }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Model-generated interpretation, never a caller quotation or a verified operational assessment.",
+      "additionalProperties": false,
+      "required": ["text", "generated_by", "source_turn_ids"],
+      "properties": {
+        "text": { "$ref": "#/$defs/nullableText" },
+        "generated_by": { "const": "model" },
+        "source_turn_ids": { "$ref": "#/$defs/turnIds" }
+      },
+      "if": { "properties": { "text": { "type": "null" } } },
+      "then": { "properties": { "source_turn_ids": { "maxItems": 0 } } },
+      "else": { "properties": { "source_turn_ids": { "minItems": 1 } } }
+    },
+    "reported_location": {
+      "type": "object",
+      "description": "Current interpretation of the caller's reported incident location; never silently substitute the caller's phone location or a guessed address.",
+      "additionalProperties": false,
+      "required": ["description", "precision", "source_turn_ids"],
+      "properties": {
+        "description": { "$ref": "#/$defs/nullableText" },
+        "precision": {
+          "enum": ["unknown", "area", "street", "intersection", "address", "landmark", "coordinates"],
+          "description": "Specificity of the available evidence, not confidence or independent verification. Use unknown when no usable location is known."
+        },
+        "coordinates": {
+          "type": "object",
+          "description": "Optional WGS84 decimal degrees; omit when unavailable. Zero is a valid latitude or longitude. All values in this contract are fictional simulation data.",
+          "additionalProperties": false,
+          "required": ["latitude", "longitude", "source", "source_turn_ids"],
+          "properties": {
+            "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+            "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+            "source": {
+              "enum": ["caller", "simulation_fixture"],
+              "description": "Caller-spoken coordinates or explicit synthetic fixture coordinates. Model guesses are not a coordinate source."
+            },
+            "source_turn_ids": { "$ref": "#/$defs/turnIds" }
+          }
+        },
+        "source_turn_ids": { "$ref": "#/$defs/turnIds" }
+      }
+    },
+    "people_affected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "includes_children", "source_turn_ids"],
+      "properties": {
+        "count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Caller-reported total people affected at this location, not just trapped people. Null is unknown; zero is an explicit report of none."
+        },
+        "includes_children": {
+          "$ref": "#/$defs/nullableBoolean",
+          "description": "True: children reported; false: caller explicitly says no children; null: unknown."
+        },
+        "source_turn_ids": { "$ref": "#/$defs/turnIds" }
+      }
+    },
+    "hazards": {
+      "type": "object",
+      "description": "Each flag is an independent caller-reported condition. Silence is null, never false. These flags do not encode severity or a dispatch decision.",
+      "additionalProperties": false,
+      "required": ["rising_water", "fast_moving_water", "trapped_people", "electrical_danger", "source_turn_ids"],
+      "properties": {
+        "rising_water": { "$ref": "#/$defs/nullableBoolean" },
+        "fast_moving_water": { "$ref": "#/$defs/nullableBoolean" },
+        "trapped_people": { "$ref": "#/$defs/nullableBoolean" },
+        "electrical_danger": { "$ref": "#/$defs/nullableBoolean" },
+        "source_turn_ids": { "$ref": "#/$defs/turnIds" }
+      }
+    },
+    "unknown_fields": {
+      "type": "array",
+      "description": "Exactly one entry per unresolved incident field, including omitted coordinates; use JSON Pointers, with no entries for known false or zero. Metadata such as an unavailable provider_call_id is outside this list.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason", "source_turn_ids"],
+        "properties": {
+          "field": {
+            "enum": [
+              "/reported_location/description", "/reported_location/precision",
+              "/reported_location/coordinates", "/people_affected/count",
+              "/people_affected/includes_children", "/hazards/rising_water",
+              "/hazards/fast_moving_water", "/hazards/trapped_people",
+              "/hazards/electrical_danger"
+            ]
+          },
+          "reason": {
+            "enum": ["not_asked", "caller_unsure", "unintelligible", "conflicting", "not_available"]
+          },
+          "source_turn_ids": { "$ref": "#/$defs/turnIds" }
+        }
+      }
+    },
+    "review_status": {
+      "enum": ["pending_review", "needs_review", "reviewed"],
+      "description": "Pending human review; flagged for human attention; or explicitly reviewed by a human. A model must never set reviewed. Review does not imply dispatch or independently verified truth."
+    },
+    "revisions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Append-only revision index with one entry per report version. Retain each prior full snapshot as well; this index is not a replacement for snapshot history.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "recorded_at", "kind", "changed_fields", "source_turn_ids", "note"],
+        "properties": {
+          "version": { "type": "integer", "minimum": 1 },
+          "recorded_at": { "$ref": "#/$defs/timestamp" },
+          "kind": { "enum": ["created", "updated", "correction"] },
+          "changed_fields": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "Changed top-level content fields; creation lists all content fields. Version, timestamps and this revision index are bookkeeping, not listed here.",
+            "items": {
+              "enum": ["/provider_call_id", "/transcript", "/summary", "/reported_location", "/people_affected", "/hazards", "/unknown_fields", "/review_status"]
+            }
+          },
+          "source_turn_ids": { "$ref": "#/$defs/turnIds" },
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Processing rationale, not caller evidence."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp including timezone. Enable format checking in the validator."
+    },
+    "nullableText": {
+      "anyOf": [{ "type": "string", "minLength": 1, "pattern": "\\S" }, { "type": "null" }]
+    },
+    "nullableBoolean": { "type": ["boolean", "null"] },
+    "turnIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" },
+      "description": "References to caller turn IDs in this snapshot. Empty only when no caller evidence exists for this value or annotation."
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn_id", "speaker", "recorded_at", "text"],
+      "properties": {
+        "turn_id": { "$ref": "#/$defs/id" },
+        "speaker": { "enum": ["caller", "assistant"] },
+        "recorded_at": { "$ref": "#/$defs/timestamp" },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Recognized caller wording or assistant wording as spoken, never a rewritten summary. Simulation examples contain fictional speech."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "schema_version": "1.0.0",
+  "simulated": true,
+  "report_id": "sim-incident-001",
+  "provider_call_id": "sim-call-001",
+  "version": 3,
+  "created_at": "2026-10-23T18:00:10Z",
+  "updated_at": "2026-10-23T18:01:10Z",
+  "transcript": [
+    {
+      "turn_id": "turn-001",
+      "speaker": "assistant",
+      "recorded_at": "2026-10-23T18:00:00Z",
+      "text": "This is a FloodLine simulation. Please describe the fictional flooding and its location."
+    },
+    {
+      "turn_id": "turn-002",
+      "speaker": "caller",
+      "recorded_at": "2026-10-23T18:00:08Z",
+      "text": "For this simulation, water is rising inside our building on Juniper Lane in fictional Millhaven."
+    },
+    {
+      "turn_id": "turn-003",
+      "speaker": "assistant",
+      "recorded_at": "2026-10-23T18:00:15Z",
+      "text": "What is the fictional house number? How many people are affected, including children? Is the water moving fast, is anyone trapped, or is there electrical danger?"
+    },
+    {
+      "turn_id": "turn-004",
+      "speaker": "caller",
+      "recorded_at": "2026-10-23T18:00:35Z",
+      "text": "For the simulation, the address is 18 Juniper Lane in fictional Millhaven. Four people are affected, including one child. The water is rising slowly, not moving fast. Nobody is trapped, and there is no electrical danger."
+    },
+    {
+      "turn_id": "turn-005",
+      "speaker": "assistant",
+      "recorded_at": "2026-10-23T18:00:50Z",
+      "text": "I recorded 18 Juniper Lane and four people, including one child, for this simulation. Is that correct?"
+    },
+    {
+      "turn_id": "turn-006",
+      "speaker": "caller",
+      "recorded_at": "2026-10-23T18:01:05Z",
+      "text": "Correction for the simulation: the house number is 81, not 18. There are three people affected, not four, still including one child. The other details are unchanged."
+    }
+  ],
+  "summary": {
+    "text": "Simulated caller corrects the location to 81 Juniper Lane, fictional Millhaven, and the affected count to three, including one child. Rising indoor water and the earlier hazard denials remain as reported. Prior synthetic coordinates were removed because they are unsupported for the corrected address. Human review is needed.",
+    "generated_by": "model",
+    "source_turn_ids": [
+      "turn-002",
+      "turn-004",
+      "turn-006"
+    ]
+  },
+  "reported_location": {
+    "description": "81 Juniper Lane, fictional Millhaven",
+    "precision": "address",
+    "source_turn_ids": [
+      "turn-006"
+    ]
+  },
+  "people_affected": {
+    "count": 3,
+    "includes_children": true,
+    "source_turn_ids": [
+      "turn-006"
+    ]
+  },
+  "hazards": {
+    "rising_water": true,
+    "fast_moving_water": false,
+    "trapped_people": false,
+    "electrical_danger": false,
+    "source_turn_ids": [
+      "turn-004"
+    ]
+  },
+  "unknown_fields": [
+    {
+      "field": "/reported_location/coordinates",
+      "reason": "not_available",
+      "source_turn_ids": [
+        "turn-006"
+      ]
+    }
+  ],
+  "review_status": "needs_review",
+  "revisions": [
+    {
+      "version": 1,
+      "recorded_at": "2026-10-23T18:00:10Z",
+      "kind": "created",
+      "changed_fields": [
+        "/provider_call_id",
+        "/transcript",
+        "/summary",
+        "/reported_location",
+        "/people_affected",
+        "/hazards",
+        "/unknown_fields",
+        "/review_status"
+      ],
+      "source_turn_ids": [
+        "turn-002"
+      ],
+      "note": "Created a fictional simulation report from the initial caller statement."
+    },
+    {
+      "version": 2,
+      "recorded_at": "2026-10-23T18:00:40Z",
+      "kind": "updated",
+      "changed_fields": [
+        "/transcript",
+        "/summary",
+        "/reported_location",
+        "/people_affected",
+        "/hazards",
+        "/unknown_fields"
+      ],
+      "source_turn_ids": [
+        "turn-004"
+      ],
+      "note": "Completed fictional report answers and attached explicitly synthetic fixture coordinates; no verification implied."
+    },
+    {
+      "version": 3,
+      "recorded_at": "2026-10-23T18:01:10Z",
+      "kind": "correction",
+      "changed_fields": [
+        "/transcript",
+        "/summary",
+        "/reported_location",
+        "/people_affected",
+        "/unknown_fields",
+        "/review_status"
+      ],
+      "source_turn_ids": [
+        "turn-006"
+      ],
+      "note": "Caller explicitly corrected the address and people count. Kept prior evidence and removed coordinates unsupported for the corrected address."
+    }
+  ]
+}
