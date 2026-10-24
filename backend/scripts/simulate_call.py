@@ -29,6 +29,18 @@ SCENARIOS = {
         "Four of us, we're on the third floor, room 312.",
         "My son has asthma and we're running low on his inhaler.",
     ],
+    "hotel-floor5": [
+        "We need help, we're at the Handlery Hotel, my wife and two kids.",
+        "We're on the fifth floor, room 507. The stairwell is flooding.",
+    ],
+    "trapped-roof": [
+        "We're on the roof of the Days Inn on Hotel Circle South, the water is right below us.",
+        "There's three of us, my wife, my daughter and me.",
+    ],
+    "witness": [
+        "I'm across the street from the Days Inn on Hotel Circle South, there are people waving on the roof.",
+        "I can see three people, one looks like a kid. I'm safe, I'm up on the hill.",
+    ],
     "correction": [
         "I'm stuck in my car, no wait, I got out, I'm on the roof of a shop.",
         "It's on Hotel Circle South, near the Days Inn.",

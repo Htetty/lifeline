@@ -1,5 +1,7 @@
 """Claude turns a call transcript into incident facts plus a suggested next question."""
 
+from typing import Literal
+
 import anthropic
 from pydantic import BaseModel, Field
 
@@ -26,6 +28,19 @@ takes back a location they gave earlier ("sorry, it's actually the north side").
 Rewording, adding detail to the same place, or giving a location for the first time
 is not a change.
 
+`caller_role` is "trapped" when the caller is one of the people needing rescue,
+"witness" when they are reporting other people from somewhere else (a neighbour,
+someone outside or across the street), or "unknown". Location, people count and
+position always describe the people needing rescue; for a witness that's the
+building they are reporting, not where the witness is standing. "I'm across the
+street from the Days Inn, people are on its roof" means the location is "the roof of
+the Days Inn" and the search is the Days Inn.
+
+Record the floor, room or unit in `reported_position` whenever given: several
+families in one hotel or apartment block are separate rescues, and the floor/room
+is how the dispatcher tells them apart. If the caller is in a multi-unit building
+and hasn't said which floor or room, that is the next thing to ask after the count.
+
 For each hazard, include the caller's words that support it as `evidence`.
 
 `location_queries` are up to three map-search strings for the caller's current
@@ -34,10 +49,12 @@ takes place in Mission Valley, San Diego. Prefer named places the caller mention
 (a hotel, business, school, apartment complex) and street addresses with a house
 number, e.g. "Days Inn Hotel Circle, San Diego, CA". Use only names and streets the
 caller actually said; leave the list empty if they gave nothing searchable.
-A search result is drawn as the caller's own building, so only search for the place
-the caller is IN. Never search for a landmark they are near, next to, behind or
-across from ("a house next to the Holiday Inn" gives no query); the dispatcher
-places those by hand.
+A search result is drawn as the building where people need rescue, so only search
+for that building (for a witness: "a family on the roof of the Handlery" means search
+the Handlery). Never search for a landmark it is near, next to, behind or across
+from ("a house next to the Holiday Inn" gives no query); the dispatcher places those
+by hand. These "near X" rules are about where the people needing rescue are, not
+about where a witness is standing.
 
 `next_question` is one short, calm question the call-taker can ask to fill the most
 important gap, in this priority: exact location, number of people, where they are in
@@ -53,7 +70,12 @@ class HazardFact(BaseModel):
 
 
 class Extraction(BaseModel):
-    reported_address: str | None = Field(description="Caller's description of where they are, in their words")
+    caller_role: Literal["trapped", "witness", "unknown"] = Field(
+        description="Is the caller among the people needing rescue, or reporting others?"
+    )
+    reported_address: str | None = Field(
+        description="Where the people needing rescue are, in the caller's words (for a witness: the building they see)"
+    )
     people_count: int | None = Field(description="Number of people needing rescue, if stated")
     reported_position: str | None = Field(description="Where they are in the building: floor, roof, attic, vehicle")
     location_queries: list[str] = Field(description="Map-search strings for the current location, most specific first")

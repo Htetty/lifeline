@@ -24,6 +24,34 @@ async function bump(ctx: MutationCtx, incident: Doc<"incidents">, patch: Partial
   await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1 });
 }
 
+/** Reports a dispatcher linked to this incident as being about the same people. */
+async function linkedReports(ctx: MutationCtx, id: Id<"incidents">) {
+  return await ctx.db
+    .query("incidents")
+    .withIndex("by_linkedTo", (q) => q.eq("linkedTo", id))
+    .collect();
+}
+
+function rejectIfLinked(incident: Doc<"incidents">) {
+  if (incident.linkedTo) {
+    throw new ConvexError("This report is linked to another incident. Manage the main report, or unlink it first.");
+  }
+}
+
+/** Linked reports follow the main incident's status and team, and their callers hear the same progress. */
+async function syncLinked(
+  ctx: MutationCtx,
+  main: Doc<"incidents">,
+  patch: Pick<Doc<"incidents">, "status" | "assignedTeamId">,
+  update: Doc<"events">["type"] | null,
+  teamName: string | null,
+) {
+  for (const report of await linkedReports(ctx, main._id)) {
+    await bump(ctx, report, patch);
+    if (update) await queueCallerUpdate(ctx, report, update, { teamName });
+  }
+}
+
 /** A dispatcher marks people stuck in a building directly on the map. */
 export const reportFromMap = mutation({
   args: {
@@ -70,6 +98,7 @@ export const verifyLocation = mutation({
   },
   handler: async (ctx, { incidentId, latitude, longitude }) => {
     const incident = await load(ctx, incidentId);
+    rejectIfLinked(incident);
     const moving = latitude != null && (latitude !== incident.latitude || longitude !== incident.longitude);
     if (moving && incident.status !== "needs_review" && incident.status !== "awaiting_assignment") {
       throw new ConvexError("A team is already dispatched here. Unassign the team before moving the location.");
@@ -94,6 +123,7 @@ export const assignTeam = mutation({
   args: { incidentId: v.id("incidents"), teamId: v.id("teams") },
   handler: async (ctx, { incidentId, teamId }) => {
     const incident = await load(ctx, incidentId);
+    rejectIfLinked(incident);
     const team = await ctx.db.get(teamId);
     if (!team) throw new ConvexError("Team not found");
     if (!incident.locationVerified) throw new ConvexError("Confirm the location before assigning a team");
@@ -104,6 +134,7 @@ export const assignTeam = mutation({
     await ctx.db.patch(team._id, { available: false, currentAssignment: incident._id, updatedAt: Date.now() });
     await logActivity(ctx, `${team.name} assigned to ${incident.reportedAddress}.`, incident._id);
     await queueCallerUpdate(ctx, incident, "assignment_approved", { teamName: team.name });
+    await syncLinked(ctx, incident, { status: "assigned", assignedTeamId: team._id }, "assignment_approved", team.name);
   },
 });
 
@@ -120,6 +151,7 @@ export const setStatus = mutation({
   args: { incidentId: v.id("incidents"), status: incidentStatus },
   handler: async (ctx, { incidentId, status }) => {
     const incident = await load(ctx, incidentId);
+    rejectIfLinked(incident);
     if (incident.status === status) return;
     if (!TRANSITIONS[incident.status].includes(status)) {
       throw new ConvexError(`Can't change from "${STATUS_LABEL[incident.status]}" to "${STATUS_LABEL[status]}"`);
@@ -144,6 +176,79 @@ export const setStatus = mutation({
     if (unassigning) await queueCallerUpdate(ctx, incident, "assignment_changed", { teamName });
     if (status === "en_route") await queueCallerUpdate(ctx, incident, "team_en_route", { teamName });
     if (status === "resolved") await queueCallerUpdate(ctx, incident, "rescue_resolved", { teamName });
+    const update = unassigning
+      ? "assignment_changed"
+      : status === "en_route"
+        ? "team_en_route"
+        : status === "resolved"
+          ? "rescue_resolved"
+          : null;
+    await syncLinked(
+      ctx,
+      incident,
+      { status, assignedTeamId: unassigning ? null : incident.assignedTeamId },
+      update,
+      teamName,
+    );
+  },
+});
+
+/**
+ * Link reports about the same people to a main incident (e.g. ten witnesses calling about one
+ * family on a roof). Linked reports leave the queue and map, follow the main incident's status
+ * and team, and their callers hear its progress. Separate rescues in the same building
+ * (different floors, different families) should stay separate.
+ */
+export const linkReports = mutation({
+  args: { mainId: v.id("incidents"), reportIds: v.array(v.id("incidents")) },
+  handler: async (ctx, { mainId, reportIds }) => {
+    let main = await load(ctx, mainId);
+    if (main.linkedTo) main = await load(ctx, main.linkedTo); // always link to the top-level incident
+    if (main.status === "resolved") throw new ConvexError("The main incident is already resolved");
+    const team = main.assignedTeamId ? await ctx.db.get(main.assignedTeamId) : null;
+
+    for (const reportId of reportIds) {
+      const report = await load(ctx, reportId);
+      if (report._id === main._id || report.linkedTo === main._id) continue;
+      if (report.status === "resolved") throw new ConvexError(`"${report.reportedAddress}" is already resolved`);
+      if (report.status === "assigned" || report.status === "en_route") {
+        throw new ConvexError(`"${report.reportedAddress}" has its own team. Unassign it before linking.`);
+      }
+      // Reports already linked to this one move to the main incident too.
+      for (const child of await linkedReports(ctx, report._id)) {
+        await bump(ctx, child, { linkedTo: main._id, status: main.status, assignedTeamId: main.assignedTeamId });
+      }
+      await bump(ctx, report, { linkedTo: main._id, status: main.status, assignedTeamId: main.assignedTeamId });
+      await queueCallerUpdate(ctx, report, "report_linked", { teamName: team?.name ?? null });
+      await logActivity(ctx, `Report "${report.reportedAddress}" linked to "${main.reportedAddress}".`, report._id);
+    }
+  },
+});
+
+/** Undo a link: the report becomes its own incident again, without a team. */
+export const unlinkReport = mutation({
+  args: { reportId: v.id("incidents") },
+  handler: async (ctx, { reportId }) => {
+    const report = await load(ctx, reportId);
+    if (!report.linkedTo) return;
+    await bump(ctx, report, {
+      linkedTo: null,
+      assignedTeamId: null,
+      status: report.locationVerified ? "awaiting_assignment" : "needs_review",
+    });
+    await logActivity(ctx, `Report "${report.reportedAddress}" unlinked; now its own incident.`, report._id);
+  },
+});
+
+/** Dispatcher says two nearby incidents are separate rescues (stops suggesting a link). */
+export const markSeparate = mutation({
+  args: { incidentId: v.id("incidents"), otherId: v.id("incidents") },
+  handler: async (ctx, { incidentId, otherId }) => {
+    const [a, b] = [await load(ctx, incidentId), await load(ctx, otherId)];
+    const add = (i: Doc<"incidents">, other: Id<"incidents">) =>
+      bump(ctx, i, { separateFrom: [...new Set([...(i.separateFrom ?? []), other])] });
+    await add(a, b._id);
+    await add(b, a._id);
   },
 });
 

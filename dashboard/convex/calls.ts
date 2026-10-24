@@ -3,7 +3,7 @@ import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { logActivity, requireBackend } from "./lib";
-import { hazard, incidentSource } from "./schema";
+import { callerRole, hazard, incidentSource } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
@@ -52,6 +52,7 @@ export const upsertFromCall = mutation({
      * Rewording the same place is not a change.
      */
     locationChanged: v.optional(v.boolean()),
+    callerRole: v.optional(callerRole),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
@@ -75,6 +76,7 @@ export const upsertFromCall = mutation({
         transcript: args.transcript,
         status: "needs_review",
         assignedTeamId: null,
+        callerRole: args.callerRole ?? "unknown",
         callConnected: true,
         createdAt: now,
         updatedAt: now,
@@ -90,6 +92,7 @@ export const upsertFromCall = mutation({
     if (args.peopleCount != null) patch.peopleCount = args.peopleCount;
     if (args.reportedPosition != null) patch.reportedPosition = args.reportedPosition;
     if (args.summary) patch.summary = args.summary;
+    if (args.callerRole && args.callerRole !== "unknown") patch.callerRole = args.callerRole;
 
     // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
     if (args.hazards.length) patch.hazards = args.hazards;
@@ -120,6 +123,7 @@ export const upsertFromCall = mutation({
         patch.latitude = args.candidateLatitude ?? null;
         patch.longitude = args.candidateLongitude ?? null;
         patch.locationNote = args.candidateLabel ?? null;
+        patch.linkedTo = null; // a different place may be a different incident
         await logActivity(ctx, `Caller corrected location to "${args.reportedAddress}". Needs review.`, existing._id);
         // Only worth telling the caller if they had already heard the location was confirmed.
         if (existing.locationVerified) await queueCallerUpdate(ctx, existing, "location_unclear");
@@ -187,6 +191,8 @@ export const callState = query({
         hazards: incident.hazards.map((h) => h.hazard),
         assignedTeamName: teamName,
         callConnected: incident.callConnected,
+        callerRole: incident.callerRole ?? "unknown",
+        linkedToAnotherReport: Boolean(incident.linkedTo),
       },
       pending: pending
         .sort((a, b) => a.createdAt - b.createdAt)

@@ -59,7 +59,8 @@ The backend pushes every change from Convex; there is nothing to poll.
 
 Announcement kinds: `details_received`, `location_confirmed`, `location_unclear`, `assignment_approved`,
 `assignment_changed`, `team_en_route`, `rescue_resolved`, `dispatcher_message` (typed by the dispatcher on the
-dashboard). Wording lives in `dashboard/convex/callerUpdates.ts`, so the dashboard shows exactly what was said.
+dashboard), `report_linked` (the dispatcher matched this call to another report about the same people). Witnesses
+get witness wording ("the people you reported"); `status.callerRole` says which. Wording lives in `dashboard/convex/callerUpdates.ts`, so the dashboard shows exactly what was said.
 
 A minimal working client is `scripts/simulate_call.py`.
 

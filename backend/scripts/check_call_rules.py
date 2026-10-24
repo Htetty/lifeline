@@ -40,12 +40,14 @@ def new_call() -> str:
     return f"check-{uuid.uuid4().hex[:8]}"
 
 
-def upsert(call_id: str, address: str | None, changed: bool = False, candidate=None) -> dict:
+def upsert(call_id: str, address: str | None, changed: bool = False, candidate=None, role: str | None = None) -> dict:
     args = {
         "secret": SECRET, "callId": call_id, "source": "live_demo", "reportedAddress": address,
         "peopleCount": 2.0, "reportedPosition": "[check] roof", "hazards": [], "summary": "[check]",
         "transcript": "Caller: [check]", "locationChanged": changed,
     }
+    if role:
+        args["callerRole"] = role
     if candidate:
         args |= {"candidateLatitude": candidate[0], "candidateLongitude": candidate[1], "candidateLabel": "Map search: test"}
     result = convex.mutation("calls:upsertFromCall", args)
@@ -146,6 +148,34 @@ def convex_rules() -> None:
     fixture = next(i for i in convex.query("exercise:get")["incidents"] if i["callId"] is None)
     err = rejected(lambda: convex.mutation("incidents:sendCallerMessage", {"incidentId": fixture["_id"], "message": "hi"}))
     check("can't message an incident without a call", err is not None)
+
+    # 8. Linking reports about the same people (witnesses) to the main incident.
+    main_call, w1, w2 = new_call(), new_call(), new_call()
+    m = upsert(main_call, "the Days Inn roof", candidate=DAYS_INN, role="trapped")
+    a = upsert(w1, "the Days Inn roof", candidate=DAYS_INN, role="witness")
+    b = upsert(w2, "the Days Inn roof", candidate=DAYS_INN, role="witness")
+    convex.mutation("incidents:linkReports", {"mainId": m["incidentId"], "reportIds": [a["incidentId"], b["incidentId"]]})
+    convex.mutation("incidents:verifyLocation", {"incidentId": m["incidentId"]})
+    team = free_team()
+    convex.mutation("incidents:assignTeam", {"incidentId": m["incidentId"], "teamId": team["_id"]})
+    wstate = convex.query("calls:callState", {"secret": SECRET, "callId": w1})
+    check("linked witness follows main status and team",
+          wstate["status"]["stage"] == "assigned" and wstate["status"]["assignedTeamName"] == team["name"],
+          str(wstate["status"]))
+    wtext = [e["text"] for e in wstate["pending"]]
+    check("witness hears witness wording", any("the people you reported" in t for t in wtext), str(wtext))
+    err = rejected(lambda: convex.mutation("incidents:setStatus", {"incidentId": a["incidentId"], "status": "resolved"}))
+    check("linked report can't be managed on its own", err is not None)
+    t = next(x for x in convex.query("exercise:get")["teams"] if x["_id"] == team["_id"])
+    check("linking doesn't book extra teams", t["currentAssignment"] == m["incidentId"])
+    convex.mutation("incidents:setStatus", {"incidentId": m["incidentId"], "status": "en_route"})
+    check("en route reaches linked callers",
+          convex.query("calls:callState", {"secret": SECRET, "callId": w2})["status"]["stage"] == "en_route")
+    convex.mutation("incidents:unlinkReport", {"reportId": b["incidentId"]})
+    s2 = convex.query("calls:callState", {"secret": SECRET, "callId": w2})["status"]
+    check("unlinked report is its own incident without a team",
+          not s2["linkedToAnotherReport"] and s2["assignedTeamName"] is None and s2["stage"] in ("needs_review", "awaiting_assignment"),
+          str(s2))
 
 
 def live_calls(api: str) -> None:

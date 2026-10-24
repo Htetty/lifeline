@@ -26,6 +26,9 @@ export const hazard = v.object({
   evidence: v.union(v.string(), v.null()),
 });
 
+/** Whether the caller is among the people needing rescue or reporting others. */
+export const callerRole = v.union(v.literal("trapped"), v.literal("witness"), v.literal("unknown"));
+
 export const capability = v.union(
   v.literal("road_vehicle"),
   v.literal("high_water_vehicle"),
@@ -58,6 +61,14 @@ export default defineSchema({
     transcript: v.union(v.string(), v.null()),
     status: incidentStatus,
     assignedTeamId: v.union(v.id("teams"), v.null()),
+    callerRole: v.optional(callerRole),
+    /**
+     * Set when a dispatcher links this report to another one about the same people:
+     * this report then follows the main incident's status and team.
+     */
+    linkedTo: v.optional(v.union(v.id("incidents"), v.null())),
+    /** Nearby incidents the dispatcher said are separate rescues (hides the suggestion). */
+    separateFrom: v.optional(v.array(v.id("incidents"))),
     /** Whether the caller is still connected. Separate from rescue status. */
     callConnected: v.boolean(),
     createdAt: v.number(),
@@ -65,7 +76,8 @@ export default defineSchema({
     version: v.number(),
   })
     .index("by_exercise", ["exerciseId"])
-    .index("by_callId", ["callId"]),
+    .index("by_callId", ["callId"])
+    .index("by_linkedTo", ["linkedTo"]),
 
   teams: defineTable({
     exerciseId: v.string(),

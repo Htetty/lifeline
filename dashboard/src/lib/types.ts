@@ -30,6 +30,12 @@ export interface Incident {
   assignedTeamId: string | null;
   /** Whether the caller is still on the line (separate from rescue status). */
   callConnected: boolean;
+  /** Caller is among the people needing rescue, or a witness reporting others. */
+  callerRole?: "trapped" | "witness" | "unknown";
+  /** Main incident this report was linked to (same people), if any. */
+  linkedTo?: string | null;
+  /** Nearby incidents a dispatcher marked as separate rescues. */
+  separateFrom?: string[];
   createdAt: number;
   updatedAt: number;
   version: number;

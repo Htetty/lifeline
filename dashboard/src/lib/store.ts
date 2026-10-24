@@ -26,6 +26,9 @@ export type Action =
   | { type: "assignTeam"; incidentId: string; teamId: string }
   | { type: "setStatus"; incidentId: string; status: IncidentStatus }
   | { type: "sendCallerMessage"; incidentId: string; message: string }
+  | { type: "linkReports"; mainId: string; reportIds: string[] }
+  | { type: "unlinkReport"; reportId: string }
+  | { type: "markSeparate"; incidentId: string; otherId: string }
   | { type: "reset" };
 
 function toIncident(d: Doc<"incidents">): Incident {
@@ -98,6 +101,21 @@ export async function dispatch(action: Action): Promise<void> {
       await convex.mutation(api.incidents.sendCallerMessage, {
         incidentId: asIncident(action.incidentId),
         message: action.message,
+      });
+      return;
+    case "linkReports":
+      await convex.mutation(api.incidents.linkReports, {
+        mainId: asIncident(action.mainId),
+        reportIds: action.reportIds.map(asIncident),
+      });
+      return;
+    case "unlinkReport":
+      await convex.mutation(api.incidents.unlinkReport, { reportId: asIncident(action.reportId) });
+      return;
+    case "markSeparate":
+      await convex.mutation(api.incidents.markSeparate, {
+        incidentId: asIncident(action.incidentId),
+        otherId: asIncident(action.otherId),
       });
       return;
     case "reset":

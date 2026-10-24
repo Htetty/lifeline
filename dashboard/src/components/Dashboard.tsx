@@ -11,6 +11,7 @@ import { buildFloodGrid, computeFlood, isFlooded, waterAtBuilding, type FloodGri
 import { dispatch, errorMessage, useExercise, type Action } from "@/lib/store";
 import type { ExerciseState, Incident, IncidentStatus, RescueTeam } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types";
+import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
@@ -154,7 +155,10 @@ function DashboardView({ state }: { state: ExerciseState }) {
     [placingFor, run],
   );
 
-  const incidents = [...state.incidents]
+  // Linked reports are about the same people as their main incident: list, map and count it once.
+  const mainIncidents = state.incidents.filter((i) => !i.linkedTo);
+  const linkedCount = (id: string) => state.incidents.filter((i) => i.linkedTo === id).length;
+  const incidents = [...mainIncidents]
     .filter((i) => FILTERS[filter](i.status))
     .sort((a, b) => {
       const rank = (i: Incident) =>
@@ -163,10 +167,13 @@ function DashboardView({ state }: { state: ExerciseState }) {
     });
   const selected = state.incidents.find((i) => i.id === selectedId) ?? null;
   const placing = state.incidents.find((i) => i.id === placingFor) ?? null;
-  const stuckPeople = state.incidents
+  const stuckPeople = mainIncidents
     .filter((i) => ACTIVE_STATUSES.includes(i.status))
     .reduce((n, i) => n + (i.peopleCount ?? 0), 0);
-  const mapState = useMemo(() => ({ ...state, waterSurfaceElevation: waterLevel }), [state, waterLevel]);
+  const mapState = useMemo(
+    () => ({ ...state, incidents: state.incidents.filter((i) => !i.linkedTo), waterSurfaceElevation: waterLevel }),
+    [state, waterLevel],
+  );
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
@@ -294,6 +301,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                           ● On call
                         </span>
                       )}
+                      <GroupBadges incident={i} all={state.incidents} linked={linkedCount(i.id)} />
                     </div>
                     <p className="mt-1.5 text-sm font-medium">{i.reportedAddress}</p>
                     <p className="mt-0.5 text-xs text-slate-400">
@@ -377,7 +385,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
                     water={waterReport(selected)}
                     waterSurface={waterLevel}
                     teams={state.teams}
+                    allIncidents={state.incidents}
                     run={run}
+                    onSelect={setSelectedId}
                     onPlace={() => {
                       setPlacingFor(selected.id);
                       setReportMode(false);
@@ -421,7 +431,9 @@ function IncidentDetail({
   water,
   waterSurface,
   teams,
+  allIncidents,
   run,
+  onSelect,
   onPlace,
   onClose,
 }: {
@@ -429,10 +441,13 @@ function IncidentDetail({
   water: ReturnType<typeof waterAtBuilding> | null;
   waterSurface: number;
   teams: RescueTeam[];
+  allIncidents: Incident[];
   run: Run;
+  onSelect: (id: string) => void;
   onPlace: () => void;
   onClose: () => void;
 }) {
+  const main = incident.linkedTo ? allIncidents.find((i) => i.id === incident.linkedTo) : null;
   const [teamId, setTeamId] = useState("");
   const available = teams.filter((t) => t.available);
   const assigned = teams.find((t) => t.id === incident.assignedTeamId);
@@ -488,6 +503,24 @@ function IncidentDetail({
         <dd>{incident.summary || "—"}</dd>
       </dl>
 
+      {main ? (
+        <div className="rounded bg-sky-500/10 p-2.5 text-xs ring-1 ring-sky-400/40">
+          <p className="text-sky-200">
+            Linked to <b>{main.reportedAddress}</b>. This caller hears that incident&apos;s progress.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button onClick={() => onSelect(main.id)} className="rounded bg-sky-600 px-2.5 py-1 font-semibold">
+              Open main report
+            </button>
+            <button onClick={() => run({ type: "unlinkReport", reportId: incident.id })} className="rounded bg-slate-700 px-2.5 py-1">
+              Unlink
+            </button>
+          </div>
+        </div>
+      ) : (
+        <SameLocation incident={incident} all={allIncidents} run={run} onSelect={onSelect} />
+      )}
+
       {incident.callId && <CallerUpdates incident={incident} run={run} />}
 
       {incident.transcript && (
@@ -501,7 +534,7 @@ function IncidentDetail({
 
       {onMap && <WaterPanel water={water} waterSurface={waterSurface} />}
 
-      {!onMap ? (
+      {main ? null : !onMap ? (
         <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
           <p className="text-xs text-yellow-200">
             No map location yet. Match the caller&apos;s description to a building.
@@ -587,6 +620,129 @@ function IncidentDetail({
               </button>
             )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ROLE_LABEL = { trapped: "Trapped caller", witness: "Witness", unknown: "Caller" } as const;
+
+function GroupBadges({ incident, all, linked }: { incident: Incident; all: Incident[]; linked: number }) {
+  if (!isOpen(incident)) return linked ? <span className="text-[11px] text-slate-400">+{linked} linked</span> : null;
+  const nearby = nearbyReports(incident, all);
+  const likely = nearby.filter((n) => n.relation !== "separate_rescue").length;
+  const { rescues } = buildingSummary(incident, nearby);
+  return (
+    <>
+      {incident.callerRole === "witness" && (
+        <span className="rounded bg-slate-600 px-1.5 py-0.5 text-[11px] font-semibold">Witness</span>
+      )}
+      {linked > 0 && (
+        <span className="rounded bg-sky-500/80 px-1.5 py-0.5 text-[11px] font-semibold">+{linked} linked reports</span>
+      )}
+      {likely > 0 && (
+        <span className="rounded bg-orange-400 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
+          {likely} possible duplicate{likely > 1 ? "s" : ""}
+        </span>
+      )}
+      {rescues > 1 && (
+        <span className="rounded bg-indigo-400 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
+          Same building · {rescues} rescues
+        </span>
+      )}
+    </>
+  );
+}
+
+const RELATION_LABEL: Record<NearbyReport["relation"], { text: string; cls: string }> = {
+  likely_same: { text: "Likely same incident", cls: "text-orange-300" },
+  possibly_same: { text: "Possibly same people", cls: "text-orange-200" },
+  separate_rescue: { text: "Separate rescue, same building", cls: "text-indigo-300" },
+};
+
+/** Other reports at this building: link duplicates, keep separate rescues apart. */
+function SameLocation({
+  incident,
+  all,
+  run,
+  onSelect,
+}: {
+  incident: Incident;
+  all: Incident[];
+  run: Run;
+  onSelect: (id: string) => void;
+}) {
+  const linked = all.filter((i) => i.linkedTo === incident.id);
+  const nearby = isOpen(incident) ? nearbyReports(incident, all) : [];
+  if (!linked.length && !nearby.length) return null;
+
+  const duplicates = nearby.filter((n) => n.relation === "likely_same");
+  const summary = buildingSummary(incident, nearby);
+
+  const link = (other: Incident) => {
+    const [mainReport, report] = pickMain(incident, other);
+    run({ type: "linkReports", mainId: mainReport.id, reportIds: [report.id] });
+    onSelect(mainReport.id);
+  };
+
+  return (
+    <div className="space-y-2 rounded bg-slate-800/70 p-2.5 text-xs">
+      <h3 className="text-slate-400">At this building</h3>
+      {summary.rescues > 1 && (
+        <p className="text-indigo-200">
+          {summary.rescues} separate rescues here · {summary.people} people reported in total
+        </p>
+      )}
+      {nearby.map(({ incident: other, relation, reason }) => (
+        <div key={other.id} className="rounded bg-slate-900/70 p-2">
+          <p className={RELATION_LABEL[relation].cls}>
+            <b>{RELATION_LABEL[relation].text}</b> · {ROLE_LABEL[other.callerRole ?? "unknown"]}
+          </p>
+          <button onClick={() => onSelect(other.id)} className="text-left text-slate-200 hover:underline">
+            {other.reportedAddress} · {other.peopleCount ?? "?"} people · {other.reportedPosition ?? "position unknown"}
+          </button>
+          <p className="text-slate-500">{reason}</p>
+          <div className="mt-1.5 flex gap-1.5">
+            <button onClick={() => link(other)} className="rounded bg-orange-500 px-2 py-0.5 font-semibold text-slate-900">
+              Same incident
+            </button>
+            <button
+              onClick={() => run({ type: "markSeparate", incidentId: incident.id, otherId: other.id })}
+              className="rounded bg-slate-700 px-2 py-0.5"
+            >
+              Separate rescue
+            </button>
+          </div>
+        </div>
+      ))}
+      {duplicates.length > 1 && (
+        <button
+          onClick={() =>
+            run({ type: "linkReports", mainId: incident.id, reportIds: duplicates.map((d) => d.incident.id) })
+          }
+          className="w-full rounded bg-orange-500 px-2 py-1 font-semibold text-slate-900"
+        >
+          Link all {duplicates.length} likely duplicates to this report
+        </button>
+      )}
+      {linked.length > 0 && (
+        <div>
+          <p className="mb-1 text-sky-300">
+            {linked.length} linked report{linked.length > 1 ? "s" : ""} (same people, hear this incident&apos;s updates)
+          </p>
+          <ul className="space-y-1">
+            {linked.map((r) => (
+              <li key={r.id} className="flex items-center justify-between gap-2">
+                <span className="truncate text-slate-300">
+                  {ROLE_LABEL[r.callerRole ?? "unknown"]}: {r.reportedAddress}
+                </span>
+                <button onClick={() => run({ type: "unlinkReport", reportId: r.id })} className="shrink-0 rounded bg-slate-700 px-2 py-0.5">
+                  Unlink
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
