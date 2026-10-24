@@ -68,7 +68,7 @@ Populate `backend/.env` privately; never paste values into chat or commit it:
 | Name | Purpose |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Existing Claude extraction |
-| `VOICE_BRIDGE_TOKEN` | New random browser access credential, separate from backend secret |
+| `VOICE_BRIDGE_TOKEN` | Optional browser access credential, separate from backend secret. Leave unset for an open demo (team decision, 2026-10-24) |
 | `CARTESIA_API_KEY` | Server-side speech access; root ignored `.env` also supported |
 | `CARTESIA_AGENT_ID` | Read existing voice; root ignored `.env` also supported |
 | `CONVEX_URL` | Isolated deployment for normal direct server startup |

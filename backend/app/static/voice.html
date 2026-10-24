@@ -5,7 +5,7 @@
 <h1>Lifeline voice simulation</h1>
 <p>Fictional flood reports only. For a real emergency, contact local emergency services.</p>
 <p>Use headphones to prevent speaker audio being transcribed as caller speech. Open the dispatcher dashboard alongside this page.</p>
-<label>Bridge access token <input id="token" type="password" autocomplete="off"></label>
+<label>Bridge access token (leave blank unless one is configured) <input id="token" type="password" autocomplete="off"></label>
 <button id="start">Start microphone</button><button id="end" disabled>End session</button>
 <p id="status" role="status">Ready</p><pre id="log" aria-live="polite"></pre>
 <script>
@@ -49,7 +49,7 @@ $("start").onclick = async () => {
     context = new AudioContext(); await context.resume();
     await context.audioWorklet.addModule("/voice/capture.js");
     stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
-    const response = await fetch("/voice/sessions", {method:"POST",headers:{Authorization:"Bearer " + $("token").value}});
+    const response = await fetch("/voice/sessions", {method:"POST",headers:$("token").value ? {Authorization:"Bearer " + $("token").value} : {}});
     if (!response.ok) throw Error("Session authorization failed (" + response.status + ")");
     const session = await response.json();
     $("token").value = "";

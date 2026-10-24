@@ -24,7 +24,8 @@ from dotenv import dotenv_values
 # Environment variables override backend/.env, e.g. to point at a local Convex backend.
 env = {**dotenv_values(Path(__file__).resolve().parent.parent / ".env"), **os.environ}
 SECRET = env["BACKEND_SECRET"]
-DISPATCHER = {"dispatcherToken": env["DISPATCHER_TOKEN"]}
+# Optional: only deployments that set DISPATCHER_TOKEN require it.
+DISPATCHER = {"dispatcherToken": env["DISPATCHER_TOKEN"]} if env.get("DISPATCHER_TOKEN") else {}
 VOICE_HEADERS = {"Authorization": f"Bearer {env['VOICE_BRIDGE_TOKEN']}"} if env.get("VOICE_BRIDGE_TOKEN") else {}
 
 

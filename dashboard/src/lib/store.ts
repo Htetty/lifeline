@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "../../convex/_generated/api";
@@ -61,6 +61,21 @@ let memoryToken: string | null = null;
 const currentToken = () => memoryToken ?? storedToken() ?? "";
 export const currentDispatcherToken = currentToken;
 const tokenListeners = new Set<() => void>();
+
+/**
+ * Whether this deployment requires a dispatcher passcode. Open by default for the demo;
+ * only a deployment with DISPATCHER_TOKEN set asks for one. null while checking.
+ */
+export function usePasscodeRequired(): boolean | null {
+  const [required, setRequired] = useState<boolean | null>(null);
+  useEffect(() => {
+    convex
+      .query(api.exercise.get, {})
+      .then(() => setRequired(false))
+      .catch((e) => setRequired(e instanceof ConvexError && String(e.data).includes("passcode")));
+  }, []);
+  return required;
+}
 
 /** The dispatcher passcode for this tab, and a sign-in that checks it with Convex first. */
 export function useDispatcherToken() {

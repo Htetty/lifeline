@@ -288,9 +288,11 @@ class AccessControl(Base):
         self.assertEqual(self.http.get(f"/calls/{self.call}/announcements", headers={"Authorization": ""}).status_code, 401)
         self.assertEqual(self.incidents(), [])
 
-    def test_voice_routes_fail_closed_when_unconfigured(self):
+    def test_voice_routes_are_open_when_no_token_is_configured(self):
+        # Open demo by default (team decision); a configured token is enforced (test above).
         with patch.dict(os.environ, {"VOICE_BRIDGE_TOKEN": ""}):
-            self.assertEqual(self.say().status_code, 503)
+            self.http.headers.pop("Authorization", None)
+            self.assertEqual(self.say().status_code, 200)
 
     def test_dispatcher_functions_require_the_passcode(self):
         self.say()

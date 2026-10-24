@@ -108,3 +108,15 @@ describe("approved announcement lifecycle", () => {
     expect(await t.query(api.calls.statusForCall,{secret,callId:"a"})).toMatchObject({status:"assigned",callConnected:false});
   });
 });
+
+describe("open demo mode", () => {
+  test("dashboard functions need no passcode when DISPATCHER_TOKEN is unset", async () => {
+    delete process.env.DISPATCHER_TOKEN;
+    const t = convexTest(schema, modules);
+    await t.mutation(api.exercise.ensureSeeded, {});
+    const state = await t.query(api.exercise.get, {});
+    expect(state?.incidents.length).toBeGreaterThan(0);
+    process.env.DISPATCHER_TOKEN = dispatcherToken;
+    await expect(t.query(api.exercise.get, {})).rejects.toThrow("passcode");
+  });
+});

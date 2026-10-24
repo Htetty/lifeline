@@ -19,7 +19,7 @@ an isolated local Convex deployment and does not change the working phone agent.
 # Backend against an ALREADY PREPARED ISOLATED Convex deployment:
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env      # only if .env does not already exist; fill BACKEND_SECRET, VOICE_BRIDGE_TOKEN and ANTHROPIC_API_KEY privately
+cp .env.example .env      # only if .env does not already exist; fill BACKEND_SECRET and ANTHROPIC_API_KEY privately (VOICE_BRIDGE_TOKEN is optional)
 .venv/bin/uvicorn app.main:app --reload --port 8000
 
 # Text simulation over the voice-agent stream (no microphone or playback); writes to the configured Convex:
@@ -29,10 +29,12 @@ cp .env.example .env      # only if .env does not already exist; fill BACKEND_SE
 .venv/bin/python scripts/check_call_rules.py --live
 ```
 
-All `/calls/*` endpoints, the `/calls/{id}/stream` WebSocket (header, or `?token=` for clients that can't set
-WebSocket headers) and `POST /voice/sessions` require `Authorization: Bearer <VOICE_BRIDGE_TOKEN>`.
-`BACKEND_SECRET` stays between this server and Convex; the browser never receives a
-provider key or backend secret. The dashboard asks for `DISPATCHER_TOKEN` at sign-in.
+**No login for the demo.** The voice routes and the dashboard are open by default. Both locks are optional:
+set `VOICE_BRIDGE_TOKEN` (backend) to require `Authorization: Bearer <token>` on `/calls/*`, the
+`/calls/{id}/stream` WebSocket (header, or `?token=`) and `POST /voice/sessions`; set `DISPATCHER_TOKEN` on the Convex
+deployment (`npx convex env set DISPATCHER_TOKEN <value>`) to make the dashboard ask for a passcode.
+`BACKEND_SECRET` stays between this server and Convex (nobody types it); the browser never receives a provider key
+or backend secret.
 Do not run `scripts/check_call_rules.py` against the shared deployment: it changes
 and deletes test incidents. Prefer the isolated fixture tests in the bridge guide.
 

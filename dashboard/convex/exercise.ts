@@ -5,7 +5,7 @@ import { EXERCISE_ID } from "./seedData";
 
 /** Everything the dashboard renders, in one reactive query. Null until seeded. */
 export const get = query({
-  args: { dispatcherToken: v.string() },
+  args: { dispatcherToken: v.optional(v.string()) },
   handler: async (ctx, { dispatcherToken }) => {
     requireDispatcher(dispatcherToken);
     const exercise = await getExercise(ctx);
@@ -31,7 +31,7 @@ export const get = query({
 
 /** Seeds the exercise the first time anyone opens the dashboard. */
 export const ensureSeeded = mutation({
-  args: { dispatcherToken: v.string() },
+  args: { dispatcherToken: v.optional(v.string()) },
   handler: async (ctx, { dispatcherToken }) => {
     requireDispatcher(dispatcherToken);
     if (await getExercise(ctx)) return false;
@@ -41,7 +41,7 @@ export const ensureSeeded = mutation({
 });
 
 export const reset = mutation({
-  args: { dispatcherToken: v.string() },
+  args: { dispatcherToken: v.optional(v.string()) },
   handler: async (ctx, { dispatcherToken }) => {
     requireDispatcher(dispatcherToken);
     await clearExercise(ctx);
@@ -50,7 +50,7 @@ export const reset = mutation({
 });
 
 export const setWaterLevel = mutation({
-  args: { dispatcherToken: v.string(), meters: v.number() },
+  args: { dispatcherToken: v.optional(v.string()), meters: v.number() },
   handler: async (ctx, { dispatcherToken, meters }) => {
     requireDispatcher(dispatcherToken);
     const exercise = await getExercise(ctx);
@@ -62,7 +62,7 @@ export const setWaterLevel = mutation({
 });
 
 export const logNote = mutation({
-  args: { dispatcherToken: v.string(), message: v.string() },
+  args: { dispatcherToken: v.optional(v.string()), message: v.string() },
   handler: async (ctx, { dispatcherToken, message }) => {
     requireDispatcher(dispatcherToken);
     await logActivity(ctx, message);

@@ -8,7 +8,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
 import { buildFloodGrid, computeFlood, isFlooded, waterAtBuilding, type FloodGrid } from "@/lib/flood";
-import { currentDispatcherToken, dispatch, errorMessage, useDispatcherToken, useExercise, type Action } from "@/lib/store";
+import {
+  currentDispatcherToken,
+  dispatch,
+  errorMessage,
+  useDispatcherToken,
+  useExercise,
+  usePasscodeRequired,
+  type Action,
+} from "@/lib/store";
 import type { ExerciseState, Incident, IncidentStatus, PriorityTier, RescueTeam } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types";
 import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
@@ -46,8 +54,17 @@ function fmt(m: number | null, digits = 1) {
 
 export default function Dashboard() {
   const { token, signIn } = useDispatcherToken();
-  if (!token) return <PasscodeGate signIn={signIn} />;
-  return <SignedInDashboard token={token} />;
+  const passcodeRequired = usePasscodeRequired();
+  if (passcodeRequired === null) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-950 text-sm text-slate-400">
+        Connecting to Convex…
+      </div>
+    );
+  }
+  // Open demo by default; a passcode form only appears if the deployment sets DISPATCHER_TOKEN.
+  if (passcodeRequired && !token) return <PasscodeGate signIn={signIn} />;
+  return <SignedInDashboard token={token ?? ""} />;
 }
 
 function PasscodeGate({ signIn }: { signIn: (token: string) => Promise<void> }) {

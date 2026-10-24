@@ -28,12 +28,12 @@ export function requireBackend(secret: string) {
 }
 
 /**
- * Dispatcher operations. The passcode is entered in the dashboard at runtime (never
- * bundled) and checked against `npx convex env set DISPATCHER_TOKEN <value>`.
+ * Optional dispatcher passcode. Off by default (open demo). To require one, run
+ * `npx convex env set DISPATCHER_TOKEN <value>`; the dashboard then asks for it.
  */
-export function requireDispatcher(token: string) {
+export function requireDispatcher(token: string | undefined) {
   const expected = process.env.DISPATCHER_TOKEN;
-  if (!expected || token !== expected) throw new ConvexError("Dispatcher passcode required");
+  if (expected && token !== expected) throw new ConvexError("Dispatcher passcode required");
 }
 
 /**

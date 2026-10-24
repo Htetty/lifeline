@@ -60,6 +60,12 @@ cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 New teammate: `NEXT_PUBLIC_CONVEX_URL` in `dashboard/.env.local`; `CONVEX_URL`, `BACKEND_SECRET` (shared privately) and
 their own `ANTHROPIC_API_KEY` in `backend/.env`. The deploy key is needed only by whoever edits Convex functions.
 
+## Access
+
+No login for the demo: dashboard and voice routes are open by default. Optional locks: `DISPATCHER_TOKEN` on the Convex
+deployment (dashboard then asks for a passcode) and `VOICE_BRIDGE_TOKEN` in `backend/.env` (voice routes then need a
+bearer token). `BACKEND_SECRET` is only between FastAPI and Convex.
+
 ## Several calls about one place
 
 Claude labels each caller `trapped` or `witness`. Obvious duplicates at the same building (≤35 m) link themselves

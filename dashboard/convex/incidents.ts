@@ -49,7 +49,7 @@ export const reportFromMap = mutation({
     peopleCount: v.union(v.number(), v.null()),
     reportedPosition: v.union(v.string(), v.null()),
     reportedAddress: v.string(),
-    dispatcherToken: v.string(),
+    dispatcherToken: v.optional(v.string()),
   },
   handler: async (ctx, { dispatcherToken, ...args }) => {
     requireDispatcher(dispatcherToken);
@@ -87,7 +87,7 @@ export const verifyLocation = mutation({
     incidentId: v.id("incidents"),
     latitude: v.optional(v.number()),
     longitude: v.optional(v.number()),
-    dispatcherToken: v.string(),
+    dispatcherToken: v.optional(v.string()),
   },
   handler: async (ctx, { dispatcherToken, incidentId, latitude, longitude }) => {
     requireDispatcher(dispatcherToken);
@@ -122,7 +122,7 @@ export const verifyLocation = mutation({
 
 /** Approve a team. Runs as one transaction, so a team can't be double-booked. */
 export const assignTeam = mutation({
-  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), teamId: v.id("teams") },
+  args: { dispatcherToken: v.optional(v.string()), incidentId: v.id("incidents"), teamId: v.id("teams") },
   handler: async (ctx, { dispatcherToken, incidentId, teamId }) => {
     requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
@@ -151,7 +151,7 @@ const TRANSITIONS: Record<Doc<"incidents">["status"], Doc<"incidents">["status"]
 };
 
 export const setStatus = mutation({
-  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), status: incidentStatus },
+  args: { dispatcherToken: v.optional(v.string()), incidentId: v.id("incidents"), status: incidentStatus },
   handler: async (ctx, { dispatcherToken, incidentId, status }) => {
     requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
@@ -204,7 +204,7 @@ export const setStatus = mutation({
  * (different floors, different families) should stay separate.
  */
 export const linkReports = mutation({
-  args: { dispatcherToken: v.string(), mainId: v.id("incidents"), reportIds: v.array(v.id("incidents")) },
+  args: { dispatcherToken: v.optional(v.string()), mainId: v.id("incidents"), reportIds: v.array(v.id("incidents")) },
   handler: async (ctx, { dispatcherToken, mainId, reportIds }) => {
     requireDispatcher(dispatcherToken);
     let main = await load(ctx, mainId);
@@ -225,7 +225,7 @@ export const linkReports = mutation({
 
 /** Undo a link: the report becomes its own incident again, without a team. */
 export const unlinkReport = mutation({
-  args: { dispatcherToken: v.string(), reportId: v.id("incidents") },
+  args: { dispatcherToken: v.optional(v.string()), reportId: v.id("incidents") },
   handler: async (ctx, { dispatcherToken, reportId }) => {
     requireDispatcher(dispatcherToken);
     const report = await load(ctx, reportId);
@@ -246,7 +246,7 @@ export const unlinkReport = mutation({
 
 /** Dispatcher says two nearby incidents are separate rescues (stops suggesting a link). */
 export const markSeparate = mutation({
-  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), otherId: v.id("incidents") },
+  args: { dispatcherToken: v.optional(v.string()), incidentId: v.id("incidents"), otherId: v.id("incidents") },
   handler: async (ctx, { dispatcherToken, incidentId, otherId }) => {
     requireDispatcher(dispatcherToken);
     const [a, b] = [await load(ctx, incidentId), await load(ctx, otherId)];
@@ -259,7 +259,7 @@ export const markSeparate = mutation({
 
 /** Dispatcher-written message for the voice agent to read to the caller word for word. */
 export const sendCallerMessage = mutation({
-  args: { dispatcherToken: v.string(), incidentId: v.id("incidents"), message: v.string() },
+  args: { dispatcherToken: v.optional(v.string()), incidentId: v.id("incidents"), message: v.string() },
   handler: async (ctx, { dispatcherToken, incidentId, message }) => {
     requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
@@ -275,7 +275,7 @@ export const sendCallerMessage = mutation({
 
 /** What the caller has been told (or will be told) for an incident, newest first. */
 export const callerUpdates = query({
-  args: { dispatcherToken: v.string(), incidentId: v.id("incidents") },
+  args: { dispatcherToken: v.optional(v.string()), incidentId: v.id("incidents") },
   handler: async (ctx, { dispatcherToken, incidentId }) => {
     requireDispatcher(dispatcherToken);
     const incident = await ctx.db.get(incidentId);
@@ -305,7 +305,7 @@ export const callerUpdates = query({
 /** Dispatcher overrides the computed priority (or clears the override with tier null). */
 export const setPriorityOverride = mutation({
   args: {
-    dispatcherToken: v.string(),
+    dispatcherToken: v.optional(v.string()),
     incidentId: v.id("incidents"),
     tier: v.union(priorityTier, v.null()),
     reason: v.string(),
