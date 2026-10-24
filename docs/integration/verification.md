@@ -8,7 +8,7 @@ fictional.
 ## What was verified, and how
 
 These results are from the merged branch: dev, PR #6 (ModernBERT), PR #7 (tests and runbook), and the local
-`codex/live-voice-dashboard` commit `b18b4f6`.
+`codex/live-voice-dashboard` commits `b18b4f6` and `39065e3`.
 
 | Level | What is real | What is mocked | Result |
 | --- | --- | --- | --- |
