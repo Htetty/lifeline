@@ -69,9 +69,9 @@ their own `ANTHROPIC_API_KEY` in `backend/.env`. The deploy key is needed only b
 
 ## Next steps
 
-1. **Cartesia voice** (Person 1): stream the mic → Cartesia STT → `POST /calls/{id}/utterances`. Speak `next_question`;
-   at pauses, `GET /calls/{id}/announcements`, speak the text, then `POST .../ack`. Confirm the Cartesia integration approach
-   (agent framework) before building.
+1. **Cartesia voice** (Person 1): connect one WebSocket per call to `/calls/{id}/stream` (protocol in
+   `backend/README.md`). Send utterances, keep the pushed `status` in context, speak pushed `announcement`s at pauses,
+   then `ack`. `scripts/simulate_call.py` is a working reference client.
 2. **Address lookup (done, basic):** Claude writes map-search queries for the building the caller is *in*. The backend
    searches OSM Nominatim (`backend/app/geocode.py`, free, 1 req/s) and places precise matches (hotels, businesses,
    house numbers) as an unverified candidate, so the building turns red automatically. Streets, areas and "next to X" stay

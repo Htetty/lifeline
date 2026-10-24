@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { callerUpdateType } from "./callerUpdates";
 
 // Shared data contract for the dashboard (Next.js) and the voice backend (FastAPI).
 // Unknown facts stay null rather than being guessed.
@@ -86,16 +87,21 @@ export default defineSchema({
   }).index("by_exercise_at", ["exerciseId", "at"]),
 
   /**
-   * Confirmed, caller-relevant updates for the voice agent to announce.
-   * Written only after the state change is saved; FastAPI marks them announced.
+   * Confirmed, caller-relevant updates for the voice agent to speak.
+   * Written only after the state change is saved; FastAPI acknowledges them once played.
+   * A newer progress update supersedes an unspoken older one.
    */
   events: defineTable({
     exerciseId: v.string(),
-    type: v.union(v.literal("assignment_approved"), v.literal("team_en_route"), v.literal("rescue_resolved")),
+    type: callerUpdateType,
     incidentId: v.id("incidents"),
     callId: v.string(),
     teamName: v.union(v.string(), v.null()),
+    /** Exact words for the caller (optional for rows written before this field existed). */
+    text: v.optional(v.string()),
     createdAt: v.number(),
     announcedAt: v.union(v.number(), v.null()),
+    /** Set when replaced by a newer update before being spoken. */
+    supersededAt: v.optional(v.union(v.number(), v.null())),
   }).index("by_call_announced", ["callId", "announcedAt"]),
 });

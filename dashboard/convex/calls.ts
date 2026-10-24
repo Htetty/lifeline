@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
+import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { logActivity, requireBackend } from "./lib";
 import { hazard, incidentSource } from "./schema";
 import { EXERCISE_ID } from "./seedData";
@@ -80,7 +81,9 @@ export const upsertFromCall = mutation({
         version: 1,
       });
       await logActivity(ctx, `Incoming call: ${args.reportedAddress ?? "location not given yet"}.`, id);
-      return await confirmedStatus(ctx, (await ctx.db.get(id))!);
+      const created = (await ctx.db.get(id))!;
+      await queueCallerUpdate(ctx, created, "details_received");
+      return await confirmedStatus(ctx, created);
     }
 
     const patch: Partial<Doc<"incidents">> = { transcript: args.transcript, callConnected: true };
@@ -118,6 +121,8 @@ export const upsertFromCall = mutation({
         patch.longitude = args.candidateLongitude ?? null;
         patch.locationNote = args.candidateLabel ?? null;
         await logActivity(ctx, `Caller corrected location to "${args.reportedAddress}". Needs review.`, existing._id);
+        // Only worth telling the caller if they had already heard the location was confirmed.
+        if (existing.locationVerified) await queueCallerUpdate(ctx, existing, "location_unclear");
       }
     } else if (!existing.locationVerified && args.candidateLatitude != null && args.candidateLongitude != null) {
       patch.latitude = args.candidateLatitude;
@@ -149,6 +154,44 @@ export const statusForCall = query({
     requireBackend(secret);
     const incident = await byCall(ctx, callId);
     return incident ? await confirmedStatus(ctx, incident) : null;
+  },
+});
+
+/**
+ * Everything the voice agent needs about a call, as one reactive query:
+ * a status card (confirmed facts + what it may say if asked) and the updates
+ * waiting to be spoken. FastAPI subscribes to this and pushes changes to the agent.
+ */
+export const callState = query({
+  args: { secret: v.string(), callId: v.string() },
+  handler: async (ctx, { secret, callId }) => {
+    requireBackend(secret);
+    const incident = await byCall(ctx, callId);
+    if (!incident) return { status: null, pending: [] };
+    const team = incident.assignedTeamId ? await ctx.db.get(incident.assignedTeamId) : null;
+    const teamName = team?.name ?? null;
+    const pending = await ctx.db
+      .query("events")
+      .withIndex("by_call_announced", (q) => q.eq("callId", callId).eq("announcedAt", null))
+      .collect();
+    return {
+      status: {
+        incidentId: incident._id,
+        version: incident.version,
+        stage: incident.status,
+        sayIfAsked: stageText(incident, teamName),
+        locationConfirmed: incident.locationVerified,
+        reportedAddress: incident.reportedAddress,
+        peopleCount: incident.peopleCount,
+        reportedPosition: incident.reportedPosition,
+        hazards: incident.hazards.map((h) => h.hazard),
+        assignedTeamName: teamName,
+        callConnected: incident.callConnected,
+      },
+      pending: pending
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((e) => ({ eventId: e._id, type: e.type, text: e.text ?? e.type, createdAt: e.createdAt })),
+    };
   },
 });
 

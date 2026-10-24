@@ -1,6 +1,9 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
@@ -485,6 +488,8 @@ function IncidentDetail({
         <dd>{incident.summary || "—"}</dd>
       </dl>
 
+      {incident.callId && <CallerUpdates incident={incident} run={run} />}
+
       {incident.transcript && (
         <details className="rounded bg-slate-800/70 p-2 text-xs" open={incident.callConnected}>
           <summary className="cursor-pointer text-slate-400">Call transcript</summary>
@@ -583,6 +588,58 @@ function IncidentDetail({
             )}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+const UPDATE_STATE_STYLE = {
+  spoken: "text-emerald-300",
+  waiting: "text-amber-300",
+  replaced: "text-slate-500 line-through",
+} as const;
+
+/** What the voice agent has told (or will tell) the caller, plus a box to send a message. */
+function CallerUpdates({ incident, run }: { incident: Incident; run: Run }) {
+  const updates = useQuery(api.incidents.callerUpdates, { incidentId: incident.id as Id<"incidents"> });
+  const [message, setMessage] = useState("");
+
+  return (
+    <div className="rounded bg-slate-800/70 p-2.5 text-xs">
+      <h3 className="mb-1.5 text-slate-400">What the caller has heard</h3>
+      {updates?.length ? (
+        <ul className="max-h-32 space-y-1 overflow-y-auto">
+          {updates.map((u) => (
+            <li key={u.id} className={UPDATE_STATE_STYLE[u.state]}>
+              <span className="mr-1 text-[10px] uppercase tracking-wide opacity-80">{u.state}</span>
+              {u.text}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-slate-500">No updates yet.</p>
+      )}
+      {incident.callConnected && (
+        <form
+          className="mt-2 flex gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!message.trim()) return;
+            run({ type: "sendCallerMessage", incidentId: incident.id, message });
+            setMessage("");
+          }}
+        >
+          <input
+            value={message}
+            maxLength={300}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="Message for the caller, read out word for word"
+            className="min-w-0 flex-1 rounded bg-slate-900 px-2 py-1.5"
+          />
+          <button type="submit" className="rounded bg-sky-600 px-2.5 py-1.5 font-semibold disabled:opacity-40" disabled={!message.trim()}>
+            Send
+          </button>
+        </form>
       )}
     </div>
   );

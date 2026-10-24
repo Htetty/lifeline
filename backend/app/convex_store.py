@@ -1,6 +1,7 @@
-"""Thin async wrapper over the Convex Python client (which is synchronous)."""
+"""Async wrapper over the Convex Python client: calls run in a thread, subscriptions are awaited."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 
 from convex import ConvexClient
@@ -57,12 +58,8 @@ async def call_ended(call_id: str) -> None:
     await _mutation("calls:callEnded", {"callId": call_id})
 
 
-async def status_for_call(call_id: str) -> dict[str, Any] | None:
-    return await _query("calls:statusForCall", {"callId": call_id})
-
-
-async def pending_events(call_id: str) -> list[dict[str, Any]]:
-    return await _query("calls:pendingEvents", {"callId": call_id})
+async def call_state(call_id: str) -> dict[str, Any]:
+    return await _query("calls:callState", {"callId": call_id})
 
 
 async def transcript_for_call(call_id: str) -> str | None:
@@ -71,3 +68,13 @@ async def transcript_for_call(call_id: str) -> str | None:
 
 async def mark_announced(call_id: str, event_id: str) -> None:
     await _mutation("calls:markAnnounced", {"callId": call_id, "eventId": event_id})
+
+
+async def subscribe_call_state(call_id: str) -> AsyncIterator[dict[str, Any]]:
+    """Yield the call's state from Convex every time it changes (pushed, not polled)."""
+    subscription = _client.subscribe("calls:callState", {"secret": settings.backend_secret, "callId": call_id})
+    try:
+        async for snapshot in subscription:
+            yield snapshot
+    finally:
+        subscription.unsubscribe()

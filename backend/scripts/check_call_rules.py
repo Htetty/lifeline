@@ -8,12 +8,15 @@ they used, and then deleted so they don't clutter the shared map.
 """
 
 import argparse
+import asyncio
+import json
 import sys
 import time
 import uuid
 from pathlib import Path
 
 import httpx
+import websockets
 from convex import ConvexClient, ConvexError
 from dotenv import dotenv_values
 
@@ -122,6 +125,28 @@ def convex_rules() -> None:
     still = convex.query("calls:pendingEvents", {"secret": SECRET, "callId": c3})
     check("other call can't acknowledge an announcement", len(still) == 1)
 
+    # 7. Caller updates: latest wins, dispatcher messages are kept, unassigning tells the caller.
+    def pending_types(call_id: str) -> list[str]:
+        return [e["type"] for e in convex.query("calls:callState", {"secret": SECRET, "callId": call_id})["pending"]]
+
+    c4 = new_call()
+    r4 = upsert(c4, "the Handlery Hotel", candidate=HANDLERY)
+    convex.mutation("incidents:verifyLocation", {"incidentId": r4["incidentId"]})
+    convex.mutation("incidents:sendCallerMessage", {"incidentId": r4["incidentId"], "message": "[check] stay put"})
+    convex.mutation("incidents:assignTeam", {"incidentId": r4["incidentId"], "teamId": free_team()["_id"]})
+    convex.mutation("incidents:setStatus", {"incidentId": r4["incidentId"], "status": "en_route"})
+    check("only the latest progress update is pending, message kept",
+          sorted(pending_types(c4)) == ["dispatcher_message", "team_en_route"], str(pending_types(c4)))
+    convex.mutation("incidents:setStatus", {"incidentId": r4["incidentId"], "status": "awaiting_assignment"})
+    check("unassigning queues 'assignment changed' instead of 'en route'",
+          sorted(pending_types(c4)) == ["assignment_changed", "dispatcher_message"], str(pending_types(c4)))
+    state = convex.query("calls:callState", {"secret": SECRET, "callId": c4})["status"]
+    check("status card says no team yet after unassign", "No team has been assigned yet" in state["sayIfAsked"],
+          state["sayIfAsked"])
+    fixture = next(i for i in convex.query("exercise:get")["incidents"] if i["callId"] is None)
+    err = rejected(lambda: convex.mutation("incidents:sendCallerMessage", {"incidentId": fixture["_id"], "message": "hi"}))
+    check("can't message an incident without a call", err is not None)
+
 
 def live_calls(api: str) -> None:
     with httpx.Client(base_url=api, timeout=120) as http:
@@ -155,6 +180,36 @@ def live_calls(api: str) -> None:
         check("transcript keeps every line", transcript_lines == 4, f"{transcript_lines} lines")
 
 
+async def stream_check(api: str) -> None:
+    """The voice-agent WebSocket pushes status and each update exactly once."""
+    c = new_call()
+    url = f"{api.replace('http', 'ws', 1)}/calls/{c}/stream"
+    announcements: list[str] = []
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"type": "utterance", "speaker": "caller",
+                                  "text": "We're on the roof of the Days Inn on Hotel Circle South, two of us."}))
+        got_status = False
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time())))
+            except asyncio.TimeoutError:
+                break
+            if msg["type"] == "utterance_result" and msg.get("incident"):
+                created.append(msg["incident"]["incidentId"])
+                deadline = min(deadline, time.time() + 6)  # give pushes a moment, then stop
+            elif msg["type"] == "status" and msg["status"]:
+                got_status = True
+            elif msg["type"] == "announcement":
+                announcements.append(msg["eventId"])
+                await ws.send(json.dumps({"type": "ack", "eventId": msg["eventId"]}))
+                # A transcript save right after the ack used to re-send the same update.
+                await ws.send(json.dumps({"type": "utterance", "speaker": "agent", "text": msg["text"]}))
+    check("stream pushes status card", got_status)
+    check("stream pushes 'details received' once", len(announcements) == 1 and len(set(announcements)) == 1,
+          f"{len(announcements)} announcements")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
@@ -164,6 +219,7 @@ def main() -> None:
         convex_rules()
         if args.live:
             live_calls(args.api)
+            asyncio.run(stream_check(args.api))
     finally:
         for incident_id in created:
             try:

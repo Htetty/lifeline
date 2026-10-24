@@ -25,6 +25,7 @@ export type Action =
   | { type: "verifyLocation"; incidentId: string; latitude?: number; longitude?: number }
   | { type: "assignTeam"; incidentId: string; teamId: string }
   | { type: "setStatus"; incidentId: string; status: IncidentStatus }
+  | { type: "sendCallerMessage"; incidentId: string; message: string }
   | { type: "reset" };
 
 function toIncident(d: Doc<"incidents">): Incident {
@@ -91,6 +92,12 @@ export async function dispatch(action: Action): Promise<void> {
       await convex.mutation(api.incidents.setStatus, {
         incidentId: asIncident(action.incidentId),
         status: action.status,
+      });
+      return;
+    case "sendCallerMessage":
+      await convex.mutation(api.incidents.sendCallerMessage, {
+        incidentId: asIncident(action.incidentId),
+        message: action.message,
       });
       return;
     case "reset":

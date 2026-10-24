@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, type MutationCtx } from "./_generated/server";
+import { mutation, query, type MutationCtx } from "./_generated/server";
+import { queueCallerUpdate } from "./callerUpdates";
 import { logActivity } from "./lib";
 import { incidentStatus } from "./schema";
 import { EXERCISE_ID } from "./seedData";
@@ -21,25 +22,6 @@ async function load(ctx: MutationCtx, id: Id<"incidents">) {
 
 async function bump(ctx: MutationCtx, incident: Doc<"incidents">, patch: Partial<Doc<"incidents">>) {
   await ctx.db.patch(incident._id, { ...patch, updatedAt: Date.now(), version: incident.version + 1 });
-}
-
-/** Queue a spoken update for the caller. Only for incidents that came from a call. */
-async function emitEvent(
-  ctx: MutationCtx,
-  incident: Doc<"incidents">,
-  type: Doc<"events">["type"],
-  teamName: string | null,
-) {
-  if (!incident.callId) return;
-  await ctx.db.insert("events", {
-    exerciseId: incident.exerciseId,
-    type,
-    incidentId: incident._id,
-    callId: incident.callId,
-    teamName,
-    createdAt: Date.now(),
-    announcedAt: null,
-  });
 }
 
 /** A dispatcher marks people stuck in a building directly on the map. */
@@ -103,6 +85,7 @@ export const verifyLocation = mutation({
       status: incident.status === "needs_review" ? "awaiting_assignment" : incident.status,
     });
     await logActivity(ctx, `Location confirmed for ${incident.reportedAddress}.`, incident._id);
+    if (!incident.locationVerified) await queueCallerUpdate(ctx, incident, "location_confirmed");
   },
 });
 
@@ -120,7 +103,7 @@ export const assignTeam = mutation({
     await bump(ctx, incident, { status: "assigned", assignedTeamId: team._id });
     await ctx.db.patch(team._id, { available: false, currentAssignment: incident._id, updatedAt: Date.now() });
     await logActivity(ctx, `${team.name} assigned to ${incident.reportedAddress}.`, incident._id);
-    await emitEvent(ctx, incident, "assignment_approved", team.name);
+    await queueCallerUpdate(ctx, incident, "assignment_approved", { teamName: team.name });
   },
 });
 
@@ -157,7 +140,46 @@ export const setStatus = mutation({
         : `${incident.reportedAddress}: ${STATUS_LABEL[status]}.`,
       incident._id,
     );
-    if (status === "en_route") await emitEvent(ctx, incident, "team_en_route", team?.name ?? null);
-    if (status === "resolved") await emitEvent(ctx, incident, "rescue_resolved", team?.name ?? null);
+    const teamName = team?.name ?? null;
+    if (unassigning) await queueCallerUpdate(ctx, incident, "assignment_changed", { teamName });
+    if (status === "en_route") await queueCallerUpdate(ctx, incident, "team_en_route", { teamName });
+    if (status === "resolved") await queueCallerUpdate(ctx, incident, "rescue_resolved", { teamName });
+  },
+});
+
+/** Dispatcher-written message for the voice agent to read to the caller word for word. */
+export const sendCallerMessage = mutation({
+  args: { incidentId: v.id("incidents"), message: v.string() },
+  handler: async (ctx, { incidentId, message }) => {
+    const incident = await load(ctx, incidentId);
+    const text = message.trim();
+    if (!incident.callId) throw new ConvexError("This incident has no call to send a message to");
+    if (!incident.callConnected) throw new ConvexError("The caller is no longer on the line");
+    if (!text) throw new ConvexError("Write a message first");
+    if (text.length > 300) throw new ConvexError("Keep caller messages under 300 characters");
+    await queueCallerUpdate(ctx, incident, "dispatcher_message", { message: text });
+    await logActivity(ctx, `Message queued for caller at ${incident.reportedAddress}: "${text}"`, incident._id);
+  },
+});
+
+/** What the caller has been told (or will be told) for an incident, newest first. */
+export const callerUpdates = query({
+  args: { incidentId: v.id("incidents") },
+  handler: async (ctx, { incidentId }) => {
+    const incident = await ctx.db.get(incidentId);
+    if (!incident?.callId) return [];
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_call_announced", (q) => q.eq("callId", incident.callId!))
+      .collect();
+    return events
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((e) => ({
+        id: e._id,
+        type: e.type,
+        text: e.text ?? e.type,
+        createdAt: e.createdAt,
+        state: (e.supersededAt ? "replaced" : e.announcedAt ? "spoken" : "waiting") as "replaced" | "spoken" | "waiting",
+      }));
   },
 });
