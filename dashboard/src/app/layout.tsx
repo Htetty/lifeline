@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Flood Rescue Dispatcher",
+  title: "Lifeline | Flood response",
   description: "Simulated flood-rescue dispatcher map",
 };
 

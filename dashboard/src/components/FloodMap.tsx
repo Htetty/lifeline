@@ -346,7 +346,12 @@ export default function FloodMap(props: Props) {
       });
     }
 
+    // Detail panels and responsive layouts resize the map without a window resize.
+    const resizeObserver = new ResizeObserver(() => map.resize());
+    resizeObserver.observe(container.current);
+
     return () => {
+      resizeObserver.disconnect();
       readyRef.current = false;
       map.remove();
       mapRef.current = null;

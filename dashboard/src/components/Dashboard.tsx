@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -258,30 +259,30 @@ function DashboardView({ state }: { state: ExerciseState }) {
 
 
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
-      <header className="flex items-center gap-4 border-b border-slate-800 px-4 py-2.5">
-        <h1 className="text-base font-semibold tracking-tight">Flood Rescue Dispatcher</h1>
-        <span className="rounded bg-amber-400 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-slate-950">
-          Simulated exercise
-        </span>
-        <span className="text-sm text-slate-400">{DEMO_AREA.name}</span>
-        <div className="ml-auto flex items-center gap-4 text-sm">
-          {criticalWaiting > 0 && (
-            <span className="rounded bg-red-600 px-2 py-0.5 font-semibold">{criticalWaiting} critical waiting</span>
-          )}
-          <span>
-            <b className="text-red-400">{stuckPeople}</b> people awaiting rescue
-          </span>
-          <span className="text-slate-400">
-            Water surface <b className="text-sky-300">{waterLevel.toFixed(1)} m</b>
-          </span>
+    <div className="dispatcher flex h-screen flex-col bg-slate-950 text-slate-100">
+      <header className="console-header">
+        <Link href="/" className="brand"><span className="brand-mark" />Lifeline</Link>
+        <span className="console-region">{DEMO_AREA.name} · Flood ops</span>
+        <span className="exercise-label">Simulated exercise</span>
+        <div className="console-metrics">
+          <span><i className="live-dot" /> On call <b>{state.incidents.filter((i) => i.callConnected).length}</b></span>
+          <span>Needs review <b>{mainIncidents.filter((i) => i.status === "needs_review").length}</b></span>
+          <span>Active rescues <b>{mainIncidents.filter((i) => DISPATCHED_STATUSES.includes(i.status)).length}</b></span>
+          <span>Teams free <b className="text-emerald-300">{state.teams.filter((t) => t.available).length}</b></span>
         </div>
       </header>
+      <div className="operations-bar">
+        <span><i className="live-dot" /> Dispatcher console <span className="text-slate-500">/</span> Live operations</span>
+        <span>{criticalWaiting > 0 && <strong className="text-red-300">{criticalWaiting} critical waiting · </strong>}{stuckPeople} people awaiting rescue · Water surface {waterLevel.toFixed(1)} m</span>
+      </div>
 
       <div className="flex min-h-0 flex-1">
         {/* Left: controls, queue, activity */}
-        <aside className="flex w-80 shrink-0 flex-col border-r border-slate-800">
-          <section className="space-y-3 border-b border-slate-800 p-4">
+        <aside className="incident-sidebar flex shrink-0 flex-col border-r border-slate-800">
+          <div className="queue-heading"><h2>Incidents</h2><span>Sorted by priority</span></div>
+          <details className="simulation-controls border-b border-slate-800 p-4">
+            <summary>Simulation controls <span>{waterLevel.toFixed(1)} m</span></summary>
+            <div className="mt-4 space-y-3">
             <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">
               Water surface elevation
             </label>
@@ -335,9 +336,10 @@ function DashboardView({ state }: { state: ExerciseState }) {
                 Reset
               </button>
             </div>
-          </section>
+            </div>
+          </details>
 
-          <section className="flex gap-1 border-b border-slate-800 px-4 py-2">
+          <section className="queue-filters flex gap-1 border-b border-slate-800 px-4 py-2">
             {(Object.keys(FILTERS) as Filter[]).map((f) => (
               <button
                 key={f}
@@ -346,12 +348,12 @@ function DashboardView({ state }: { state: ExerciseState }) {
                   filter === f ? "bg-slate-200 text-slate-900" : "text-slate-400 hover:bg-slate-800"
                 }`}
               >
-                {f}
+                {f === "stuck" ? "Waiting" : f} <span className="ml-1 opacity-60">{mainIncidents.filter((i) => FILTERS[f](i.status)).length}</span>
               </button>
             ))}
           </section>
 
-          <ul className="min-h-0 flex-1 overflow-y-auto">
+          <ul className="incident-queue min-h-0 flex-1 overflow-y-auto">
             {incidents.map((i) => {
               const w = waterReport(i);
               const st = STATUS_STYLE[i.status];
@@ -362,6 +364,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                       setSelectedId(i.id);
                       setPendingPick(null);
                     }}
+                    aria-pressed={i.id === selectedId}
                     className={`block w-full border-b border-slate-900 px-4 py-3 text-left hover:bg-slate-900 ${
                       i.id === selectedId ? "bg-slate-800" : ""
                     }`}
@@ -421,7 +424,8 @@ function DashboardView({ state }: { state: ExerciseState }) {
         </aside>
 
         {/* Map */}
-        <main className="relative min-w-0 flex-1">
+        <main className="map-workspace relative min-w-0 flex-1" aria-label="Flood response map">
+          <div className="map-canvas">
           <FloodMap
             state={mapState}
             flood={flood}
@@ -454,8 +458,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
           )}
           <Legend />
 
+          </div>
           {(selected || pendingPick) && (
-            <div className="absolute right-14 top-3 max-h-[calc(100%-1.5rem)] w-80 overflow-y-auto rounded-lg bg-slate-900/95 p-4 shadow-xl ring-1 ring-slate-700">
+            <section aria-label="Incident details" className="incident-detail overflow-y-auto bg-slate-900/95 p-5">
               {pendingPick ? (
                 <NewReportForm
                   pick={pendingPick}
@@ -486,7 +491,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                   />
                 )
               )}
-            </div>
+            </section>
           )}
         </main>
       </div>
