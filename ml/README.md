@@ -69,7 +69,7 @@ training or the smoke test, choose a new `output_dir` or `smoke_output_dir` in
 You can also repeat just the reload checks without training again:
 
 ```sh
-ml/.venv/bin/python ml/scripts/evaluate.py --model-dir outputs/disaster_smoke_test --data outputs/disaster_smoke_test/smoke_validation.jsonl --output outputs/disaster_smoke_test/reload_metrics.json --device cpu --batch-size 1
+ml/.venv/bin/python ml/scripts/evaluate.py --model-dir outputs/disaster_smoke_test --data outputs/disaster_smoke_test/smoke_validation.jsonl --metadata data/processed/preparation_report.json --output outputs/disaster_smoke_test/reload_metrics.json --device cpu --batch-size 1
 ml/.venv/bin/python ml/scripts/predict.py --model-dir outputs/disaster_smoke_test --text "We need medical help after the flood."
 ```
 
@@ -161,3 +161,58 @@ Accelerate 1.15.0, and scikit-learn 1.9.1 were used for the two-step CPU smoke
 check and saved-model evaluation/prediction reloads. The exact Python version
 and library versions for each new training run are recorded in `run_info.json`.
 CUDA/full training and full validation/test evaluation have not been run here.
+
+## Read-only dataset audit
+
+```sh
+ml/.venv/bin/python ml/scripts/audit_data.py --local-files-only
+```
+
+This uses the cached configured ModernBERT tokenizer, without loading or training
+model weights. Omit `--local-files-only` to allow downloading the tokenizer if it
+is not cached. Paths resolve relative to `ml/`, including `--config`,
+`--test-data`, and `--preparation-report` overrides.
+
+Results are saved under the already Git-ignored `ml/outputs/data_audit/`:
+
+- `summary.txt`: label counts/percentages, token-length statistics and overlaps.
+- `audit_report.json`: detailed checks, overlap source-ID references, input hashes,
+  tokenizer fingerprint, dependency versions and review seed.
+- `training_review.jsonl`: up to 10 positive and 10 negative training examples
+  per label, with source IDs, unchanged text, all four labels and review-group
+  metadata. The same message can appear in multiple groups. This deliberately
+  balanced sample is for annotation review, not estimating label prevalence.
+
+Token counts include special tokens with no truncation or padding, so the
+percentage above configured `max_length` reflects messages training would
+truncate. Normalized-text checks use the preparation pipeline's Unicode NFKC,
+case folding and collapsed whitespace. Label order is checked against the
+preparation report; an unnamed four-number vector cannot independently prove
+its semantic order. Invalid records stop the audit with a report; cross-split
+overlaps are reported with a nonzero exit status. No records are fixed, removed
+or written back. The script confirms input hashes are unchanged during the run.
+Review selection uses stable SHA256 ranking with the configured seed, making
+selection reproducible even if training file order changes. Repeating the audit
+replaces the audit outputs, without changing data, labels or training settings.
+
+## Dataset label-order verification
+
+Before dataset training, both train and validation must have a
+`preparation_report.json` in their directory declaring `label_order` exactly
+matching `scripts/disaster_labels.py`. Evaluation checks the same declaration
+and the saved model's `id2label`/`label2id` mappings before loading model weights
+or predicting. Missing, unreadable or mismatched metadata stops the operation;
+labels are never reordered. The preparation report is the existing dataset's
+order declaration; JSONL vectors alone cannot establish their meaning.
+
+For evaluation of an exported subset, explicitly supply its source metadata
+using `--metadata data/processed/preparation_report.json`. Do not point to
+unrelated metadata merely to bypass a failure. The smoke-test trainer supplies
+the original validation metadata when checking its validation subset.
+The sample-based practice scripts do not use this dataset metadata check.
+
+Run the small checks without training or predictions:
+
+```sh
+ml/.venv/bin/python ml/tests/test_label_order.py
+```

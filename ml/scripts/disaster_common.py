@@ -94,6 +94,37 @@ def check_model_labels(config):
         raise ValueError(f"Model label mappings do not match dataset order {LABELS}; found {actual}")
 
 
+def check_dataset_label_order(data_path, metadata_path=None, model_config=None):
+    """Require the dataset's declaration; never infer or reorder vector positions."""
+    data_path = Path(data_path)
+    metadata_path = (Path(metadata_path) if metadata_path is not None
+                     else data_path.parent / "preparation_report.json")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"Cannot verify label order for {data_path}: missing or unreadable "
+            f"dataset metadata {metadata_path}: {error}"
+        ) from error
+    declared = metadata.get("label_order") if isinstance(metadata, dict) else None
+    if declared != list(LABELS):
+        raise ValueError(
+            f"Dataset label order mismatch for {data_path} in {metadata_path}: "
+            f"expected {list(LABELS)}, found {declared!r}. "
+            "A label_order declaration is required; labels will not be reordered."
+        )
+    if model_config is not None:
+        actual = [model_config.id2label.get(i) for i in range(model_config.num_labels)]
+        if actual != declared:
+            raise ValueError(
+                f"Dataset/model label order mismatch for {data_path}: "
+                f"dataset declares {declared}, saved model id2label is {actual}. "
+                "Labels will not be reordered."
+            )
+        check_model_labels(model_config)
+    return metadata_path
+
+
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")

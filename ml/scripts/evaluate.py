@@ -3,22 +3,25 @@ import argparse
 import json
 
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
 
-from disaster_common import (check_model_labels, metrics_from_logits, ml_path,
+from disaster_common import (check_dataset_label_order, metrics_from_logits, ml_path,
                              read_records, select_device, write_json)
 
 
-def evaluate(model_dir, data_path, output_path, device="cpu", batch_size=4):
+def evaluate(model_dir, data_path, output_path, device="cpu", batch_size=4, metadata_path=None):
     device = select_device(device)
     if batch_size < 1:
         raise ValueError("batch size must be positive")
+    # Fail before loading model weights or computing predictions.
+    check_dataset_label_order(data_path, metadata_path)
+    model_config = AutoConfig.from_pretrained(model_dir, local_files_only=True)
+    check_dataset_label_order(data_path, metadata_path, model_config)
     records = read_records(data_path)
     tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
     model = AutoModelForSequenceClassification.from_pretrained(
         model_dir, local_files_only=True, attn_implementation="eager"
     ).to(device)
-    check_model_labels(model.config)
     max_length = getattr(model.config, "dataset_max_length", 256)
     model.eval()
     logits = []
@@ -46,8 +49,10 @@ def main():
     parser.add_argument("--output", required=True, help="Metrics JSON path relative to ml/ or absolute")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--metadata", help="Dataset metadata JSON; defaults to preparation_report.json beside the data")
     args = parser.parse_args()
-    evaluate(ml_path(args.model_dir), ml_path(args.data), ml_path(args.output), args.device, args.batch_size)
+    evaluate(ml_path(args.model_dir), ml_path(args.data), ml_path(args.output), args.device,
+             args.batch_size, ml_path(args.metadata) if args.metadata else None)
 
 
 if __name__ == "__main__":

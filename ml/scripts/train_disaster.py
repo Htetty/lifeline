@@ -9,7 +9,7 @@ import torch
 from transformers import (AutoModelForSequenceClassification, AutoTokenizer,
                           DataCollatorWithPadding, Trainer, TrainingArguments, set_seed)
 
-from disaster_common import (LABELS, metrics_from_logits, ml_path, read_records,
+from disaster_common import (LABELS, check_dataset_label_order, metrics_from_logits, ml_path, read_records,
                              select_device, tokenize_records, write_json)
 from prepare_data import normalized_text
 
@@ -34,6 +34,8 @@ def main():
     # Guard accidental standard test-file configuration without opening test data.
     if any(p.name == "test.jsonl" for p in (train_path, validation_path)):
         raise ValueError("Test split must never be configured as train or validation")
+    check_dataset_label_order(train_path)
+    validation_metadata = check_dataset_label_order(validation_path)
     train_rows, validation_rows = read_records(train_path), read_records(validation_path)
     train_text = {normalized_text(row["text"]) for row in train_rows}
     if train_text.intersection(normalized_text(row["text"]) for row in validation_rows):
@@ -104,7 +106,8 @@ def main():
         gc.collect()
         from evaluate import evaluate
         from predict import predict
-        metrics = evaluate(output, subset, output / "smoke_metrics.json", batch_size=1)
+        metrics = evaluate(output, subset, output / "smoke_metrics.json", batch_size=1,
+                           metadata_path=validation_metadata)
         assert metrics["records"] == len(validation_rows)
         prediction = predict(output, validation_rows[0]["text"])
         assert tuple(prediction["model_scores"]) == LABELS
