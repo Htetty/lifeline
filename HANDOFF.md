@@ -1,5 +1,10 @@
 # Handoff — Flood Rescue Dispatcher
 
+**Twilio phone adapter:** [`docs/integration/twilio-media-streams.md`](docs/integration/twilio-media-streams.md)
+documents the PR #8-based bidirectional phone transport, native μ-law/8 kHz,
+signature/identity checks, clear/mark semantics, public setup and rollback.
+Human phone verification is recorded separately from protocol/provider tests.
+
 Updated: 2026-10-23. Read `PROJECT_PLAN.md` for the product plan; this file is the current state.
 
 **2026-10-24 voice bridge increment:** See
@@ -68,10 +73,13 @@ bearer token). `BACKEND_SECRET` is only between FastAPI and Convex.
 
 ## Several calls about one place
 
-Claude labels each caller `trapped` or `witness`. Obvious duplicates at the same building (≤35 m) link themselves
-(`convex/linking.ts` `autoGroup`, run on every location/position change): same room number; same floor and headcount
-when no rooms were given; a witness at a building with one rescue (or only witnesses). Different floors/rooms stay
-separate rescues. Uncertain matches are suggested on the dashboard for the dispatcher. Linked reports leave the queue
+Claude labels each caller `trapped` or `witness`. Obvious duplicates link themselves (`convex/linking.ts` `autoGroup`),
+but only with evidence of the same building: the same address, the same map-search match, or the same point (≤5 m).
+Nearby pins (≤35 m) alone are never enough. Auto-links: same room number; a witness at a building with one rescue
+(or only witnesses). The same floor and headcount can be two households, so it is only a suggestion. Different
+floors/rooms stay separate rescues. Uncertain matches are suggested on the dashboard for the dispatcher. When a
+caller's position, role, address or pin changes, automatic links are checked again and undone (no inherited team)
+if the evidence is gone; links the dispatcher made are kept and flagged in the activity feed. Linked reports leave the queue
 and map, follow the main incident's team/status, and their callers hear its progress. Every auto-link says why;
 Unlink keeps them apart permanently. Backfill existing data: `npx convex run incidents:autoGroupAll`.
 

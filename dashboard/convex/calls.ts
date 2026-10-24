@@ -3,11 +3,14 @@ import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { isCurrentEvent, logActivity, requireBackend } from "./lib";
-import { autoGroup } from "./linking";
-import { advisoryTags, callerRole, hazard, incidentSource, riskFactor } from "./schema";
+import { autoGroup, reevaluateLinks, unlink } from "./linking";
+import { advisoryTags, callerRole, hazard, incidentSource, riskFactor, withdrawal } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
+
+/** Same hazard or factor name, ignoring case and spacing. */
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 const NO_ADDRESS_YET = "Location not given yet";
 
@@ -61,6 +64,8 @@ export const upsertFromCall = mutation({
     sequence: v.optional(v.number()),
     fingerprint: v.optional(v.string()),
     response: v.optional(v.any()),
+    /** Explicit caller retractions. Null or missing values are never treated as one. */
+    withdrawn: v.optional(v.array(withdrawal)),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
@@ -122,21 +127,69 @@ export const upsertFromCall = mutation({
     // callConnected is left alone: a late utterance after hang-up is saved, but must not
     // reopen the call and restart announcements to a caller who is gone.
     const patch: Partial<Doc<"incidents">> = { transcript: args.transcript };
+    const history: Doc<"incidents">["factHistory"] = [];
+    const withdrawn = args.withdrawn ?? [];
+    const withdrawnNames = (fact: "hazard" | "risk_factor") =>
+      withdrawn.filter((w) => w.fact === fact && w.name);
+
     if (args.peopleCount != null) patch.peopleCount = args.peopleCount;
+    // "I don't know how many" makes the count unknown; a new number is a correction instead.
+    const countWithdrawal = withdrawn.find((w) => w.fact === "people_count");
+    if (countWithdrawal && args.peopleCount == null && existing.peopleCount != null) {
+      patch.peopleCount = null;
+      history.push({ at: now, field: "peopleCount", previous: String(existing.peopleCount), evidence: null,
+        withdrawnBy: countWithdrawal.evidence });
+      await logActivity(ctx, `Caller withdrew the people count (was ${existing.peopleCount}); now unknown.`, existing._id);
+    }
     if (args.reportedPosition != null) patch.reportedPosition = args.reportedPosition;
     if (args.summary) patch.summary = args.summary;
     if (args.callerRole && args.callerRole !== "unknown") patch.callerRole = args.callerRole;
+    // A fact the caller withdrew comes back only with new words, not a re-read of the old ones.
+    const stale = (field: string, name: string, evidence: string | null) =>
+      (existing.factHistory ?? []).some(
+        (h) => h.withdrawnBy != null && h.field === field && same(h.previous, name) && h.evidence === evidence,
+      );
+
     // Risk factors only accumulate: a model omission must never quietly lower priority.
-    // The dispatcher's override is the way to lower it.
+    // Only an explicit caller withdrawal removes one (the dispatcher's override is the other way).
     const known = new Map((existing.riskFactors ?? []).map((r) => [r.factor, r]));
-    for (const r of args.riskFactors ?? []) if (!known.has(r.factor)) known.set(r.factor, r);
-    if (known.size !== (existing.riskFactors ?? []).length) patch.riskFactors = [...known.values()];
+    for (const r of args.riskFactors ?? []) {
+      if (!known.has(r.factor) && !stale("riskFactor", r.factor, r.evidence)) known.set(r.factor, r);
+    }
+    for (const w of withdrawnNames("risk_factor")) {
+      const r = [...known.values()].find((x) => same(x.factor, w.name!));
+      if (!r) continue;
+      known.delete(r.factor);
+      if ((existing.riskFactors ?? []).some((e) => e.factor === r.factor)) {
+        history.push({ at: now, field: "riskFactor", previous: r.factor, evidence: r.evidence, withdrawnBy: w.evidence });
+        await logActivity(ctx, `Caller withdrew "${r.factor.replaceAll("_", " ")}"; check the priority.`, existing._id);
+      }
+    }
+    const currentRisks = [...known.values()];
+    if (JSON.stringify(currentRisks) !== JSON.stringify(existing.riskFactors ?? [])) patch.riskFactors = currentRisks;
 
     // Each extraction reads the whole transcript, so a non-empty list is the complete current list.
-    if (args.hazards.length) patch.hazards = args.hazards;
+    // An empty list means "nothing new", unless the caller explicitly withdrew a hazard.
+    const hazardWithdrawals = withdrawnNames("hazard");
+    let hazards = (args.hazards.length ? args.hazards : existing.hazards).filter(
+      (h) => !stale("hazard", h.hazard, h.evidence),
+    );
+    const withdrawnHazards: Doc<"incidents">["hazards"] = [];
+    for (const w of hazardWithdrawals) {
+      const match = (h: { hazard: string }) => same(h.hazard, w.name!);
+      // Record the stored hazard, with the words that originally supported it.
+      for (const h of existing.hazards.filter(match)) {
+        withdrawnHazards.push(h);
+        history.push({ at: now, field: "hazard", previous: h.hazard, evidence: h.evidence, withdrawnBy: w.evidence });
+        await logActivity(ctx, `Caller withdrew hazard "${h.hazard}".`, existing._id);
+      }
+      hazards = hazards.filter((h) => !match(h));
+    }
+    if (args.hazards.length || hazardWithdrawals.length || hazards.length !== existing.hazards.length) {
+      patch.hazards = hazards;
+    }
 
     // Keep every known fact the caller changed, with its evidence, so a correction loses nothing.
-    const history: Doc<"incidents">["factHistory"] = [];
     const changed = (field: string, previous: unknown, next: unknown) => {
       if (previous == null || next == null || previous === next) return;
       history.push({ at: now, field, previous: String(previous), evidence: null });
@@ -145,7 +198,7 @@ export const upsertFromCall = mutation({
     changed("reportedPosition", existing.reportedPosition, patch.reportedPosition);
     if (existing.reportedAddress !== NO_ADDRESS_YET) changed("reportedAddress", existing.reportedAddress, args.reportedAddress);
     if (patch.hazards) {
-      const kept = new Set(patch.hazards.map((h) => h.hazard.trim().toLowerCase()));
+      const kept = new Set([...patch.hazards, ...withdrawnHazards].map((h) => h.hazard.trim().toLowerCase()));
       for (const h of existing.hazards) {
         if (!kept.has(h.hazard.trim().toLowerCase())) {
           history.push({ at: now, field: "hazard", previous: h.hazard, evidence: h.evidence });
@@ -157,7 +210,8 @@ export const upsertFromCall = mutation({
     const hadAddress = existing.reportedAddress !== NO_ADDRESS_YET;
     let tellCallerLocationUnclear = false;
     if (args.reportedAddress != null) patch.reportedAddress = args.reportedAddress;
-    const dispatched = existing.status === "assigned" || existing.status === "en_route";
+    // A linked report only mirrors its main incident's team; it isn't dispatched itself.
+    const dispatched = !existing.linkedTo && (existing.status === "assigned" || existing.status === "en_route");
 
     const norm = (a: string) => a.trim().toLowerCase();
     const corrected =
@@ -183,7 +237,6 @@ export const upsertFromCall = mutation({
         patch.latitude = args.candidateLatitude ?? null;
         patch.longitude = args.candidateLongitude ?? null;
         patch.locationNote = args.candidateLabel ?? null;
-        patch.linkedTo = null; // a different place may be a different incident
         await logActivity(ctx, `Caller corrected location to "${args.reportedAddress}". Needs review.`, existing._id);
         // Only worth telling the caller if they had already heard the location was confirmed.
         tellCallerLocationUnclear = existing.locationVerified;
@@ -197,6 +250,21 @@ export const upsertFromCall = mutation({
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });
     // Queued after the save, so it carries the new decisionRevision.
     if (tellCallerLocationUnclear) await queueCallerUpdate(ctx, existing, "location_unclear");
+    const saved = (await ctx.db.get(existing._id))!;
+    if (corrected && !dispatched && saved.linkedTo) {
+      // A different place may be a different incident, whoever linked it.
+      await unlink(ctx, saved, "Caller corrected their location");
+    } else {
+      // Grouping evidence changed (room, floor, role, pin): re-check links both ways.
+      const moved = saved.latitude !== existing.latitude || saved.longitude !== existing.longitude;
+      const what = [
+        saved.reportedPosition !== existing.reportedPosition && `position "${saved.reportedPosition}"`,
+        saved.callerRole !== existing.callerRole && `caller role "${saved.callerRole}"`,
+        saved.reportedAddress !== existing.reportedAddress && `address "${saved.reportedAddress}"`,
+        moved && "location",
+      ].filter(Boolean);
+      if (what.length) await reevaluateLinks(ctx, saved._id, `the caller's ${what.join(", ")} changed`);
+    }
     await autoGroup(ctx, existing._id);
     return await finish((await ctx.db.get(existing._id))!);
   },
@@ -271,6 +339,15 @@ export const callState = query({
   },
 });
 
+/** Names of the call's current hazards, so the extractor can name one the caller withdraws. */
+export const recordedHazards = query({
+  args: { secret: v.string(), callId: v.string() },
+  handler: async (ctx, { secret, callId }) => {
+    requireBackend(secret);
+    return (await byCall(ctx, callId))?.hazards.map((h) => h.hazard) ?? [];
+  },
+});
+
 /** Saved transcript, so a restarted backend can continue a call where it left off. */
 export const transcriptForCall = query({
   args: { secret: v.string(), callId: v.string() },
@@ -293,6 +370,42 @@ export const pendingEvents = query({
       .withIndex("by_call_announced", (q) => q.eq("callId", callId).eq("announcedAt", null))
       .collect();
     return events.filter((e) => isCurrentEvent(incident, e));
+  },
+});
+
+/** Updates that answer "which team / is anyone coming?" when a caller asks for a replay. */
+const STATUS_UPDATES: Doc<"events">["type"][] = [
+  "assignment_approved",
+  "assignment_changed",
+  "team_en_route",
+  "rescue_resolved",
+  "report_linked",
+];
+
+/**
+ * An update a caller explicitly asked to hear again. It may already have been heard
+ * (announced), but only while it is still true: superseded or reversed updates never
+ * come back. With `eventId`, that exact update; otherwise the latest current status update.
+ */
+export const currentAnnouncement = query({
+  args: { secret: v.string(), callId: v.string(), eventId: v.optional(v.id("events")) },
+  handler: async (ctx, { secret, callId, eventId }) => {
+    requireBackend(secret);
+    const incident = await byCall(ctx, callId);
+    if (!incident || !incident.callConnected) return null;
+    if (eventId) {
+      const event = await ctx.db.get(eventId);
+      return event && event.callId === callId && isCurrentEvent(incident, event) ? event : null;
+    }
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_call_announced", (q) => q.eq("callId", callId))
+      .collect();
+    return (
+      events
+        .filter((e) => STATUS_UPDATES.includes(e.type) && isCurrentEvent(incident, e))
+        .sort((x, y) => y.createdAt - x.createdAt)[0] ?? null
+    );
   },
 });
 

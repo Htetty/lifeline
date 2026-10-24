@@ -614,7 +614,9 @@ function IncidentDetail({
           <ul className="mt-1.5 space-y-0.5 text-slate-300">
             {incident.factHistory.map((c, n) => (
               <li key={n}>
-                {c.field}: was “{c.previous}”{c.evidence && <span className="text-slate-500"> — “{c.evidence}”</span>}
+                {c.field}: {c.withdrawnBy != null ? <span className="text-amber-300">withdrawn</span> : "was"} “
+                {c.previous}”{c.evidence && <span className="text-slate-500"> — “{c.evidence}”</span>}
+                {c.withdrawnBy != null && <span className="text-slate-400"> · caller: “{c.withdrawnBy}”</span>}
               </li>
             ))}
           </ul>

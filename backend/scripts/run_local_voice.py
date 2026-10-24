@@ -18,7 +18,6 @@ import tempfile
 import time
 
 import httpx
-from convex import ConvexClient
 from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +51,9 @@ def main(args):
     secret=secrets.token_urlsafe(32)
     secret_file=state/'backend-secret'
     secret_file.write_text(secret);secret_file.chmod(0o600)
+    dispatcher=secrets.token_urlsafe(24)
+    dispatcher_file=state/'dispatcher-token'
+    dispatcher_file.write_text(dispatcher);dispatcher_file.chmod(0o600)
     local_env={k:v for k,v in os.environ.items() if 'CONVEX' not in k}
     local_env['CONVEX_AGENT_MODE']='anonymous'
     cli=['node',str(node_modules/'convex/bin/main.js')]
@@ -60,17 +62,19 @@ def main(args):
         print('Isolated state directory:',state,flush=True)
         children.append(subprocess.Popen(cli+['dev','--typecheck','disable','--codegen','disable',
             '--local-cloud-port',str(args.convex_port),'--local-site-port',str(args.convex_site_port)],cwd=state,env=local_env))
-        client=ConvexClient(convex_url)
         deadline=time.monotonic()+180
         while True:
             if children[0].poll() is not None: raise RuntimeError('Local Convex stopped')
             try:
-                client.query('exercise:get',{})
+                if not (state/'.env.local').exists():
+                    raise RuntimeError('Local Convex configuration is still being written')
+                httpx.get(convex_url+'/version',timeout=2).raise_for_status()
                 break
             except Exception:
                 if time.monotonic()>deadline: raise RuntimeError('Local Convex did not become ready')
                 time.sleep(.5)
         subprocess.run(cli+['env','set','BACKEND_SECRET','--from-file',str(secret_file)],cwd=state,env=local_env,check=True)
+        subprocess.run(cli+['env','set','DISPATCHER_TOKEN','--from-file',str(dispatcher_file)],cwd=state,env=local_env,check=True)
         backend_env={**env,'CONVEX_URL':convex_url,'BACKEND_SECRET':secret}
         children.append(subprocess.Popen([sys.executable,'-m','uvicorn','app.main:app','--host','127.0.0.1',
             '--port',str(args.api_port),'--no-access-log'],cwd=ROOT/'backend',env=backend_env))
@@ -85,6 +89,7 @@ def main(args):
             raise RuntimeError('FastAPI did not become ready')
         print(f'\nVoice: {api_url}/voice\nDashboard: http://localhost:{args.dashboard_port}\n'
               'Use VOICE_BRIDGE_TOKEN from backend/.env in the voice page. No phone settings change.\n'
+              f'Dashboard passcode is in {dispatcher_file}; enter it locally, never in chat.\n'
               'Ctrl-C stops this exercise; saved local incidents are retained in the state directory.',flush=True)
         while all(child.poll() is None for child in children): time.sleep(.5)
         raise RuntimeError('A local service stopped; check its output above')
