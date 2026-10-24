@@ -12,7 +12,10 @@ VERSION = "2026-08-14"
 
 def voice_environment():
     root = Path(__file__).resolve().parents[2]
-    return {**dotenv_values(root / ".env"), **dotenv_values(root / "backend/.env"), **os.environ}
+    # Empty example placeholders must not hide existing root-file credentials.
+    root_env = {k: v for k, v in dotenv_values(root / ".env").items() if v}
+    backend_env = {k: v for k, v in dotenv_values(root / "backend/.env").items() if v}
+    return {**root_env, **backend_env, **os.environ}
 
 
 class CartesiaSpeech:
