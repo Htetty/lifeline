@@ -1,0 +1,13 @@
+{
+  "model_name": "answerdotai/ModernBERT-base",
+  "train_file": "data/processed/train.jsonl",
+  "validation_file": "data/processed/validation.jsonl",
+  "output_dir": "outputs/disaster_model",
+  "smoke_output_dir": "outputs/disaster_smoke_test",
+  "seed": 42,
+  "max_length": 256,
+  "batch_size": 4,
+  "learning_rate": 0.00002,
+  "epochs": 3,
+  "device": "cpu"
+}

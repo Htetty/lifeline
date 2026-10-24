@@ -1,0 +1,5 @@
+torch
+transformers>=4.48.0,<5
+datasets
+accelerate
+scikit-learn
