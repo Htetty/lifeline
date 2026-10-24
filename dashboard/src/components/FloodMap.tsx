@@ -191,6 +191,24 @@ export default function FloodMap(props: Props) {
     map.addControl(new ScaleControl({ unit: "metric" }), "bottom-right");
 
     map.on("load", () => {
+      // Recolor the existing basemap, preserving its tiles, buildings and overlays.
+      for (const layer of map.getStyle().layers) {
+        const name = layer.id.toLowerCase();
+        if (layer.type === "background") {
+          map.setPaintProperty(layer.id, "background-color", "#0b111c");
+        } else if (layer.type === "fill") {
+          map.setPaintProperty(layer.id, "fill-color",
+            /water/.test(name) ? "#142b40" : /park|wood|grass|landcover/.test(name) ? "#132126" : "#101925");
+        } else if (layer.type === "line") {
+          map.setPaintProperty(layer.id, "line-color",
+            /water/.test(name) ? "#25445a" : /boundary/.test(name) ? "#3b4860" : /casing/.test(name) ? "#141d2b" : "#465268");
+        } else if (layer.type === "symbol" && layer.layout?.["text-field"]) {
+          map.setPaintProperty(layer.id, "text-color", /place|city|town/.test(name) ? "#b3bfd0" : "#7f90a8");
+          map.setPaintProperty(layer.id, "text-halo-color", "#0b111c");
+        } else if (layer.type === "fill-extrusion") {
+          map.setPaintProperty(layer.id, "fill-extrusion-color", "#253247");
+        }
+      }
       map.setPaintProperty(BUILDING_LAYER, "fill-extrusion-opacity", 0.92);
 
       map.addSource("incident-buildings", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
