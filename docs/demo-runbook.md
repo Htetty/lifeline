@@ -67,6 +67,13 @@ edit the production dashboard, deploy Convex functions, or open the dashboard.
 
 ## Application findings to relay to the bridge owner
 
+> **Integration status (`codex/integration-validation`):** with the bridge merged,
+> seven of these gaps are now regular passing tests (`test_fixed_*`): duplicate
+> delivery, revoked, superseded, post-dispatch correction, disconnected, saved-log
+> and unauthenticated write. The two retraction gaps (`withdrawn_*`) are still open
+> policy questions. Current run: 22 tests, 20 pass, 2 expected failures. See
+> `docs/integration/verification.md`. The table below is the original dev baseline.
+
 Reproduce these entirely in memory with the commands above. Each test suffix
 below identifies a method in `DemoIntegration`; prefix it with `test_gap_`.
 To run just one, use:
@@ -131,6 +138,8 @@ backend, and the isolated deployment's Convex functions.
 | `NEXT_PUBLIC_CONVEX_URL` | `dashboard/.env.local`; URL of the isolated demo deployment. Public URL only. |
 | `CONVEX_URL` | `backend/.env`; must match the dashboard's isolated target. |
 | `BACKEND_SECRET` | `backend/.env` and that deployment's server environment; must match. Never print or commit it. |
+| `VOICE_BRIDGE_TOKEN` | `backend/.env`; bearer token for `/calls/*` and `/voice/sessions`. Separate from `BACKEND_SECRET`; typed into the voice page, never bundled. |
+| `DISPATCHER_TOKEN` | The deployment's Convex environment; dispatcher passcode typed into the dashboard sign-in. Never in a `NEXT_PUBLIC_*` variable. |
 | `ANTHROPIC_API_KEY` | `backend/.env`; required for real extraction, not mocked checks. |
 | `CLAUDE_MODEL` | Optional backend model selection; current code defaults to `claude-sonnet-5-5`. Confirm access without changing provider settings. |
 | `EXTRACTION_EFFORT` | Optional backend setting; defaults to `low`. |

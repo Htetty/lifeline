@@ -53,6 +53,9 @@ export CONVEX_URL="$url"
 export BACKEND_SECRET="local-test-backend-secret"
 export DISPATCHER_TOKEN="local-test-dispatcher"
 export VOICE_BRIDGE_TOKEN="local-test-voice-token"
+# Separate names the integration tests trust over anything a test fixture sets.
+export LIFELINE_LOCAL_CONVEX_URL="$url" LIFELINE_LOCAL_BACKEND_SECRET="$BACKEND_SECRET"
+export LIFELINE_LOCAL_DISPATCHER_TOKEN="$DISPATCHER_TOKEN" LIFELINE_LOCAL_VOICE_BRIDGE_TOKEN="$VOICE_BRIDGE_TOKEN"
 npx convex env set BACKEND_SECRET "$BACKEND_SECRET" >/dev/null
 npx convex env set DISPATCHER_TOKEN "$DISPATCHER_TOKEN" >/dev/null
 

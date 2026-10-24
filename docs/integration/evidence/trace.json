@@ -1,5 +1,5 @@
 {
-  "callId": "e2e-34967521",
+  "callId": "e2e-bc96a9f6",
   "steps": [
     {
       "t": 0.0,
@@ -8,7 +8,7 @@
       "saved": false
     },
     {
-      "t": 2.4,
+      "t": 3.0,
       "step": "caller report (live Claude)",
       "http": 200,
       "saved": true,
@@ -19,7 +19,7 @@
       "next_question": "Is anyone with you injured or in need of medical help?"
     },
     {
-      "t": 4.9,
+      "t": 6.5,
       "step": "caller correction (live Claude)",
       "http": 200,
       "saved": true,
@@ -30,49 +30,49 @@
       "map_match": "Handlery Hotel San Diego"
     },
     {
-      "t": 4.9,
+      "t": 6.6,
       "step": "bridge polls before any decision",
       "announcements": []
     },
     {
-      "t": 6.0,
+      "t": 8.4,
       "step": "dashboard rejects wrong passcode",
       "shown": true
     },
     {
-      "t": 6.5,
+      "t": 8.8,
       "step": "dispatcher opens incident",
       "history_shown": true,
       "transcript_shown": true,
       "on_call": true
     },
     {
-      "t": 7.7,
+      "t": 9.4,
       "step": "dispatcher confirms location and approves",
       "team": "Swift Water Boat 1 (boat)"
     },
     {
-      "t": 8.6,
+      "t": 10.2,
       "step": "dispatcher unassigns and picks another team",
       "team": "High-Water Truck 7 (high water vehicle, road vehicle)"
     },
     {
-      "t": 8.6,
+      "t": 10.2,
       "step": "bridge polls",
       "announcements": [
         [
           "assignment_approved",
-          "Update from the dispatcher: a rescue team, High-Water Truck 7, has been assigned to you. Stay where you are, keep to the highest safe place, and keep your phone with you."
+          "Simulation update from the dispatcher: a simulated rescue team, High-Water Truck 7, has been assigned to this fictional incident."
         ]
       ]
     },
     {
-      "t": 8.6,
+      "t": 10.2,
       "step": "playback interrupted by caller: no ack; bridge re-polls",
       "same_update": true
     },
     {
-      "t": 8.6,
+      "t": 10.2,
       "step": "playback completed; ack",
       "ack": {
         "acknowledged": true
@@ -80,46 +80,47 @@
       "pending": []
     },
     {
-      "t": 8.9,
+      "t": 10.5,
       "step": "dispatcher marks en route; bridge speaks and acks",
       "announcements": [
-        "Update: the rescue team is on its way to you now. Stay where you are and stay above the water."
+        "Simulation update: the dispatcher has marked the simulated team as en route."
       ],
       "ack": {
         "acknowledged": true
       }
     },
     {
-      "t": 8.9,
+      "t": 10.5,
       "step": "caller asks 'is someone coming?'; bridge reads confirmed status",
       "status": {
         "assignedTeamName": "High-Water Truck 7",
         "callConnected": true,
-        "incidentId": "jh7cxe43tkz46js2gx7qg5akbh8gxqnz",
+        "decisionRevision": 5.0,
+        "incidentId": "jh76nztpdfc2mk00qqmcvvtcxh8gwmmd",
         "locationVerified": true,
         "status": "en_route",
         "version": 8.0
       }
     },
     {
-      "t": 9.7,
+      "t": 11.3,
       "step": "caller hangs up; dispatcher resolves",
       "announcements_after_hangup": [],
       "status": "resolved"
     },
     {
-      "t": 9.7,
+      "t": 11.3,
       "step": "browser console errors/warnings",
       "console": [
+        "Image \"swimming_pool\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
+        "Image \"sports_centre\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
+        "Image \"bicycle_parking\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
         "Image \"office\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
         "Image \"gate\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
-        "Image \"swimming_pool\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
         "Image \"bollard\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
+        "Image \"recycling\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
         "Image \"lift_gate\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
-        "Image \"bicycle_parking\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
-        "Image \"sports_centre\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
-        "Image \"atm\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style.",
-        "Image \"recycling\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style."
+        "Image \"atm\" could not be loaded. Please make sure you have added the image before it is needed with map.addImage(), resolved it with map.setMissingStyleImageResolver(), or included it in a \"sprite\" property in your style."
       ]
     }
   ]

@@ -286,8 +286,8 @@ class DemoIntegration(unittest.TestCase):
         self.assertEqual(self.http.get("/calls/missing/status").status_code, 404)
         self.assertEqual(self.state()["incidents"], [])
 
-    @unittest.expectedFailure
-    def test_gap_duplicate_utterance_delivery_must_not_duplicate_evidence(self):
+    def test_fixed_duplicate_utterance_delivery_must_not_duplicate_evidence(self):
+        self.transport.mutation("calls:startVoiceCall", {"secret": SECRET, "callId": "demo-fictional-1"})
         self.say("Same provider event.", turn_id="fictional-turn-1", sequence=1)
         before = self.incident()
         self.say("Same provider event.", turn_id="fictional-turn-1", sequence=1)

@@ -135,14 +135,14 @@ Paths below are relative to the repo root on the named branch.
 | Finding | Status |
 | --- | --- |
 | F1 three ingestion paths / PR #2 not persisted | **Open: owner decision** (PR #2 comment). Demo blocker for phone calls. |
-| F2 `app.voice` missing | **Open: owner** (#3). Demo blocker for live audio. |
+| F2 `app.voice` missing | Resolved by the voice owner (`b18b4f6`) and merged here. Live Cartesia bridge exercise passes (verification D). |
 | F3 stale announcements | Fixed here. `decisionRevision` on incidents and events, and `isCurrentEvent` gates both delivery and ack. Field names match the voice WIP. |
 | F4 false "saved" | Fixed here. `saved` flag; error text no longer claims a save; 502 or 503 with "Not stored". |
-| F5 duplicate line on retry | Partly fixed here. A failed save no longer leaves the line in memory. A retry after a *lost response* still appends again until the bridge sends turn ids (voice WIP receipts). |
+| F5 duplicate line on retry | Fixed. A failed save no longer leaves the line in memory, and with the bridge merged, turn receipts make a retry after a lost response idempotent. Plain HTTP posts without `turn_id` can still append twice. |
 | F6 corrections lose evidence | Fixed here. `factHistory` keeps earlier values and dropped hazards with their evidence, and the dashboard shows them under "Changed by caller". |
 | F7 dispatcher ops open | Fixed here. `DISPATCHER_TOKEN`, entered at sign-in and kept in sessionStorage, never bundled. Required by every `exercise:*` and `incidents:*` function, including `exercise:get`. |
 | F8 open FastAPI / shared secret | Fixed here. `Authorization: Bearer VOICE_BRIDGE_TOKEN` on `/calls/*`, separate from `BACKEND_SECRET`, fails closed; CORS allows the header. |
-| F9 greeting creates incident in turn mode | **Open: owner** (#3). Only in the voice WIP. |
-| F10 interrupted playback | Server side fixed here: stale acks are refused. Bridge behaviour is **open: owner** (#3). |
-| F11 ModernBERT seam | Fixed here. Optional import, background task with timeout, `calls:setAdvisoryTags` writes only `advisoryTags` and rejects older versions; the dashboard labels tags as advisory. Waiting on the module being committed (#4). |
-| F12 hang-up | Fixed here. Delivery stops for disconnected calls, and a late utterance no longer sets `callConnected` back to true. Stopping the bridge's own loop is **owner** (#3). |
+| F9 greeting creates incident in turn mode | Low risk. The bridge never persists its greeting, so the first stored turn is always the caller's. The HTTP path keeps the guard. A turn-mode agent line sent before any caller line would still create an incident (#3). |
+| F10 interrupted playback | Fixed. The server refuses stale acks, and the merged bridge acks only on the browser's natural `onended`, never on barge-in. Verified with scripted playback events only. |
+| F11 ModernBERT seam | Fixed. PR #6 is merged here. The classifier runs only when `CLASSIFIER_MODEL_PATH` is set, in the background with a timeout. `calls:setAdvisoryTags` writes only `advisoryTags` and rejects older versions. Live model verified (E). `requirements-classifier.txt` still names a personal path (#4). |
+| F12 hang-up | Fixed. Delivery stops for disconnected calls, a late utterance no longer sets `callConnected` back to true, and the merged bridge cancels poll and playback on end. |

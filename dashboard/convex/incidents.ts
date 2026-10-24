@@ -106,6 +106,7 @@ export const verifyLocation = mutation({
   handler: async (ctx, { dispatcherToken, incidentId, latitude, longitude }) => {
     requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
+    if (incident.locationVerified && latitude == null && longitude == null) return;
     const moving = latitude != null && (latitude !== incident.latitude || longitude !== incident.longitude);
     if (moving && incident.status !== "needs_review" && incident.status !== "awaiting_assignment") {
       throw new ConvexError("A team is already dispatched here. Unassign the team before moving the location.");

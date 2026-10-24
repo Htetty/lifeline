@@ -23,15 +23,24 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-CONVEX_URL = os.environ.get("CONVEX_URL", "")
+# Only the runner's throwaway backend. backend/tests/conftest.py points CONVEX_URL at a
+# fixture port that may be someone else's local backend, so the runner's values win.
+CONVEX_URL = os.environ.get("LIFELINE_LOCAL_CONVEX_URL", "")
 if urlsplit(CONVEX_URL).hostname not in ("127.0.0.1", "localhost"):
-    raise SystemExit("These tests write data: run them via scripts/integration/local_convex.sh (local Convex only).")
+    raise unittest.SkipTest("writes data: run via scripts/integration/local_convex.sh (local Convex only)")
+for name in ("BACKEND_SECRET", "DISPATCHER_TOKEN", "VOICE_BRIDGE_TOKEN"):
+    os.environ[name] = os.environ[f"LIFELINE_LOCAL_{name}"]
+os.environ["CONVEX_URL"] = CONVEX_URL
 os.environ.setdefault("ANTHROPIC_API_KEY", "not-a-real-key")
 
 from convex import ConvexClient, ConvexError  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import convex_store, extraction, main  # noqa: E402
+from app.config import settings  # noqa: E402
+
+if settings.convex_url != CONVEX_URL:
+    raise unittest.SkipTest("app settings were loaded for another Convex URL earlier in this process")
 
 SECRET = os.environ["BACKEND_SECRET"]
 DISPATCHER = {"dispatcherToken": os.environ["DISPATCHER_TOKEN"]}
@@ -311,6 +320,7 @@ class AdvisoryTags(Base):
             return result
         self.classified = []
         self.enterContext(patch.object(main, "classify_text_async", classify))
+        self.enterContext(patch.dict(os.environ, {"CLASSIFIER_MODEL_PATH": "/fake/model"}))
 
     def settle(self):
         # The background write runs on TestClient's event loop thread.

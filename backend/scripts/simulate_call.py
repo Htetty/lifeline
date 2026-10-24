@@ -13,6 +13,9 @@ suggested follow-up question, then (with --listen) polls for confirmed updates a
 import argparse
 import time
 import uuid
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
 from pathlib import Path
 
@@ -46,6 +49,7 @@ SCENARIOS = {
 
 
 def main() -> None:
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8000")
     parser.add_argument("--scenario", choices=SCENARIOS, default="upstairs")

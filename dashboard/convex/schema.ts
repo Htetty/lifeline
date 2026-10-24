@@ -125,4 +125,12 @@ export default defineSchema({
     /** The incident's decisionRevision this event describes; stale once it moves on. */
     decisionRevision: v.optional(v.number()),
   }).index("by_call_announced", ["callId", "announcedAt"]),
+
+  voiceCalls: defineTable({
+    callId: v.string(), nextSequence: v.number(), ended: v.boolean(),
+  }).index("by_call", ["callId"]),
+  voiceTurns: defineTable({
+    callId: v.string(), turnId: v.string(), sequence: v.number(),
+    fingerprint: v.string(), result: v.any(),
+  }).index("by_call_turn", ["callId", "turnId"]),
 });
