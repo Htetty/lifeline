@@ -1,0 +1,4 @@
+# Optional local inference only. Install alongside requirements.txt to use FastAPI.
+# CPU versions used by /Users/htetty/Models/lifeline/predict_local.py on macOS.
+torch==2.6.0
+transformers==4.57.6

@@ -1,0 +1,39 @@
+{
+  "name": "dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test:voice": "vitest run",
+    "sim:scenario": "node scripts/run.mjs scripts/sim/build-scenario.ts",
+    "fetch:buildings": "node scripts/run.mjs scripts/fetch-buildings.ts",
+    "fetch:tide": "node scripts/run.mjs scripts/fetch-tide.ts",
+    "fetch:roads": "node scripts/run.mjs scripts/fetch-roads.ts",
+    "fetch:tiles": "node scripts/run.mjs scripts/fetch-from-tiles.ts",
+    "test:priority": "tsc --outDir .test-build --module commonjs --target es2022 --moduleResolution node --skipLibCheck src/lib/priority.ts && node scripts/test-priority.cjs .test-build/src/lib",
+    "postinstall": "node -e \"require('fs').copyFileSync('node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs','public/maplibre-gl-worker.mjs')\""
+  },
+  "dependencies": {
+    "convex": "^1.48.0",
+    "maplibre-gl": "^6.15.0",
+    "next": "16.4.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "convex-test": "^0.0.65",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.3",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.12"
+  }
+}

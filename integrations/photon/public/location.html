@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111315">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Confirm location · Lifeline</title>
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Confirm location">
+  <meta property="og:description" content="Lifeline">
+  <meta property="og:image" content="__PUBLIC_ORIGIN__/preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/preview.png">
+  <link rel="stylesheet" href="/maplibre-gl.css">
+  <link rel="stylesheet" href="/location.css">
+  <script type="module" src="/location.js"></script>
+</head>
+<body>
+  <main>
+    <div id="map" aria-label="Map showing your current location"></div>
+    <button id="recenter" aria-label="Find my location" title="Find my location">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m20 4-6 16-3-7-7-3 16-6Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    </button>
+    <section class="card" aria-label="Confirm your location">
+      <h1 id="title">Is this your current location?</h1>
+      <p id="status" role="status">Finding you…</p>
+      <button id="confirm" disabled>Confirm</button>
+    </section>
+  </main>
+</body>
+</html>
