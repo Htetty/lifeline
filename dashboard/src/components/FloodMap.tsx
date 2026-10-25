@@ -55,6 +55,8 @@ interface Props {
   focusTeam: { id: string; key: number } | null;
   onFocusTeam: (teamId: string | null) => void;
   selectedId: string | null;
+  /** Pixels of map hidden under the incident sheet (right, bottom), so a selected incident is centred in what stays visible. */
+  coveredBy?: () => [number, number];
   reportMode: boolean;
   onSelect: (incidentId: string | null) => void;
   onReportBuilding: (pick: BuildingPick) => void;
@@ -280,23 +282,29 @@ export default function FloodMap(props: Props) {
     map.addControl(new NavigationControl({ visualizePitch: true }), "top-right");
     map.addControl(new ScaleControl({ unit: "metric" }), "bottom-right");
 
+    // MapLibre opens the compact attribution on first load; start it folded behind its (i) button.
+    map.once("idle", () => {
+      map.getContainer().querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show");
+    });
     map.on("load", () => {
       // Recolor the existing basemap, preserving its tiles, buildings and overlays.
       for (const layer of map.getStyle().layers) {
         const name = layer.id.toLowerCase();
         if (layer.type === "background") {
-          map.setPaintProperty(layer.id, "background-color", "#0b111c");
+          map.setPaintProperty(layer.id, "background-color", "#0f1113");
         } else if (layer.type === "fill") {
           map.setPaintProperty(layer.id, "fill-color",
-            /water/.test(name) ? "#142b40" : /park|wood|grass|landcover/.test(name) ? "#132126" : "#101925");
+            /water/.test(name) ? "#13202b" : /park|wood|grass|landcover/.test(name) ? "#121815" : "#121416");
         } else if (layer.type === "line") {
           map.setPaintProperty(layer.id, "line-color",
-            /water/.test(name) ? "#25445a" : /boundary/.test(name) ? "#3b4860" : /casing/.test(name) ? "#141d2b" : "#465268");
+            /water/.test(name) ? "#22394a" : /boundary/.test(name) ? "#3a3f47" : /casing/.test(name) ? "#16181b" : "#3c4149");
         } else if (layer.type === "symbol" && layer.layout?.["text-field"]) {
-          map.setPaintProperty(layer.id, "text-color", /place|city|town/.test(name) ? "#b3bfd0" : "#7f90a8");
-          map.setPaintProperty(layer.id, "text-halo-color", "#0b111c");
+          map.setPaintProperty(layer.id, "text-color", /place|city|town/.test(name) ? "#b9bec6" : "#7d838c");
+          map.setPaintProperty(layer.id, "text-halo-color", "#0f1113");
+          // Basemap POI icons are full-colour; dim them so incidents and teams stand out.
+          if (layer.layout?.["icon-image"]) map.setPaintProperty(layer.id, "icon-opacity", 0.4);
         } else if (layer.type === "fill-extrusion") {
-          map.setPaintProperty(layer.id, "fill-extrusion-color", "#253247");
+          map.setPaintProperty(layer.id, "fill-extrusion-color", "#262a30");
         }
       }
       map.setPaintProperty(BUILDING_LAYER, "fill-extrusion-opacity", 0.92);
@@ -345,7 +353,7 @@ export default function FloodMap(props: Props) {
         type: "line",
         source: "caller-zones",
         filter: ["==", ["geometry-type"], "LineString"],
-        paint: { "line-color": "#0f172a", "line-width": 1.5, "line-opacity": 0.7, "line-dasharray": [2, 2] },
+        paint: { "line-color": "#e3e6ea", "line-width": 1.5, "line-opacity": 0.6, "line-dasharray": [2, 2] },
       });
       map.addLayer({
         id: "caller-zones-label",
@@ -353,7 +361,7 @@ export default function FloodMap(props: Props) {
         source: "caller-zones",
         filter: ["==", ["geometry-type"], "Point"],
         layout: { "text-field": ["get", "label"], "text-font": ["Noto Sans Bold"], "text-size": 11, "text-anchor": "bottom" },
-        paint: { "text-color": "#0f172a", "text-halo-color": "#fff", "text-halo-width": 1.5 },
+        paint: { "text-color": "#e3e6ea", "text-halo-color": "#0f1113", "text-halo-width": 1.5 },
       });
       map.addSource("route-preview", { type: "geojson", data: previewRoute(propsRef.current.preview) });
       map.addLayer({
@@ -392,7 +400,7 @@ export default function FloodMap(props: Props) {
         paint: {
           "circle-radius": ["case", ["get", "focused"], 12, ["get", "moving"], 9, 7],
           "circle-color": ["case", ["get", "moving"], "#f59e0b", ["get", "available"], "#2563eb", "#64748b"],
-          "circle-stroke-color": ["case", ["get", "focused"], "#0f172a", "#fff"],
+          "circle-stroke-color": ["case", ["get", "focused"], "#8fc2ff", "#0f1113"],
           "circle-stroke-width": ["case", ["get", "focused"], 4, 2],
         },
       });
@@ -407,7 +415,7 @@ export default function FloodMap(props: Props) {
           "text-offset": [0, 1.4],
           "text-anchor": "top",
         },
-        paint: { "text-color": "#1e3a8a", "text-halo-color": "#fff", "text-halo-width": 1.5 },
+        paint: { "text-color": "#bcd6ff", "text-halo-color": "#0f1113", "text-halo-width": 1.5 },
       });
 
       map.addSource("incidents", {
@@ -438,7 +446,7 @@ export default function FloodMap(props: Props) {
             "dispatched", "#f59e0b",
             "#16a34a",
           ],
-          "circle-stroke-color": ["case", ["get", "verified"], "#fff", "#111"],
+          "circle-stroke-color": ["case", ["get", "verified"], "#fff", "#0f1113"],
           "circle-stroke-width": 2.5,
         },
       });
@@ -455,7 +463,7 @@ export default function FloodMap(props: Props) {
           "text-anchor": "bottom",
           "text-allow-overlap": true,
         },
-        paint: { "text-color": "#7f1d1d", "text-halo-color": "#fff", "text-halo-width": 2 },
+        paint: { "text-color": "#ffd0d0", "text-halo-color": "#0f1113", "text-halo-width": 2 },
       });
 
       readyRef.current = true;
@@ -578,7 +586,13 @@ export default function FloodMap(props: Props) {
     const map = mapRef.current;
     const incident = props.state.incidents.find((i) => i.id === props.selectedId);
     if (!map || incident?.latitude == null || incident.longitude == null) return;
-    map.easeTo({ center: [incident.longitude, incident.latitude], zoom: Math.max(map.getZoom(), 16.2), duration: 900 });
+    const [right, bottom] = propsRef.current.coveredBy?.() ?? [0, 0];
+    map.easeTo({
+      center: [incident.longitude, incident.latitude],
+      zoom: Math.max(map.getZoom(), 16.2),
+      offset: [-right / 2, -bottom / 2],
+      duration: 900,
+    });
     // Only when the selection changes, not on every incident update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.selectedId]);

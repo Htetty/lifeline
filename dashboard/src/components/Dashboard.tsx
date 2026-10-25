@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
 import {
@@ -49,14 +49,16 @@ import type { ExerciseState, Incident, IncidentStatus, PriorityTier, RescueTeam 
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types";
 import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
 import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
+import { capitalize, capitalizeEach } from "@/lib/text";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
 import { etaMinutes, TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
-import { LEVEL_LABEL } from "../../convex/waterReports";
+import { describeReport } from "../../convex/waterReports";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
 
 type Filter = "all" | "stuck" | "dispatched" | "resolved";
 type Run = (action: Action) => void;
+type Dock = "bottom" | "right";
 
 interface TeamOption {
   team: RescueTeam;
@@ -80,12 +82,39 @@ const FILTERS: Record<Filter, (s: IncidentStatus) => boolean> = {
   resolved: (s) => s === "resolved",
 };
 
-const STATUS_STYLE: Record<IncidentStatus, { icon: string; cls: string }> = {
-  needs_review: { icon: "?", cls: "bg-red-100 text-red-800 ring-red-300" },
-  awaiting_assignment: { icon: "!", cls: "bg-red-100 text-red-800 ring-red-300" },
-  assigned: { icon: "→", cls: "bg-amber-100 text-amber-900 ring-amber-300" },
-  en_route: { icon: "»", cls: "bg-amber-100 text-amber-900 ring-amber-300" },
-  resolved: { icon: "✓", cls: "bg-green-100 text-green-800 ring-green-300" },
+const FILTER_LABEL: Record<Filter, string> = { all: "All", stuck: "Waiting", dispatched: "Dispatched", resolved: "Resolved" };
+
+/** Case-insensitive match on what a dispatcher would type: address, position, summary or the short ID. */
+function matchesQuery(incident: Incident, query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [incident.reportedAddress, incident.reportedPosition, incident.summary, incident.id.slice(-8)]
+    .some((field) => field?.toLowerCase().includes(q));
+}
+
+const icon = (path: React.ReactNode) => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    {path}
+  </svg>
+);
+const SearchIcon = () => icon(<><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></>);
+const QueueIcon = () => icon(<path d="M3 4h10M3 8h10M3 12h6" />);
+const PinIcon = () => icon(<><path d="M8 14s4.5-4.2 4.5-7.5a4.5 4.5 0 0 0-9 0C3.5 9.8 8 14 8 14z" /><circle cx="8" cy="6.5" r="1.5" /></>);
+const BellIcon = () => icon(<><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3z" /><path d="M6.5 14a1.5 1.5 0 0 0 3 0" /></>);
+const GearIcon = () => icon(<><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></>);
+const FILTER_ICON: Record<Filter, React.ReactNode> = {
+  all: null,
+  stuck: icon(<><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" /></>),
+  dispatched: icon(<path d="M2.5 8h9M8.5 4.5 12 8l-3.5 3.5" />),
+  resolved: icon(<path d="m3 8.5 3 3 7-7" />),
+};
+
+const STATUS_STYLE: Record<IncidentStatus, string> = {
+  needs_review: "chip-neutral",
+  awaiting_assignment: "chip-neutral",
+  assigned: "chip-amber",
+  en_route: "chip-amber",
+  resolved: "chip-green",
 };
 
 // Water surface at the gauge, metres NAVD88: normal flow is ~6 m, the 2017 record ~9.3 m.
@@ -97,6 +126,12 @@ const REPLAY_TICK_MS = 3000;
 const READINGS_PER_TICK = 2;
 const TEAM_UPDATE_EVERY_TICKS = 3;
 const CLOCK_MS = 2000;
+/** Matches the sheet's exit animation in globals.css. */
+const SHEET_EXIT_MS = 220;
+const ACTIVITY_TOAST_MS = 4500;
+/** Matches the section expand transition in globals.css. */
+const SECTION_OPEN_MS = 300;
+const SECTION_SCROLL_MARGIN = 10;
 
 function fmt(m: number | null, digits = 1) {
   return m == null ? "unknown" : `${m.toFixed(digits)} m`;
@@ -181,6 +216,17 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [focusTeam, setFocusTeam] = useState<{ id: string; key: number } | null>(null);
   /** Clock for where moving teams are, refreshed while any team is travelling. */
   const [now, setNow] = useState(() => Date.now());
+  const [dock, setDock] = useState<Dock>("bottom");
+  const [closing, setClosing] = useState(false);
+  const [transcriptId, setTranscriptId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  /** Activity newer than this is flagged as unseen on the bell. */
+  const [activitySeenAt, setActivitySeenAt] = useState(() => Date.now());
+  /** Newest activity whose toast has already been shown or dismissed. */
+  const [toastedActivityId, setToastedActivityId] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const run: Run = useCallback((action) => {
     dispatch(action).catch((e) => setToast(errorMessage(e)));
@@ -224,14 +270,17 @@ function DashboardView({ state }: { state: ExerciseState }) {
       if (!i.waterReport || i.latitude == null || i.longitude == null) return [];
       const ground = elevation?.sample(i.longitude, i.latitude) ?? null;
       const at = observationAt(grid, i.waterReport, i.longitude, i.latitude, FLOOR_HEIGHT_M, ground);
-      return at ? [{ lon: i.longitude, lat: i.latitude, ...at, weight: i.locationVerified ? 1 : 0.5 }] : [];
+      if (!at) return [];
+      // Estimates pull the model less than a body reference or a measurement; "there's water" only adds.
+      const weight = (i.locationVerified ? 1 : 0.5) * (i.waterReport.level === "estimated" ? 0.5 : 1);
+      return [{ lon: i.longitude, lat: i.latitude, ...at, weight, raiseOnly: i.waterReport.level === "present" }];
     });
   }, [grid, elevation, state.incidents]);
   const callerZones = useMemo(
     () =>
       state.incidents.flatMap((i) =>
         i.waterReport && i.latitude != null && i.longitude != null && !i.linkedTo
-          ? [{ lon: i.longitude, lat: i.latitude, label: `Caller: ${LEVEL_LABEL[i.waterReport.level]}` }]
+          ? [{ lon: i.longitude, lat: i.latitude, label: `Caller: ${describeReport(i.waterReport)}` }]
           : [],
       ),
     [state.incidents],
@@ -307,6 +356,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const onReportBuilding = useCallback(
     (pick: BuildingPick) => {
       if (placingFor) {
+        if (!inFloodArea(pick.longitude, pick.latitude)) {
+          setToast("That building is outside the flood model area, so the caller's water report won't show on the map.");
+        }
         run({ type: "verifyLocation", incidentId: placingFor, latitude: pick.latitude, longitude: pick.longitude });
         setSelectedId(placingFor);
         setPlacingFor(null);
@@ -337,7 +389,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
   );
   // Waiting incidents: most urgent tier first, then whoever has waited longest, then more people.
   const incidents = [...mainIncidents]
-    .filter((i) => FILTERS[filter](i.status))
+    .filter((i) => FILTERS[filter](i.status) && matchesQuery(i, query))
     .sort((a, b) => {
       const group = (i: Incident) =>
         ACTIVE_STATUSES.includes(i.status) ? 0 : DISPATCHED_STATUSES.includes(i.status) ? 1 : 2;
@@ -354,9 +406,6 @@ function DashboardView({ state }: { state: ExerciseState }) {
     }),
     [state, mainIncidents, priorities, waterLevel],
   );
-  const criticalWaiting = mainIncidents.filter(
-    (i) => ACTIVE_STATUSES.includes(i.status) && priorities.get(i.id)?.tier === "critical",
-  ).length;
   const selected = state.incidents.find((i) => i.id === selectedId) ?? null;
 
   // Teams that could go to the selected incident, fastest first.
@@ -403,196 +452,327 @@ function DashboardView({ state }: { state: ExerciseState }) {
     return () => clearInterval(timer);
   }, [anyTrip]);
   const placing = state.incidents.find((i) => i.id === placingFor) ?? null;
-  const stuckPeople = mainIncidents
-    .filter((i) => ACTIVE_STATUSES.includes(i.status))
-    .reduce((n, i) => n + (i.peopleCount ?? 0), 0);
-
+  // The incident sheet slides over the map; closing plays the exit animation before clearing the selection.
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const closeSheet = useCallback(() => {
+    clearTimeout(closeTimer.current);
+    setClosing(true);
+    closeTimer.current = setTimeout(() => {
+      setSelectedId(null);
+      setPendingPick(null);
+      setClosing(false);
+    }, SHEET_EXIT_MS);
+  }, []);
+  const openIncident = useCallback((id: string | null) => {
+    clearTimeout(closeTimer.current);
+    setClosing(false);
+    setSelectedId(id);
+    setPendingPick(null);
+  }, []);
+  // Clicking the open incident again (in the list or on the map) closes it.
+  const toggleSelected = useCallback(
+    (id: string | null) => (id != null && id === selectedId && !closing ? closeSheet() : openIncident(id)),
+    [selectedId, closing, closeSheet, openIncident],
+  );
+  // Opening the bell shows what's new; closing it marks everything seen.
+  const closeActivity = useCallback(() => {
+    setActivitySeenAt(Date.now());
+    setActivityOpen(false);
+  }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      if (e.key !== "Escape") return;
+      if (transcriptId) setTranscriptId(null);
+      else if (settingsOpen) setSettingsOpen(false);
+      else if (activityOpen) closeActivity();
+      else closeSheet();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [transcriptId, settingsOpen, activityOpen, closeActivity, closeSheet]);
+  const sheetRef = useRef<HTMLElement>(null);
+  // The bottom sheet opens at its content's height, then keeps it: opening a section scrolls inside
+  // the sheet instead of pushing it further over the map.
+  const sheetKey = pendingPick ? "pick" : selectedId;
+  useLayoutEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    sheet.style.height = "";
+    if (dock === "bottom") sheet.style.height = `${sheet.offsetHeight}px`;
+  }, [sheetKey, dock]);
+  // As a section expands, scroll just enough to keep it in view (never past its top).
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    let observer: ResizeObserver | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      observer?.disconnect();
+      clearTimeout(timer);
+    };
+    const onToggle = (e: Event) => {
+      const details = e.target;
+      const body = details instanceof HTMLElement ? details.closest<HTMLElement>(".sheet-body") : null;
+      if (!(details instanceof HTMLDetailsElement) || !details.open || !body) return;
+      stop();
+      observer = new ResizeObserver(() => {
+        const section = details.getBoundingClientRect();
+        const view = body.getBoundingClientRect();
+        const hidden = section.bottom - view.bottom + SECTION_SCROLL_MARGIN;
+        if (hidden > 0) body.scrollTop += Math.min(hidden, section.top - view.top - SECTION_SCROLL_MARGIN);
+      });
+      observer.observe(details);
+      timer = setTimeout(stop, SECTION_OPEN_MS * 3);
+    };
+    // `toggle` doesn't bubble, so listen while it's captured on the way down.
+    sheet.addEventListener("toggle", onToggle, true);
+    return () => {
+      stop();
+      sheet.removeEventListener("toggle", onToggle, true);
+    };
+  }, [sheetKey]);
+  const coveredBy = useCallback((): [number, number] => {
+    const sheet = sheetRef.current;
+    if (!sheet) return [0, 0];
+    return dock === "bottom" ? [0, sheet.offsetHeight] : [sheet.offsetWidth, 0];
+  }, [dock]);
+  const unseenActivity = state.activity.filter((a) => a.at > activitySeenAt).length;
+  // New activity pops a short notice under the bell while the list is closed.
+  const newestActivity = state.activity[0];
+  const activityToast =
+    newestActivity && newestActivity.at > activitySeenAt && !activityOpen && newestActivity.id !== toastedActivityId
+      ? newestActivity
+      : null;
+  const activityToastId = activityToast?.id ?? null;
+  useEffect(() => {
+    if (!activityToastId) return;
+    const t = setTimeout(() => setToastedActivityId(activityToastId), ACTIVITY_TOAST_MS);
+    return () => clearTimeout(t);
+  }, [activityToastId]);
+  const transcriptIncident = state.incidents.find((i) => i.id === transcriptId) ?? null;
 
   return (
     <div className="dispatcher flex h-screen flex-col bg-slate-950 text-slate-100">
       <header className="console-header">
         <Link href="/" className="brand">Lifeline</Link>
-        <span className="console-region">{DEMO_AREA.name} · Flood ops</span>
-        <span className="exercise-label">Simulated exercise</span>
+        <span className="console-region">
+          <PinIcon />
+          {DEMO_AREA.name}
+        </span>
         <div className="console-metrics">
           <span><i className="live-dot" /> On call <b>{state.incidents.filter((i) => i.callConnected).length}</b></span>
           <span>Needs review <b>{mainIncidents.filter((i) => i.status === "needs_review").length}</b></span>
           <span>Active rescues <b>{mainIncidents.filter((i) => DISPATCHED_STATUSES.includes(i.status)).length}</b></span>
-          <span>Teams free <b className="text-emerald-300">{state.teams.filter((t) => t.available).length}</b></span>
-          <span title={`USGS ${GAUGE.site} ${GAUGE.name}`}>
-            River <b className="text-sky-300">{surfaceToStage(waterLevel).toFixed(1)} ft</b>
-            {observedAt != null ? ` · ${formatGaugeTime(observedAt)}` : " · set by hand"}
-          </span>
+          <span>Teams free <b>{state.teams.filter((t) => t.available).length}</b></span>
+          <span title={`USGS ${GAUGE.site} ${GAUGE.name}`}>River <b>{surfaceToStage(waterLevel).toFixed(1)} ft</b></span>
         </div>
+        <button
+          onClick={() => {
+            if (activityOpen) closeActivity();
+            else setActivityOpen(true);
+            setSettingsOpen(false);
+          }}
+          aria-expanded={activityOpen}
+          aria-label={`Activity${unseenActivity ? `, ${unseenActivity} new` : ""}`}
+          title="Activity"
+          className={`icon-button relative ${activityOpen ? "icon-button-on" : ""}`}
+        >
+          <BellIcon />
+          {unseenActivity > 0 && <span className="icon-badge">{unseenActivity > 9 ? "9+" : unseenActivity}</span>}
+        </button>
+        {activityToast && (
+          <button
+            key={activityToast.id}
+            className="activity-toast"
+            onClick={() => {
+              setToastedActivityId(activityToast.id);
+              setActivityOpen(true);
+            }}
+          >
+            <BellIcon />
+            <span>{activityToast.message}</span>
+          </button>
+        )}
+        {activityOpen && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={closeActivity} aria-hidden />
+            <section className="settings-popover activity-popover" aria-label="Activity">
+              <h2>Activity</h2>
+              <ul>
+                {state.activity.slice(0, 40).map((a) => (
+                  <li key={a.id} className={a.at > activitySeenAt ? "is-new" : undefined}>
+                    <span>{new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    <p>{a.message}</p>
+                  </li>
+                ))}
+                {!state.activity.length && <li><p className="text-slate-500">Nothing yet.</p></li>}
+              </ul>
+            </section>
+          </>
+        )}
+        <button
+          onClick={() => {
+            setSettingsOpen((v) => !v);
+            if (activityOpen) closeActivity();
+          }}
+          aria-expanded={settingsOpen}
+          aria-label="Simulation settings"
+          title="Simulation settings"
+          className={`icon-button ${settingsOpen || liveFeed ? "icon-button-on" : ""}`}
+        >
+          <GearIcon />
+        </button>
+        {settingsOpen && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={() => setSettingsOpen(false)} aria-hidden />
+            <section className="settings-popover" aria-label="Simulation settings">
+              <h2>Simulation</h2>
+              <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">
+                River level at Fashion Valley gauge
+              </label>
+              <input
+                type="range"
+                min={WATER_MIN}
+                max={WATER_MAX}
+                step={0.05}
+                value={waterLevel}
+                onChange={(e) => setWaterDraft(Number(e.target.value))}
+                className="w-full accent-sky-400"
+              />
+              <p className="text-xs text-slate-400">
+                {surfaceToStage(waterLevel).toFixed(2)} ft gauge height ({waterLevel.toFixed(2)} m above sea level)
+                {depthOverChannel != null && <> · {depthOverChannel.toFixed(1)} m above the river channel</>}
+              </p>
+              <p className="text-[10px] leading-snug text-slate-500">
+                {observedAt != null
+                  ? `Recorded by USGS gauge ${GAUGE.site} at ${formatGaugeTime(observedAt)} during the ${GAUGE.event}.`
+                  : `Set by hand. Replay uses USGS gauge ${GAUGE.site} readings from the ${GAUGE.event}.`}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setLiveFeed((v) => !v)}
+                  className={`soft-button ${liveFeed ? "soft-button-on" : ""}`}
+                >
+                  {liveFeed ? "● Replaying 2017 storm" : "Replay 2017 storm"}
+                </button>
+                <button
+                  onClick={() => {
+                    // Close the popover so the dispatcher can click a building straight away.
+                    if (!reportMode) setSettingsOpen(false);
+                    setReportMode((v) => !v);
+                    setPlacingFor(null);
+                    setPendingPick(null);
+                  }}
+                  className={`soft-button ${reportMode && !placingFor ? "soft-button-alert" : ""}`}
+                >
+                  {reportMode && !placingFor ? "Click a building… (cancel)" : "+ Mark stuck people"}
+                </button>
+                <button
+                  onClick={() => {
+                    if (!confirm("Clear every incident for everyone and send all teams back to base?")) return;
+                    setLiveFeed(false);
+                    setSelectedId(null);
+                    setPendingPick(null);
+                    setPlacingFor(null);
+                    run({ type: "reset" });
+                  }}
+                  className="soft-button"
+                >
+                  Reset
+                </button>
+              </div>
+            </section>
+          </>
+        )}
       </header>
-      <div className="operations-bar">
-        <span><i className="live-dot" /> Dispatcher console <span className="text-slate-500">/</span> Live operations</span>
-        <span>{criticalWaiting > 0 && <strong className="text-red-300">{criticalWaiting} critical waiting · </strong>}{stuckPeople} people awaiting rescue · River {surfaceToStage(waterLevel).toFixed(1)} ft</span>
-      </div>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="console-body flex min-h-0 flex-1">
         {/* Left: controls, queue, activity */}
-        <aside className="incident-sidebar flex shrink-0 flex-col border-r border-slate-800">
-          <div className="queue-heading"><h2>Incidents</h2><span>Sorted by priority</span></div>
-          <details className="simulation-controls border-b border-slate-800 p-4">
-            <summary>Simulation controls <span>{surfaceToStage(waterLevel).toFixed(1)} ft</span></summary>
-            <div className="mt-4 space-y-3">
-            <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">
-              River level at Fashion Valley gauge
-            </label>
-            <input
-              type="range"
-              min={WATER_MIN}
-              max={WATER_MAX}
-              step={0.05}
-              value={waterLevel}
-              onChange={(e) => setWaterDraft(Number(e.target.value))}
-              className="w-full accent-sky-400"
-            />
-            <p className="text-xs text-slate-400">
-              {surfaceToStage(waterLevel).toFixed(2)} ft gauge height ({waterLevel.toFixed(2)} m above sea level)
-              {depthOverChannel != null && <> · {depthOverChannel.toFixed(1)} m above the river channel</>}
-            </p>
-            <p className="text-[10px] leading-snug text-slate-500">
-              {observedAt != null
-                ? `Recorded by USGS gauge ${GAUGE.site} at ${formatGaugeTime(observedAt)} during the ${GAUGE.event}.`
-                : `Set by hand. Replay uses USGS gauge ${GAUGE.site} readings from the ${GAUGE.event}.`}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setLiveFeed((v) => !v)}
-                className={`rounded px-2.5 py-1.5 text-xs font-medium ${
-                  liveFeed ? "bg-emerald-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700"
-                }`}
-              >
-                {liveFeed ? "● Replaying 2017 storm" : "Replay 2017 storm"}
-              </button>
-              <button
-                onClick={() => {
-                  setReportMode((v) => !v);
-                  setPlacingFor(null);
-                  setPendingPick(null);
-                }}
-                className={`rounded px-2.5 py-1.5 text-xs font-medium ${
-                  reportMode && !placingFor ? "bg-red-500 text-white" : "bg-slate-800 hover:bg-slate-700"
-                }`}
-              >
-                {reportMode && !placingFor ? "Click a building… (cancel)" : "+ Mark stuck people"}
-              </button>
-              <button
-                onClick={() => {
-                  if (!confirm("Clear every incident for everyone and send all teams back to base?")) return;
-                  setLiveFeed(false);
-                  setSelectedId(null);
-                  setPendingPick(null);
-                  setPlacingFor(null);
-                  run({ type: "reset" });
-                }}
-                className="rounded bg-slate-800 px-2.5 py-1.5 text-xs font-medium hover:bg-slate-700"
-              >
-                Reset
-              </button>
-            </div>
-            </div>
-          </details>
+        <aside className="incident-sidebar panel flex shrink-0 flex-col">
+          <div className="queue-heading">
+            <h2>Incidents</h2>
+            <span className="count-badge">
+              <QueueIcon /> {mainIncidents.filter((i) => ACTIVE_STATUSES.includes(i.status)).length} waiting
+            </span>
+          </div>
 
-          <section className="queue-filters flex gap-1 border-b border-slate-800 px-4 py-2">
+          <label className="queue-search">
+            <SearchIcon />
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search address, people, summary…"
+              aria-label="Search incidents"
+            />
+            <kbd>⌘K</kbd>
+          </label>
+          <section className="queue-filters flex gap-1.5">
             {(Object.keys(FILTERS) as Filter[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`rounded px-2 py-1 text-xs capitalize ${
-                  filter === f ? "bg-slate-200 text-slate-900" : "text-slate-400 hover:bg-slate-800"
-                }`}
-              >
-                {f === "stuck" ? "Waiting" : f} <span className="ml-1 opacity-60">{mainIncidents.filter((i) => FILTERS[f](i.status)).length}</span>
+              <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f}>
+                {FILTER_ICON[f]}
+                {FILTER_LABEL[f]}
               </button>
             ))}
           </section>
 
           <ul className="incident-queue min-h-0 flex-1 overflow-y-auto">
             {incidents.map((i) => {
-              const w = waterReport(i);
-              const st = STATUS_STYLE[i.status];
+              const p = priorities.get(i.id);
               return (
                 <li key={i.id}>
-                  <button
-                    onClick={() => {
-                      setSelectedId(i.id);
-                      setPendingPick(null);
-                    }}
-                    aria-pressed={i.id === selectedId}
-                    className={`block w-full border-b border-slate-900 px-4 py-3 text-left hover:bg-slate-900 ${
-                      i.id === selectedId ? "bg-slate-800" : ""
-                    }`}
-                  >
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {i.status !== "resolved" && <TierPill priority={priorities.get(i.id)} />}
-                      <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${st.cls}`}>
-                        {st.icon} {STATUS_LABEL[i.status]}
-                      </span>
+                  <button onClick={() => toggleSelected(i.id)} aria-pressed={i.id === selectedId} className="incident-card">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="incident-card-title">{capitalize(i.reportedAddress)}</p>
+                      {i.status !== "resolved" && <TierPill priority={p} />}
+                    </div>
+                    {i.status !== "resolved" && !!p?.reasons.length && (
+                      <p className="incident-card-reasons">{capitalizeEach(p.reasons.slice(0, 3)).join(" · ")}</p>
+                    )}
+                    <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                      <span className={`chip ${STATUS_STYLE[i.status]}`}>{STATUS_LABEL[i.status]}</span>
                       {i.latitude == null ? (
-                        <span className="rounded bg-yellow-300 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
-                          Not on map
-                        </span>
+                        <span className="chip chip-amber">Not on map</span>
                       ) : (
                         !i.locationVerified && (
-                          <span className="rounded bg-yellow-300 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
+                          <span className="chip chip-amber">
                             {i.locationNote?.startsWith("Map search") ? "Auto-located · confirm" : "Location unverified"}
                           </span>
                         )
                       )}
-                      {i.callConnected && (
-                        <span className="rounded bg-emerald-400 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
-                          ● On call
-                        </span>
-                      )}
+                      {i.callConnected && <span className="chip chip-green"><i className="live-dot" /> On call</span>}
                       <GroupBadges incident={i} all={state.incidents} linked={linkedCount(i.id)} />
                     </div>
-                    <p className="mt-1.5 text-sm font-medium">{i.reportedAddress}</p>
-                    {i.status !== "resolved" && !!priorities.get(i.id)?.reasons.length && (
-                      <p className="mt-0.5 text-xs text-red-300">{priorities.get(i.id)!.reasons.slice(0, 3).join(" · ")}</p>
-                    )}
-                    <p className="mt-0.5 text-xs text-slate-400">
-                      {i.peopleCount ?? "?"} {i.peopleCount === 1 ? "person" : "people"}
-                      {i.reportedPosition ? ` · ${i.reportedPosition}` : ""}
-                      {w?.depth != null ? ` · ${w.depth.toFixed(1)} m water` : ""}
-                    </p>
                   </button>
                 </li>
               );
             })}
-            {!incidents.length && <li className="p-4 text-sm text-slate-500">No incidents match this filter.</li>}
+            {!incidents.length && (
+              <li className="px-2 py-4 text-sm text-slate-500">
+                {query ? `No incidents match “${query}”.` : "No incidents match this filter."}
+              </li>
+            )}
           </ul>
 
-          <section className="max-h-40 overflow-y-auto border-t border-slate-800 p-3">
-            <h2 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">Activity</h2>
-            <ul className="space-y-1 text-xs text-slate-300">
-              {state.activity.slice(0, 12).map((a) => (
-                <li key={a.id}>
-                  <span className="text-slate-500">
-                    {new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  </span>{" "}
-                  {a.message}
-                </li>
-              ))}
-            </ul>
-          </section>
         </aside>
 
         {/* Map */}
         <main className="map-workspace relative min-w-0 flex-1" aria-label="Flood response map">
-          <div className="map-canvas">
+          <div className="map-canvas panel">
           <FloodMap
             state={mapState}
             flood={flood}
             preview={previewPlan}
             selectedId={selectedId}
             reportMode={reportMode || placingFor != null}
-            onSelect={(id) => {
-              setSelectedId(id);
-              setPendingPick(null);
-            }}
+            onSelect={toggleSelected}
+            coveredBy={coveredBy}
             onReportBuilding={onReportBuilding}
             onBuildingsResolved={setResolved}
             callerZones={callerZones}
@@ -607,32 +787,36 @@ function DashboardView({ state }: { state: ExerciseState }) {
             onFocus={(id) => setFocusTeam({ id, key: Date.now() })}
           />
           {!flood && (
-            <div className="absolute left-1/2 top-4 -translate-x-1/2 rounded bg-slate-900/90 px-3 py-2 text-sm">
+            <div className="map-overlay absolute left-1/2 top-4 -translate-x-1/2 px-3 py-2 text-sm">
               {elevationError ? `Elevation data failed to load: ${elevationError}` : "Loading elevation data…"}
             </div>
           )}
           {placing && (
-            <div className="absolute left-1/2 top-4 flex -translate-x-1/2 items-center gap-3 rounded bg-yellow-300 px-3 py-2 text-sm font-medium text-slate-900">
+            <div className="map-overlay absolute left-1/2 top-4 flex -translate-x-1/2 items-center gap-3 px-3 py-2 text-sm font-medium text-amber-200">
               Click the building for “{placing.reportedAddress}”
-              <button onClick={() => setPlacingFor(null)} className="rounded bg-slate-900/15 px-2 py-0.5 text-xs">
+              <button onClick={() => setPlacingFor(null)} className="soft-button">
                 Cancel
               </button>
             </div>
           )}
           {toast && (
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 rounded bg-red-600 px-3 py-2 text-sm shadow-lg">
+            <div className="absolute bottom-8 left-1/2 z-30 -translate-x-1/2 rounded-lg bg-red-600 px-3 py-2 text-sm shadow-lg">
               {toast}
             </div>
           )}
           <Legend />
 
-          </div>
           {(selected || pendingPick) && (
-            <section aria-label="Incident details" className="incident-detail overflow-y-auto">
+            <section
+              ref={sheetRef}
+              aria-label="Incident details"
+              data-dock={dock}
+              className={`incident-sheet ${closing ? "is-closing" : ""}`}
+            >
               {pendingPick ? (
                 <NewReportForm
                   pick={pendingPick}
-                  onCancel={() => setPendingPick(null)}
+                  onCancel={closeSheet}
                   onSave={(action) => {
                     run(action);
                     setPendingPick(null);
@@ -658,19 +842,24 @@ function DashboardView({ state }: { state: ExerciseState }) {
                     allIncidents={state.incidents}
                     priority={priorities.get(selected.linkedTo ?? selected.id) ?? null}
                     run={run}
-                    onSelect={setSelectedId}
+                    onSelect={openIncident}
                     onPlace={() => {
                       setPlacingFor(selected.id);
                       setReportMode(false);
                     }}
-                    onClose={() => setSelectedId(null)}
+                    dock={dock}
+                    onDock={setDock}
+                    onTranscript={() => setTranscriptId(selected.id)}
+                    onClose={closeSheet}
                   />
                 )
               )}
             </section>
           )}
+          </div>
         </main>
       </div>
+      {transcriptIncident && <TranscriptModal incident={transcriptIncident} onClose={() => setTranscriptId(null)} />}
     </div>
   );
 }
@@ -709,11 +898,11 @@ function UnitsPanel({
     return { text: `Assigned, not yet sent${where}`, color: "#64748b" };
   };
   return (
-    <div className="absolute left-3 top-3 w-72 rounded bg-slate-900/90 text-xs ring-1 ring-slate-700">
+    <div className="map-overlay absolute left-3 top-3 w-72 text-xs">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between px-3 py-2 font-semibold uppercase tracking-wide text-slate-300"
+        className="flex w-full items-center justify-between px-3.5 py-2.5 font-semibold text-slate-200"
       >
         <span>Units</span>
         <span className="font-normal normal-case text-slate-400">
@@ -721,7 +910,7 @@ function UnitsPanel({
         </span>
       </button>
       {open && (
-        <ul className="border-t border-slate-700">
+        <ul className="border-t border-white/5 p-1">
           {teams.map((t) => {
             const s = status(t);
             return (
@@ -729,15 +918,15 @@ function UnitsPanel({
                 <button
                   onClick={() => onFocus(t.id)}
                   title="Show on map"
-                  className={`flex w-full items-start gap-2 px-3 py-1.5 text-left hover:bg-slate-800 ${
-                    focusedId === t.id ? "bg-slate-800 ring-1 ring-inset ring-sky-400" : ""
+                  className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-white/5 ${
+                    focusedId === t.id ? "bg-white/8 ring-1 ring-inset ring-white/20" : ""
                   }`}
                 >
                   <span className="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} />
                   <span className="min-w-0">
                     <span className="font-semibold">{t.name}</span>{" "}
                     <span className="text-slate-400">{KIND_LABEL[moverFor(t.capabilities)]}</span>
-                    <span className="block truncate text-slate-300">{s.text}</span>
+                    <span className="block truncate text-slate-400">{s.text}</span>
                   </span>
                 </button>
               </li>
@@ -757,7 +946,9 @@ function Legend() {
     </div>
   );
   return (
-    <div className="absolute bottom-8 left-3 space-y-1 rounded bg-slate-900/90 p-3 text-xs ring-1 ring-slate-700">
+    <details className="map-overlay map-legend absolute bottom-16 left-3 text-xs text-slate-300">
+      <summary>Map legend</summary>
+      <div className="space-y-1 px-3 pb-3">
       {row("#c62828", "Building with people awaiting rescue")}
       {row("#f59e0b", "Team assigned / en route")}
       {row("#4caf50", "Resolved")}
@@ -776,7 +967,8 @@ function Legend() {
         Water depth 0 → 6 m+
       </div>
       <p className="pt-1 text-[10px] text-slate-400">Flood extent is simulated from ground elevation.</p>
-    </div>
+      </div>
+    </details>
   );
 }
 
@@ -794,6 +986,9 @@ function IncidentDetail({
   run,
   onSelect,
   onPlace,
+  dock,
+  onDock,
+  onTranscript,
   onClose,
 }: {
   incident: Incident;
@@ -809,6 +1004,9 @@ function IncidentDetail({
   run: Run;
   onSelect: (id: string) => void;
   onPlace: () => void;
+  dock: Dock;
+  onDock: (dock: Dock) => void;
+  onTranscript: () => void;
   onClose: () => void;
 }) {
   const main = incident.linkedTo ? allIncidents.find((i) => i.id === incident.linkedTo) : null;
@@ -816,247 +1014,323 @@ function IncidentDetail({
   const available = options.filter((o) => o.team.available);
   const assigned = teams.find((t) => t.id === incident.assignedTeamId);
   const assignedPlan = options.find((o) => o.team.id === incident.assignedTeamId)?.plan ?? null;
-  const st = STATUS_STYLE[incident.status];
   const onMap = incident.latitude != null && incident.longitude != null;
-  const headline = incident.summary.trim().split(/(?<=[.!?])\s+/)[0] || incident.reportedAddress;
-  const medical = (incident.riskFactors ?? []).filter((r) => ["serious_injury", "medical_need"].includes(r.factor));
-  const mobility = (incident.riskFactors ?? []).filter((r) => ["limited_mobility", "no_higher_ground"].includes(r.factor));
-  const waterFacts = (incident.riskFactors ?? []).filter((r) => ["water_chest_or_higher", "water_rising_fast", "in_moving_water"].includes(r.factor));
-  const describeFactors = (factors: NonNullable<Incident["riskFactors"]>) => factors.map((r) => r.evidence || FACTOR_LABEL[r.factor]).join(" · ");
-  const chosenTeam = available.find((o) => o.team.id === teamId)?.team;
-
+  const people = incident.peopleCount == null ? "People unknown" : `${incident.peopleCount} ${incident.peopleCount === 1 ? "person" : "people"}`;
+  const describe = (factors: string[]) =>
+    (incident.riskFactors ?? [])
+      .filter((r) => factors.includes(r.factor))
+      .map((r) => r.evidence || FACTOR_LABEL[r.factor])
+      .join(" · ");
+  // Only facts the caller actually gave are listed; the rest are named once underneath.
+  const facts: { label: string; value: React.ReactNode }[] = [];
+  const missing: string[] = [];
+  // `quiet` facts are shown when given but not listed as missing.
+  const fact = (label: string, value: React.ReactNode, quiet = false) =>
+    value ? facts.push({ label, value }) : quiet || missing.push(label.toLowerCase());
+  fact(
+    "Location",
+    <span className="fact-location">
+      {capitalize(incident.reportedAddress)}
+      <span className={`chip ${!onMap ? "chip-amber" : incident.locationVerified ? "chip-green" : "chip-amber"}`}>
+        {!onMap ? "Not on map" : incident.locationVerified ? "Verified" : "Unverified"}
+      </span>
+    </span>,
+  );
+  fact("Position", capitalize(incident.reportedPosition));
+  fact("Medical", capitalize(describe(["serious_injury", "medical_need"])));
+  fact("Mobility", capitalize(describe(["limited_mobility"])));
+  fact("Higher ground", capitalize(describe(["no_higher_ground"])), true);
+  // Water risk factors when the caller gave them, otherwise the water reading the map uses.
+  const report = incident.waterReport;
+  fact(
+    "Water",
+    capitalize(describe(["water_chest_or_higher", "water_rising_fast", "in_moving_water"])) ||
+      (report && (
+        <>
+          {capitalize(describeReport(report))}
+          {report.evidence && <q className="fact-evidence">{report.evidence}</q>}
+        </>
+      )),
+  );
+  fact(
+    "Hazards",
+    incident.hazards.length > 0 && (
+      <ul className="space-y-2">
+        {incident.hazards.map((h) => (
+          <li key={h.hazard}>
+            {capitalize(h.hazard)}
+            {h.evidence && <q className="fact-evidence">{h.evidence}</q>}
+          </li>
+        ))}
+      </ul>
+    ),
+  );
+  const nextStep = main
+    ? "Linked report"
+    : !onMap
+      ? "Place on map"
+      : !incident.locationVerified
+        ? "Verify location"
+        : incident.status === "awaiting_assignment"
+          ? "Send a team"
+          : incident.status === "resolved"
+            ? "Resolved"
+            : assigned
+              ? "Assigned team"
+              : "Actions";
 
   return (
-    <div className="incident-content text-sm">
-      <header className="detail-heading">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`detail-priority detail-priority-${priority?.tier ?? "standard"}`}>{priority ? TIER_STYLE[priority.tier].label.toLowerCase() : "Standard"}</span>
-          <span className="detail-id" title={incident.id}>{incident.id.slice(-8).toUpperCase()}</span>
-          <span className={`detail-status detail-status-${incident.status} ml-auto rounded-full px-2.5 py-1 text-[11px] font-semibold ${st.cls}`}>
-            {STATUS_LABEL[incident.status]}
-          </span>
-          <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close incident details">✕</button>
+    <div className="sheet-content">
+      <header className="sheet-header">
+        <div className="min-w-0">
+          <h2 className="sheet-title" title={capitalize(incident.reportedAddress)}>
+            {capitalize(incident.reportedAddress)}
+          </h2>
+          <p className="sheet-subtitle">
+            {people}
+            {incident.reportedPosition ? ` · ${capitalize(incident.reportedPosition)}` : ""}
+            <span className="detail-id" title={incident.id}>{incident.id.slice(-8).toUpperCase()}</span>
+          </p>
         </div>
-        <h2>{headline}</h2>
-        <p>{incident.reportedAddress}{incident.reportedPosition ? ` · ${incident.reportedPosition}` : ""}</p>
-        {incident.callId && <span className="detail-call-status"><i className={incident.callConnected ? "live-dot" : "ended-dot"} />{incident.callConnected ? "Caller on the line" : "Call ended"}</span>}
+        <div className="sheet-tags">
+          {incident.status !== "resolved" && <TierPill priority={priority ?? undefined} />}
+          <span className={`chip ${STATUS_STYLE[incident.status]}`}>{STATUS_LABEL[incident.status]}</span>
+          {incident.callId && (
+            <span className={`chip ${incident.callConnected ? "chip-green" : "chip-neutral"}`}>
+              {incident.callConnected && <i className="live-dot" />}
+              {incident.callConnected ? "Caller on the line" : "Call ended"}
+            </span>
+          )}
+        </div>
+        <div className="sheet-tools">
+          <button onClick={onTranscript} className="soft-button">
+            <TranscriptIcon /> Transcript
+          </button>
+          <button
+            onClick={() => onDock(dock === "bottom" ? "right" : "bottom")}
+            className="close-button"
+            aria-label={dock === "bottom" ? "Dock to the right" : "Dock to the bottom"}
+            title={dock === "bottom" ? "Dock to the right" : "Dock to the bottom"}
+          >
+            {dock === "bottom" ? "⇥" : "⤓"}
+          </button>
+          <button onClick={onClose} className="close-button" aria-label="Close incident details" title="Close (Esc)">
+            ✕
+          </button>
+        </div>
       </header>
 
-      <dl className="detail-stats">
-        <div><dt>People</dt><dd>{incident.peopleCount == null ? "Unknown" : `${incident.peopleCount} ${incident.peopleCount === 1 ? "person" : "people"}`}</dd></div>
-        <div><dt>Modeled water depth</dt><dd>{water?.depth == null ? "Unknown" : `${water.depth.toFixed(1)} m`}</dd></div>
-      </dl>
-
-      <section className="detail-section">
-        <h3>AI summary</h3>
-        <p className="detail-summary">{incident.summary || "Waiting for a caller report. No summary available yet."}</p>
-      </section>
-
-      <section className="detail-section">
-        <h3>Extracted facts</h3>
-        <dl className="fact-table">
-          <div><dt>Location</dt><dd>{incident.reportedAddress}</dd><dd className={incident.locationVerified ? "fact-confirmed" : "fact-verify"}>{incident.locationVerified ? "Dispatcher verified" : "Verify"}</dd></div>
-          <div><dt>People</dt><dd>{incident.peopleCount ?? "Unknown"}</dd><dd className="fact-source">{incident.peopleCount == null ? "Not reported" : "Reported"}</dd></div>
-          <div><dt>Position</dt><dd>{incident.reportedPosition ?? "Unknown"}</dd><dd className="fact-source">{incident.reportedPosition ? "Reported" : "Not reported"}</dd></div>
-          <div><dt>Medical</dt><dd>{medical.length ? describeFactors(medical) : "Not reported"}</dd><dd className="fact-source">{medical.length ? "Reported" : "Unknown"}</dd></div>
-          <div><dt>Mobility</dt><dd>{mobility.length ? describeFactors(mobility) : "Not reported"}</dd><dd className={mobility.length ? "fact-verify" : "fact-source"}>{mobility.length ? "Verify" : "Unknown"}</dd></div>
-          <div><dt>Water</dt><dd>{waterFacts.length ? describeFactors(waterFacts) : "Not reported"}</dd><dd className={waterFacts.length ? "fact-verify" : "fact-source"}>{waterFacts.length ? "Verify" : "Unknown"}</dd></div>
-          <div><dt>Hazards</dt><dd>{incident.hazards.length ? <ul>{incident.hazards.map((h) => <li key={h.hazard}>{h.hazard}{h.evidence && <q className="fact-evidence">{h.evidence}</q>}</li>)}</ul> : "None reported"}</dd><dd className="fact-source">{incident.hazards.length ? "Reported" : "—"}</dd></div>
-        </dl>
-        {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && <p className="mt-3 text-xs text-slate-400">Advisory topic tags: {incident.advisoryTags.tags.join(", ")} (not verified facts)</p>}
-      </section>
-
-      <section className="detail-section transcript-section">
-        <h3>Transcript</h3>
-        <IncidentTranscript transcript={incident.transcript} />
-      </section>
-
-      {priority && incident.status !== "resolved" && !main && (
-        <details className="detail-disclosure">
-          <summary>Priority assessment & override</summary>
-          <PriorityPanel incident={incident} linked={allIncidents.filter((i) => i.linkedTo === incident.id)} priority={priority} run={run} />
-        </details>
-      )}
-
-      {incident.factHistory && incident.factHistory.length > 0 && (
-        <details className="rounded bg-slate-800/70 p-2 text-xs">
-          <summary className="cursor-pointer text-slate-400">Changed by caller ({incident.factHistory.length})</summary>
-          <ul className="mt-1.5 space-y-0.5 text-slate-300">
-            {incident.factHistory.map((c, n) => (
-              <li key={n}>
-                {c.field}: {c.withdrawnBy != null ? <span className="text-amber-300">withdrawn</span> : "was"} “
-                {c.previous}”{c.evidence && <span className="text-slate-500"> — “{c.evidence}”</span>}
-                {c.withdrawnBy != null && <span className="text-slate-400"> · caller: “{c.withdrawnBy}”</span>}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-
-      {main ? (
-        <div className="rounded bg-sky-500/10 p-2.5 text-xs ring-1 ring-sky-400/40">
-          <p className="text-sky-200">
-            Linked to <b>{main.reportedAddress}</b>. This caller hears that incident&apos;s progress.
-          </p>
-          {incident.linkNote && <p className="mt-0.5 text-sky-300/80">{incident.linkNote}</p>}
-          <div className="mt-2 flex gap-2">
-            <button onClick={() => onSelect(main.id)} className="rounded bg-sky-600 px-2.5 py-1 font-semibold">
-              Open main report
-            </button>
-            <button onClick={() => run({ type: "unlinkReport", reportId: incident.id })} className="rounded bg-slate-700 px-2.5 py-1">
-              Unlink
-            </button>
-          </div>
+      <div className="sheet-body">
+        <div className="sheet-col">
+          <section className="sheet-card">
+            <dl className="sheet-stats">
+              <div><dt>People</dt><dd>{incident.peopleCount ?? "Unknown"}</dd></div>
+              <div><dt>Water depth</dt><dd>{water?.depth == null ? "Unknown" : `${water.depth.toFixed(1)} m`}</dd></div>
+              <div>
+                <dt>Location</dt>
+                <dd className={incident.locationVerified ? "text-emerald-300" : "text-amber-200"}>
+                  {!onMap ? "Not on map" : incident.locationVerified ? "Verified" : "Unverified"}
+                </dd>
+              </div>
+            </dl>
+            <h3>AI summary</h3>
+            <p className="sheet-summary">{incident.summary || "Waiting for a caller report. No summary yet."}</p>
+          </section>
+          {priority && incident.status !== "resolved" && !main && (
+            <details>
+              <summary>Priority assessment & override</summary>
+              <PriorityPanel incident={incident} linked={allIncidents.filter((i) => i.linkedTo === incident.id)} priority={priority} run={run} />
+            </details>
+          )}
+          {incident.waterReport && (
+            <details>
+              <summary>Caller vs. river model</summary>
+              <CallerWater
+                report={incident.waterReport}
+                riverDepth={riverDepth}
+                verified={incident.locationVerified}
+                outsideModel={onMap && !inFloodArea(incident.longitude!, incident.latitude!)}
+              />
+            </details>
+          )}
+          {onMap && (
+            <details>
+              <summary>Flood model details</summary>
+              <WaterPanel water={water} />
+            </details>
+          )}
         </div>
-      ) : (
-        <SameLocation incident={incident} all={allIncidents} run={run} onSelect={onSelect} />
-      )}
-
-      {incident.callId && <details className="detail-disclosure"><summary>Caller updates & messages</summary><CallerUpdates incident={incident} run={run} /></details>}
-
-
-      {incident.waterReport && (
-        <CallerWater report={incident.waterReport} riverDepth={riverDepth} verified={incident.locationVerified} />
-      )}
-      {onMap && <details className="detail-disclosure"><summary>Flood model details</summary><WaterPanel water={water} /></details>}
-
-      <section className="assignment-section"><h3>{assigned ? "Assigned team" : "Team assignment"}</h3>
-      {(assigned || chosenTeam) && <div className="assignment-team"><strong>{(assigned || chosenTeam)!.name}</strong><p>{(assigned || chosenTeam)!.capabilities.join(" · ").replaceAll("_", " ")}</p></div>}
-
-
-      {main ? null : !onMap ? (
-        <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
-          <p className="text-xs text-yellow-200">
-            No map location yet. Match the caller&apos;s description to a building.
-          </p>
-          <button onClick={onPlace} className="mt-2 rounded bg-yellow-300 px-2.5 py-1 text-xs font-semibold text-slate-900">
-            Place on map
-          </button>
-        </div>
-      ) : !incident.locationVerified ? (
-        <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
-          <p className="text-xs text-yellow-200">
-            {incident.locationNote ? <b>{incident.locationNote}. </b> : null}
-            Location is a candidate only. Check the highlighted building against the caller&apos;s description.
-          </p>
-          <div className="mt-2 flex gap-2">
-            <button
-              onClick={() => run({ type: "verifyLocation", incidentId: incident.id })}
-              className="rounded bg-yellow-300 px-2.5 py-1 text-xs font-semibold text-slate-900"
-            >
-              Confirm location
-            </button>
-            <button onClick={onPlace} className="rounded bg-slate-700 px-2.5 py-1 text-xs">
-              Choose another building
-            </button>
-          </div>
-        </div>
-      ) : incident.status === "awaiting_assignment" ? (
-        <div className="space-y-2">
-          <p className="text-[11px] uppercase tracking-wide text-slate-400">Teams by arrival time</p>
-          <div className="space-y-1" role="radiogroup" aria-label="Choose team">
-            {available.map(({ team, plan }, i) => (
-              <button
-                key={team.id}
-                role="radio"
-                aria-checked={teamId === team.id}
-                onClick={() => {
-                  setTeamId(team.id);
-                  onPreview(team.id);
-                }}
-                className={`w-full rounded px-2 py-1.5 text-left text-xs ring-1 ${
-                  teamId === team.id ? "bg-slate-800 ring-sky-400" : "bg-slate-800/50 ring-slate-700 hover:bg-slate-800"
-                } ${plan && !plan.ok ? "opacity-60" : ""}`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold">
-                    {team.name}
-                    {i === 0 && plan?.ok && <span className="ml-1.5 text-[10px] text-emerald-400">FASTEST</span>}
-                  </span>
-                  <span className={plan?.ok ? "text-sky-300" : "text-red-400"}>
-                    {plan == null ? "…" : plan.ok ? `${Math.max(1, Math.round(plan.realSeconds / 60))} min` : "can't reach"}
-                  </span>
+        <div className="sheet-col">
+          <section className="sheet-card">
+            <h3>Extracted facts</h3>
+            <dl className="fact-table">
+              {facts.map((f) => (
+                <div key={f.label}>
+                  <dt>{f.label}</dt>
+                  <dd>{f.value}</dd>
                 </div>
-                <div className="text-[11px] text-slate-400">
-                  {plan == null ? "Working out a route…" : plan.ok ? routeSummary(plan) : plan.reason}
+              ))}
+            </dl>
+            {missing.length > 0 && <p className="fact-missing">Not reported yet: {missing.join(", ")}</p>}
+            {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && (
+              <p className="fact-missing">Advisory topic tags: {incident.advisoryTags.tags.join(", ")} (not verified facts)</p>
+            )}
+          </section>
+          {!main && <SameLocation incident={incident} all={allIncidents} run={run} onSelect={onSelect} />}
+          {incident.factHistory && incident.factHistory.length > 0 && <FactHistory changes={incident.factHistory} />}
+        </div>
+        <div className="sheet-col sheet-actions-col">
+          <section className="sheet-card sheet-actions">
+            <h3>{nextStep}</h3>
+            {main ? (
+              <div className="space-y-3 text-sm">
+                <p className="text-slate-300">
+                  Linked to <b>{main.reportedAddress}</b>. This caller hears that incident&apos;s progress.
+                </p>
+                {incident.linkNote && <p className="text-xs text-slate-400">{incident.linkNote}</p>}
+                <div className="flex gap-2">
+                  <button onClick={() => onSelect(main.id)} className="primary-button">Open main report</button>
+                  <button onClick={() => run({ type: "unlinkReport", reportId: incident.id })} className="soft-button">
+                    Unlink
+                  </button>
                 </div>
-              </button>
-            ))}
-            {available.length === 0 && <p className="text-xs text-slate-500">No teams available.</p>}
-          </div>
-          <button
-            disabled={!teamId}
-            onClick={() => run({ type: "assignTeam", incidentId: incident.id, teamId })}
-            className="approve-assignment w-full rounded px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40"
-          >
-            Approve assignment
-          </button>
-          {incident.callConnected && (
-            <p className="text-[10px] text-slate-400">The caller will hear the confirmed assignment.</p>
+              </div>
+            ) : !onMap ? (
+              <div className="space-y-3">
+                <p className="action-note">No map location yet. Match the caller&apos;s description to a building.</p>
+                <button onClick={onPlace} className="primary-button w-full">Place on map</button>
+              </div>
+            ) : !incident.locationVerified ? (
+              <div className="space-y-3">
+                <p className="action-note">
+                  {incident.locationNote ? <b>{incident.locationNote}. </b> : null}
+                  The location is a candidate only. Check the highlighted building against the caller&apos;s description.
+                </p>
+                <button onClick={() => run({ type: "verifyLocation", incidentId: incident.id })} className="primary-button w-full">
+                  Confirm location
+                </button>
+                <button onClick={onPlace} className="soft-button w-full">Choose another building</button>
+              </div>
+            ) : incident.status === "awaiting_assignment" ? (
+              <div className="space-y-2">
+                <div className="space-y-1.5" role="radiogroup" aria-label="Choose team">
+                  {available.map(({ team, plan }, i) => (
+                    <button
+                      key={team.id}
+                      role="radio"
+                      aria-checked={teamId === team.id}
+                      onClick={() => {
+                        setTeamId(team.id);
+                        onPreview(team.id);
+                      }}
+                      className={`team-option ${plan && !plan.ok ? "opacity-60" : ""}`}
+                    >
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="font-medium">
+                          {team.name}
+                          {i === 0 && plan?.ok && <span className="chip chip-green ml-2">Fastest</span>}
+                        </span>
+                        <span className={`font-mono text-xs ${plan?.ok ? "text-sky-300" : "text-red-300"}`}>
+                          {plan == null ? "…" : plan.ok ? `${Math.max(1, Math.round(plan.realSeconds / 60))} min` : "can't reach"}
+                        </span>
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-slate-400">
+                        {plan == null ? "Working out a route…" : plan.ok ? routeSummary(plan) : plan.reason}
+                      </span>
+                    </button>
+                  ))}
+                  {available.length === 0 && <p className="action-note">No teams available.</p>}
+                </div>
+                <button
+                  disabled={!teamId}
+                  onClick={() => run({ type: "assignTeam", incidentId: incident.id, teamId })}
+                  className="primary-button w-full"
+                >
+                  Approve assignment
+                </button>
+                {incident.callConnected && <p className="text-[11px] text-slate-500">The caller will hear the confirmed assignment.</p>}
+              </div>
+            ) : (
+              <div className="space-y-3 text-sm">
+                {assigned && (
+                  <div>
+                    <p className="font-medium">{assigned.name}</p>
+                    <p className="text-xs capitalize text-slate-400">{assigned.capabilities.join(" · ").replaceAll("_", " ")}</p>
+                  </div>
+                )}
+                {incident.status === "assigned" && assignedPlan && (
+                  <p className={`text-xs ${assignedPlan.ok ? "text-slate-400" : "text-red-300"}`}>
+                    {assignedPlan.ok
+                      ? `Route: ${Math.max(1, Math.round(assignedPlan.realSeconds / 60))} min · ${routeSummary(assignedPlan)}`
+                      : `No safe route: ${assignedPlan.reason}. Unassign and send a boat or helicopter.`}
+                  </p>
+                )}
+                {routeAlert && (
+                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+                    Water on {routeAlert.team.name}&apos;s remaining route is now {routeAlert.deepest.toFixed(1)} m, beyond a{" "}
+                    {routeAlert.label} ({routeAlert.limit} m).
+                    <button onClick={() => onReroute(routeAlert.team)} className="soft-button soft-button-alert mt-2 w-full">
+                      Re-route from current position
+                    </button>
+                  </div>
+                )}
+                {incident.status === "assigned" && (
+                  <button
+                    disabled={!assignedPlan?.ok}
+                    title={assignedPlan && !assignedPlan.ok ? assignedPlan.reason : undefined}
+                    onClick={() =>
+                      assignedPlan?.ok &&
+                      run({ type: "setStatus", incidentId: incident.id, status: "en_route", plan: asTripPlan(assignedPlan) })
+                    }
+                    className="primary-button w-full"
+                  >
+                    Send en route
+                  </button>
+                )}
+                <div className="flex gap-2">
+                  {(incident.status === "assigned" || incident.status === "en_route") && (
+                    <button
+                      onClick={() => run({ type: "setStatus", incidentId: incident.id, status: "awaiting_assignment" })}
+                      className="soft-button flex-1"
+                    >
+                      Unassign team
+                    </button>
+                  )}
+                  {incident.status !== "resolved" && (
+                    <button
+                      onClick={() => {
+                        const notice = incident.callConnected ? " The caller will be told their rescue is complete." : "";
+                        if (confirm(`Mark "${incident.reportedAddress}" as resolved? This can't be undone.${notice}`)) {
+                          run({ type: "setStatus", incidentId: incident.id, status: "resolved" });
+                        }
+                      }}
+                      className="soft-button soft-button-on flex-1"
+                    >
+                      Mark resolved
+                    </button>
+                  )}
+                </div>
+                {incident.status === "resolved" && <p className="action-note">This rescue is complete.</p>}
+              </div>
+            )}
+          </section>
+          {incident.callId && (
+            <details>
+              <summary>Caller updates & messages</summary>
+              <CallerUpdates incident={incident} run={run} />
+            </details>
           )}
         </div>
-      ) : (
-        <div className="space-y-2 text-xs">
-          {assigned && <p>Team: {assigned.name}</p>}
-          {incident.status === "assigned" && assignedPlan && (
-            <p className={assignedPlan.ok ? "text-slate-400" : "text-red-400"}>
-              {assignedPlan.ok
-                ? `Route: ${Math.max(1, Math.round(assignedPlan.realSeconds / 60))} min · ${routeSummary(assignedPlan)}`
-                : `No safe route: ${assignedPlan.reason}. Unassign and send a boat or helicopter.`}
-            </p>
-          )}
-          {routeAlert && (
-            <div className="rounded bg-red-950/60 p-2 text-red-200 ring-1 ring-red-700">
-              Water on {routeAlert.team.name}&apos;s remaining route is now {routeAlert.deepest.toFixed(1)} m, beyond a{" "}
-              {routeAlert.label} ({routeAlert.limit} m).
-              <button
-                onClick={() => onReroute(routeAlert.team)}
-                className="mt-1.5 block rounded bg-red-700 px-2 py-1 font-semibold text-white hover:bg-red-600"
-              >
-                Re-route from current position
-              </button>
-            </div>
-          )}
-          <div className="flex gap-2">
-            {incident.status === "assigned" && (
-              <button
-                disabled={!assignedPlan?.ok}
-                title={assignedPlan && !assignedPlan.ok ? assignedPlan.reason : undefined}
-                onClick={() =>
-                  assignedPlan?.ok &&
-                  run({ type: "setStatus", incidentId: incident.id, status: "en_route", plan: asTripPlan(assignedPlan) })
-                }
-                className="rounded bg-slate-700 px-2.5 py-1 hover:bg-slate-600 disabled:opacity-40"
-              >
-                Send en route
-              </button>
-            )}
-            {(incident.status === "assigned" || incident.status === "en_route") && (
-              <button
-                onClick={() => run({ type: "setStatus", incidentId: incident.id, status: "awaiting_assignment" })}
-                className="rounded bg-slate-700 px-2.5 py-1 hover:bg-slate-600"
-              >
-                Unassign team
-              </button>
-            )}
-            {incident.status !== "resolved" && (
-              <button
-                onClick={() => {
-                  const notice = incident.callConnected ? " The caller will be told their rescue is complete." : "";
-                  if (confirm(`Mark "${incident.reportedAddress}" as resolved? This can't be undone.${notice}`)) {
-                    run({ type: "setStatus", incidentId: incident.id, status: "resolved" });
-                  }
-                }}
-                className="rounded bg-green-700 px-2.5 py-1 hover:bg-green-600"
-              >
-                Mark resolved
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      </section>
+      </div>
     </div>
+  );
+}
+
+function TranscriptIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" strokeLinejoin="round" />
+    </svg>
   );
 }
 
@@ -1076,10 +1350,11 @@ function routeSummary(plan: RoutePlan) {
   return steps.join(" → ") + depth;
 }
 
-/** Render the saved speaker-prefixed text without inventing turns or dropping lines. */
-function IncidentTranscript({ transcript }: { transcript: string | null }) {
-  if (!transcript?.trim()) return <p className="transcript-empty">No transcript available for this report.</p>;
-  const turns: { speaker: string | null; text: string }[] = [];
+type Turn = { speaker: "Caller" | "AI" | null; text: string };
+
+/** Split the saved speaker-prefixed text into turns without inventing turns or dropping lines. */
+function parseTranscript(transcript: string): Turn[] {
+  const turns: Turn[] = [];
   for (const line of transcript.split("\n")) {
     const match = /^(caller|agent|ai):\s*(.*)$/i.exec(line);
     if (match) {
@@ -1090,26 +1365,107 @@ function IncidentTranscript({ transcript }: { transcript: string | null }) {
       turns.push({ speaker: null, text: line });
     }
   }
-  return <div className="transcript-card">{turns.map((turn, index) => <div className={`transcript-turn ${turn.speaker === "AI" ? "transcript-agent" : ""}`} key={index}>
-    {turn.speaker && <span className="transcript-speaker">{turn.speaker}</span>}
-    <p className={turn.speaker ? undefined : "transcript-unattributed"}>{turn.text}</p>
-  </div>)}</div>;
+  return turns;
+}
+
+function TranscriptModal({ incident, onClose }: { incident: Incident; onClose: () => void }) {
+  const turns = incident.transcript?.trim() ? parseTranscript(incident.transcript) : [];
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Call transcript"
+        className="transcript-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="transcript-modal-header">
+          <div className="min-w-0">
+            <p className="transcript-eyebrow">Call transcript</p>
+            <h2>{capitalize(incident.reportedAddress)}</h2>
+            <p className="transcript-meta">
+              {incident.callId ? (incident.callConnected ? "Caller on the line · updating live" : "Call ended") : "No phone call"}
+              {turns.length > 0 && ` · ${turns.length} turns`}
+            </p>
+          </div>
+          <button onClick={onClose} className="close-button" aria-label="Close transcript" autoFocus>
+            ✕
+          </button>
+        </header>
+        <div className="transcript-thread">
+          {turns.length ? (
+            turns.map((turn, n) =>
+              turn.speaker ? (
+                <div key={n} className={`bubble-row ${turn.speaker === "AI" ? "bubble-row-ai" : ""}`}>
+                  <span className="bubble-speaker">{turn.speaker === "AI" ? "Lifeline AI" : "Caller"}</span>
+                  <p className="bubble">{turn.text}</p>
+                </div>
+              ) : (
+                <p key={n} className="bubble-note">{turn.text}</p>
+              ),
+            )
+          ) : (
+            <p className="bubble-note">No transcript available for this report.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const TIER_STYLE: Record<PriorityTier, { label: string; cls: string }> = {
-  critical: { label: "CRITICAL", cls: "bg-red-600 text-white" },
-  high: { label: "HIGH", cls: "bg-orange-500 text-slate-950" },
-  standard: { label: "STANDARD", cls: "bg-slate-600 text-slate-100" },
+  critical: { label: "CRITICAL", cls: "chip-red" },
+  high: { label: "HIGH", cls: "chip-orange" },
+  standard: { label: "STANDARD", cls: "chip-neutral" },
 };
 
 function TierPill({ priority }: { priority?: Priority }) {
   if (!priority) return null;
   const t = TIER_STYLE[priority.tier];
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold tracking-wide ${t.cls}`}>
+    <span className={`chip ${t.cls}`}>
       {t.label}
       {priority.overrideReason != null && " ✎"}
     </span>
+  );
+}
+
+const FIELD_LABEL: Record<string, string> = {
+  peopleCount: "People",
+  reportedPosition: "Position",
+  reportedAddress: "Location",
+  waterReport: "Water level",
+  hazard: "Hazard",
+  riskFactor: "Risk factor",
+};
+
+/** Facts the caller later changed or took back, newest first, without repeats of the same old value. */
+function FactHistory({ changes }: { changes: NonNullable<Incident["factHistory"]> }) {
+  const seen = new Set<string>();
+  const rows = [...changes]
+    .reverse()
+    .filter((c) => {
+      const key = `${c.field}:${c.previous.trim().toLowerCase()}:${c.withdrawnBy != null}`;
+      return !seen.has(key) && seen.add(key);
+    });
+  const previous = (c: (typeof rows)[number]) =>
+    capitalize(c.field === "riskFactor" ? (FACTOR_LABEL[c.previous as keyof typeof FACTOR_LABEL] ?? c.previous) : c.previous);
+  return (
+    <details>
+      <summary>Changed by caller ({rows.length})</summary>
+      <ul className="reason-list">
+        {rows.map((c, n) => (
+          <li key={n}>
+            <span>
+              <span className="mr-2 text-[11px] uppercase tracking-wide text-slate-500">{FIELD_LABEL[c.field] ?? c.field}</span>
+              {c.withdrawnBy != null ? "Withdrawn: " : "Was: "}
+              {previous(c)}
+            </span>
+            {(c.withdrawnBy ?? c.evidence) && <q>{c.withdrawnBy ?? c.evidence}</q>}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -1134,64 +1490,73 @@ function PriorityPanel({
   const unique = factors.filter((f) => !seen.has(f.factor) && seen.add(f.factor));
   const modelReasons = priority.reasons.filter((r) => r.startsWith("water model"));
 
+  const override = priority.overrideReason != null;
   return (
-    <div className="rounded bg-slate-800/70 p-2.5 text-xs">
-      <div className="flex items-center gap-2">
-        <TierPill priority={priority} />
-        <span className="text-slate-400">
-          {priority.overrideReason != null
-            ? `Set by dispatcher (rules say ${priority.computedTier}): ${priority.overrideReason}`
-            : "Priority from the rules below"}
-        </span>
-      </div>
+    <div className="space-y-3 text-sm">
+      <p className="text-xs text-slate-400">
+        {override ? (
+          <>
+            Set to <b className="text-slate-200">{priority.tier}</b> by the dispatcher (the rules say {priority.computedTier}):{" "}
+            &ldquo;{priority.overrideReason}&rdquo;
+          </>
+        ) : (
+          "Worked out from what the caller said:"
+        )}
+      </p>
       {unique.length || modelReasons.length ? (
-        <ul className="mt-1.5 space-y-0.5">
+        <ul className="reason-list">
           {unique.map((f) => (
             <li key={f.factor}>
-              <b>{FACTOR_LABEL[f.factor]}</b>
-              {f.evidence && <span className="text-slate-400"> — “{f.evidence}”</span>}
-              {f.fromLinked && <span className="text-slate-500"> (linked report)</span>}
+              <span>
+                {capitalize(FACTOR_LABEL[f.factor])}
+                {f.fromLinked && <span className="ml-1.5 text-[11px] text-slate-500">linked report</span>}
+              </span>
+              {f.evidence && <q>{f.evidence}</q>}
             </li>
           ))}
           {modelReasons.map((r) => (
-            <li key={r} className="text-sky-300">{r}</li>
+            <li key={r}>
+              <span className="text-sky-300">{capitalize(r)}</span>
+            </li>
           ))}
         </ul>
       ) : (
-        <p className="mt-1.5 text-slate-500">No risk factors reported yet.</p>
+        <p className="text-xs text-slate-500">No risk factors reported yet.</p>
       )}
       <form
-        className="mt-2 flex gap-1.5"
+        className="override-form"
         onSubmit={(e) => {
           e.preventDefault();
           run({ type: "setPriorityOverride", incidentId: incident.id, tier, reason });
           setReason("");
         }}
       >
-        <select
-          aria-label="Priority tier"
-          value={tier}
-          onChange={(e) => setTier(e.target.value as PriorityTier)}
-          className="rounded bg-slate-900 px-1.5"
-        >
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="standard">Standard</option>
-        </select>
-        <input
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder="Reason for changing"
-          className="min-w-0 flex-1 rounded bg-slate-900 px-2 py-1"
-        />
-        <button type="submit" disabled={!reason.trim()} className="rounded bg-slate-600 px-2 disabled:opacity-40">
-          Set
-        </button>
+        <div className="segmented" role="radiogroup" aria-label="Priority tier">
+          {(["critical", "high", "standard"] as PriorityTier[]).map((t) => (
+            <button key={t} type="button" role="radio" aria-checked={tier === t} data-tier={t} onClick={() => setTier(t)}>
+              {tier === t && <span aria-hidden>✓</span>}
+              {capitalize(t)}
+              {t === priority.tier && tier !== t && <span className="segmented-now">now</span>}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1.5">
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason for changing"
+            aria-label="Reason for changing the priority"
+            className="field-input min-w-0 flex-1"
+          />
+          <button type="submit" disabled={!reason.trim()} className="soft-button">
+            Override
+          </button>
+        </div>
       </form>
-      {priority.overrideReason != null && (
+      {override && (
         <button
           onClick={() => run({ type: "setPriorityOverride", incidentId: incident.id, tier: null, reason: "" })}
-          className="mt-1.5 text-slate-400 underline"
+          className="text-xs text-slate-400 underline hover:text-slate-200"
         >
           Use the rules again
         </button>
@@ -1203,25 +1568,25 @@ function PriorityPanel({
 const ROLE_LABEL = { trapped: "Trapped caller", witness: "Witness", unknown: "Caller" } as const;
 
 function GroupBadges({ incident, all, linked }: { incident: Incident; all: Incident[]; linked: number }) {
-  if (!isOpen(incident)) return linked ? <span className="text-[11px] text-slate-400">+{linked} linked</span> : null;
+  if (!isOpen(incident)) return linked ? <span className="chip chip-neutral">+{linked} linked</span> : null;
   const nearby = nearbyReports(incident, all);
   const likely = nearby.filter((n) => n.relation !== "separate_rescue").length;
   const { rescues } = buildingSummary(incident, nearby);
   return (
     <>
       {incident.callerRole === "witness" && (
-        <span className="rounded bg-slate-600 px-1.5 py-0.5 text-[11px] font-semibold">Witness</span>
+        <span className="chip chip-neutral">Witness</span>
       )}
       {linked > 0 && (
-        <span className="rounded bg-sky-500/80 px-1.5 py-0.5 text-[11px] font-semibold">+{linked} linked reports</span>
+        <span className="chip chip-blue">+{linked} linked reports</span>
       )}
       {likely > 0 && (
-        <span className="rounded bg-orange-400 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
+        <span className="chip chip-orange">
           {likely} possible duplicate{likely > 1 ? "s" : ""}
         </span>
       )}
       {rescues > 1 && (
-        <span className="rounded bg-indigo-400 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
+        <span className="chip chip-violet">
           Same building · {rescues} rescues
         </span>
       )}
@@ -1261,8 +1626,8 @@ function SameLocation({
   };
 
   return (
-    <div className="space-y-2 rounded bg-slate-800/70 p-2.5 text-xs">
-      <h3 className="text-slate-400">At this building</h3>
+    <div className="sheet-card space-y-2 text-xs">
+      <h3>At this building</h3>
       {summary.rescues > 1 && (
         <p className="text-indigo-200">
           {summary.rescues} separate rescues here · {summary.people} people reported in total
@@ -1274,7 +1639,7 @@ function SameLocation({
             <b>{RELATION_LABEL[relation].text}</b> · {ROLE_LABEL[other.callerRole ?? "unknown"]}
           </p>
           <button onClick={() => onSelect(other.id)} className="text-left text-slate-200 hover:underline">
-            {other.reportedAddress} · {other.peopleCount ?? "?"} people · {other.reportedPosition ?? "position unknown"}
+            {capitalize(other.reportedAddress)} · {other.peopleCount ?? "?"} people · {other.reportedPosition ?? "position unknown"}
           </button>
           <p className="text-slate-500">{reason}</p>
           <div className="mt-1.5 flex gap-1.5">
@@ -1311,7 +1676,7 @@ function SameLocation({
               <li key={r.id} className="flex items-center justify-between gap-2">
                 <span className="min-w-0 text-slate-300">
                   <span className="block truncate">
-                    {ROLE_LABEL[r.callerRole ?? "unknown"]}: {r.reportedAddress}
+                    {ROLE_LABEL[r.callerRole ?? "unknown"]}: {capitalize(r.reportedAddress)}
                     {r.reportedPosition ? ` · ${r.reportedPosition}` : ""}
                   </span>
                   {r.linkNote && <span className="block truncate text-[10px] text-slate-500">{r.linkNote}</span>}
@@ -1328,14 +1693,14 @@ function SameLocation({
   );
 }
 
-const UPDATE_STATE_STYLE = {
-  spoken: "text-emerald-300",
-  waiting: "text-amber-300",
-  replaced: "text-slate-500 line-through",
-  "not delivered": "text-slate-500",
-} as const;
+const UPDATE_STATE: Record<"spoken" | "waiting" | "replaced" | "not delivered", { label: string; chip: string }> = {
+  spoken: { label: "Spoken", chip: "chip-green" },
+  waiting: { label: "Queued", chip: "chip-amber" },
+  replaced: { label: "Superseded", chip: "chip-neutral" },
+  "not delivered": { label: "Not delivered", chip: "chip-neutral" },
+};
 
-/** What the voice agent has told (or will tell) the caller, plus a box to send a message. */
+/** What the voice agent has told (or will tell) the caller, live from Convex, plus a box to send a message. */
 function CallerUpdates({ incident, run }: { incident: Incident; run: Run }) {
   const updates = useQuery(api.incidents.callerUpdates, {
     dispatcherToken: currentDispatcherToken(),
@@ -1344,23 +1709,38 @@ function CallerUpdates({ incident, run }: { incident: Incident; run: Run }) {
   const [message, setMessage] = useState("");
 
   return (
-    <div className="rounded bg-slate-800/70 p-2.5 text-xs">
-      <h3 className="mb-1.5 text-slate-400">What the caller has heard</h3>
-      {updates?.length ? (
-        <ul className="max-h-32 space-y-1 overflow-y-auto">
+    <div className="space-y-3">
+      <p className="flex items-center gap-2 text-xs text-slate-400">
+        {incident.callConnected ? (
+          <>
+            <i className="live-dot" /> Live: updates appear here as the agent speaks them.
+          </>
+        ) : (
+          "The call has ended. Updates not yet spoken were not delivered."
+        )}
+      </p>
+      {updates === undefined ? (
+        <p className="text-xs text-slate-500">Loading…</p>
+      ) : updates.length ? (
+        <ol className="update-list">
           {updates.map((u) => (
-            <li key={u.id} className={UPDATE_STATE_STYLE[u.state]}>
-              <span className="mr-1 text-[10px] uppercase tracking-wide opacity-80">{u.state}</span>
-              {u.text}
+            <li key={u.id} className={u.state === "spoken" || u.state === "waiting" ? undefined : "is-faded"}>
+              <div className="flex items-center gap-2">
+                <span className={`chip ${UPDATE_STATE[u.state].chip}`}>{UPDATE_STATE[u.state].label}</span>
+                <time className="font-mono text-[11px] text-slate-500">
+                  {new Date(u.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </time>
+              </div>
+              <p className={u.state === "replaced" ? "line-through" : undefined}>{u.text}</p>
             </li>
           ))}
-        </ul>
+        </ol>
       ) : (
-        <p className="text-slate-500">No updates yet.</p>
+        <p className="text-xs text-slate-500">Nothing has been said to the caller yet.</p>
       )}
       {incident.callConnected && (
         <form
-          className="mt-2 flex gap-1.5"
+          className="flex gap-1.5"
           onSubmit={(e) => {
             e.preventDefault();
             if (!message.trim()) return;
@@ -1372,10 +1752,10 @@ function CallerUpdates({ incident, run }: { incident: Incident; run: Run }) {
             value={message}
             maxLength={300}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Message for the caller, read out word for word"
-            className="min-w-0 flex-1 rounded bg-slate-900 px-2 py-1.5"
+            placeholder="Message read to the caller word for word"
+            className="field-input min-w-0 flex-1"
           />
-          <button type="submit" className="rounded bg-sky-600 px-2.5 py-1.5 font-semibold disabled:opacity-40" disabled={!message.trim()}>
+          <button type="submit" className="soft-button" disabled={!message.trim()}>
             Send
           </button>
         </form>
@@ -1391,7 +1771,7 @@ function WaterPanel({ water }: { water: ReturnType<typeof waterAtBuilding> | nul
   const pct = depth != null && buildingHeight ? Math.min(100, (depth / buildingHeight) * 100) : 0;
 
   return (
-    <div className="rounded bg-slate-800/70 p-2.5">
+    <div>
       <div className="flex gap-3">
         {/* Building cross-section, to scale */}
         <div className="relative h-24 w-10 shrink-0 overflow-hidden rounded-sm bg-slate-500" title="Building cross-section">
@@ -1414,13 +1794,14 @@ function WaterPanel({ water }: { water: ReturnType<typeof waterAtBuilding> | nul
           </dd>
         </dl>
       </div>
-      <p className="mt-2 text-[10px] leading-snug text-slate-400">
-        Estimated depth = local water surface − bare-earth ground elevation. The water surface comes from the river
-        gauge, slopes with the river channel, and is corrected around callers who describe the water. Heights come
-        from OpenStreetMap and may be estimated; floors assume ~3 m each.
-      </p>
     </div>
   );
+}
+
+/** Whether a point lies inside the area the flood model covers; callers' reports outside it can't be drawn. */
+function inFloodArea(longitude: number, latitude: number) {
+  const { west, east, south, north } = DEMO_AREA.floodBounds;
+  return longitude >= west && longitude <= east && latitude >= south && latitude <= north;
 }
 
 function riverDepthAt(grid: FloodGrid | null, riverFlood: FloodResult | null, incident: Incident) {
@@ -1435,28 +1816,47 @@ function CallerWater({
   report,
   riverDepth,
   verified,
+  outsideModel,
 }: {
   report: NonNullable<Incident["waterReport"]>;
   riverDepth: number | null;
   verified: boolean;
+  outsideModel: boolean;
 }) {
   const floor = report.floor ?? 0;
   // Depth above the street, to compare with the model.
   const callerDepth = report.meters + floor * FLOOR_HEIGHT_M;
   const gap = riverDepth == null ? null : callerDepth - riverDepth;
+  const vague = report.level === "present";
+  const notes = [
+    vague ? `no depth given, ~${report.meters.toFixed(1)} m assumed` : null,
+    ["measured", "estimated", "present"].includes(report.level) ? null : `~${report.meters.toFixed(1)} m`,
+    floor > 0 ? `on floor ${floor}, ~${callerDepth.toFixed(1)} m above the street` : null,
+  ].filter(Boolean);
   return (
     <div className="rounded bg-slate-800/70 p-2.5 text-xs">
       <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Caller vs. river model</div>
       <p>
-        Caller: <b className="text-sky-300">{LEVEL_LABEL[report.level]}</b> (~{report.meters.toFixed(1)} m
-        {floor > 0 ? ` on floor ${floor}, ~${callerDepth.toFixed(1)} m above the street` : ""})
+        Caller: <b className="text-sky-300">{describeReport(report)}</b>
+        {notes.length > 0 && ` (${notes.join(", ")})`}
         {report.evidence && <span className="text-slate-400"> — &ldquo;{report.evidence}&rdquo;</span>}
       </p>
+      {outsideModel ? (
+        <p className="mt-1 text-amber-300">
+          This location is outside the area the flood model covers, so the caller&apos;s report isn&apos;t drawn on the
+          map. Check that the incident is on the right building.
+        </p>
+      ) : (
       <p>
         River model alone: <b>{riverDepth == null ? "loading…" : `${riverDepth.toFixed(1)} m`}</b>
       </p>
-      {gap != null &&
-        (Math.abs(gap) >= DISAGREE_M ? (
+      )}
+      {gap != null && !outsideModel &&
+        (vague && gap < 0 ? (
+          <p className="mt-1 text-slate-400">
+            The model already has deeper water here. A report without a depth only adds water, so the model is kept.
+          </p>
+        ) : Math.abs(gap) >= DISAGREE_M ? (
           <p className="mt-1 text-amber-300">
             They differ by {Math.abs(gap).toFixed(1)} m. The map uses the caller&apos;s report within ~
             {OBSERVATION_RADIUS_M} m{verified ? "" : " (location not yet confirmed)"}.
