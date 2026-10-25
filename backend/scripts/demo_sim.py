@@ -1,6 +1,6 @@
 """Demo simulation: a storm's worth of calls while the water rises, plus your own live calls.
 
-    python scripts/demo_sim.py                       # ~1.5 min: 22 callers, water peaks after 60 s
+    python scripts/demo_sim.py                       # ~1.5 min: 11 callers, water peaks after 60 s
     python scripts/demo_sim.py --region sf-waterfront   # the SF Marina shore instead (or demo_sim_sf.py)
     python scripts/demo_sim.py --calls 46 --rise 150 --max-turns 5   # the long version, every caller
     python scripts/demo_sim.py --calls 3 --rise 30   # a short smoke test
@@ -54,10 +54,10 @@ PRICES = {
 
 # Simulated teams: (name, capabilities, how many).
 TEAM_MIX = [
-    ("Swift Water Boat", ["boat"], 7),
-    ("High-Water Truck", ["high_water_vehicle", "road_vehicle"], 6),
-    ("Fire Engine", ["road_vehicle"], 5),
-    ("Helicopter Rescue", ["air"], 2),
+    ("Swift Water Boat", ["boat"], 6),
+    ("High-Water Truck", ["high_water_vehicle", "road_vehicle"], 2),
+    ("Fire Engine", ["road_vehicle"], 1),
+    ("Helicopter Rescue", ["air"], 1),
 ]
 
 AGENT_GREETING = "911, what's the address of your emergency?"
@@ -337,7 +337,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--api", default="http://localhost:8000")
     p.add_argument("--region", default="mission-valley", choices=REGIONS, help="where the exercise runs")
-    p.add_argument("--calls", type=int, default=22, help="how many scripted callers, spread across the storm (the scenario has 46)")
+    p.add_argument("--calls", type=int, default=11, help="how many scripted callers, spread across the storm (the scenario has 46)")
     p.add_argument("--rise", type=float, default=60, help="seconds for the water to reach the storm's peak")
     p.add_argument("--start-index", type=int, default=0, help="gauge reading to start from")
     p.add_argument("--water-every", type=float, default=4, help="seconds between water level updates")

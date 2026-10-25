@@ -58,3 +58,19 @@ test("a boat pulls up at the walls of a big building and the crew walks in", () 
   const water = r.path.slice(0, r.legs.find((l) => l.mode === "water")!.end + 1);
   expect(water.every((p) => !b[rowOf(g, p) * N + colOf(g, p)])).toBe(true);
 });
+
+test("the last stretch to a caller doesn't cut through a building the water doesn't top", () => {
+  // The caller is just behind the wall, close enough to pull up or wade across it if buildings were ignored.
+  const g = grid(wall(6));
+  const b = wall(6);
+  const r = planRoute(roads, g, flood(1.5), boat(g), at(g, 12, 2));
+  expect(r.ok).toBe(true);
+  if (!r.ok) return;
+  for (let i = 1; i < r.path.length; i++) {
+    const [a, z] = [r.path[i - 1], r.path[i]];
+    for (let t = 0; t <= 1; t += 0.05) {
+      const p = [a[0] + (z[0] - a[0]) * t, a[1] + (z[1] - a[1]) * t];
+      expect(b[rowOf(g, p) * N + colOf(g, p)]).toBeFalsy();
+    }
+  }
+});

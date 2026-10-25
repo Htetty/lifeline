@@ -1,6 +1,6 @@
 """Demo simulation on the San Francisco Marina shore (Golden Gate side), same as demo_sim.py.
 
-    python scripts/demo_sim_sf.py                    # ~1.5 min: 22 callers, water peaks after 60 s
+    python scripts/demo_sim_sf.py                    # ~1.5 min: 11 callers, water peaks after 60 s
     python scripts/demo_sim_sf.py --calls 46 --rise 150 --max-turns 5   # the long version
     python scripts/demo_sim_sf.py --calls 3 --rise 30   # a short smoke test
 

@@ -36,6 +36,8 @@ const START_LINKS = 4;
 const START_SPEED = 4;
 /** Depth samples along each road segment. */
 const SAMPLE_STEP_M = 10;
+/** Building checks along a straight (off-road) leg: a third of a grid cell. */
+const STRAIGHT_STEP_M = 5;
 
 /** Free-flow speeds in m/s by OSM road class. */
 const CLASS_SPEED: Record<string, number> = {
@@ -328,8 +330,11 @@ export function planRoute(
     }
     return out;
   };
-  /** Deep, open-water cells touching the building that covers `start` (searched up to a size cap). */
-  const buildingEdge = (start: number) => {
+  /**
+   * The building that covers `start` (searched up to a size cap): its cells, and the deep,
+   * open-water cells touching it.
+   */
+  const buildingAt = (start: number) => {
     const seen = new Set([start]);
     const queue = [start];
     const edge = new Set<number>();
@@ -354,7 +359,7 @@ export function planRoute(
         }
       }
     }
-    return edge;
+    return { cells: seen, edge };
   };
   const roadsNear = (p: number[], radius: number) => {
     const out: [number, number][] = [];
@@ -367,8 +372,24 @@ export function planRoute(
 
   // The last stretch: on foot from nearby roads, or by boat from nearby deep water.
   const targetDepth = depthAt(grid, flood, target[0], target[1]);
-  // Time to walk or wade straight to the building, or null if the water on the way is too deep.
+  const targetCell = cellOf(target[0], target[1]);
+  const inBuilding = targetCell >= 0 && blocked(targetCell);
+  const targetBuilding = inBuilding ? buildingAt(targetCell) : null;
+  /** Whether a straight leg stays clear of buildings the water doesn't top (other than the one it ends in). */
+  const clear = (a: number[], b: number[], length: number) => {
+    const from = cellOf(a[0], a[1]);
+    const steps = Math.max(1, Math.ceil(length / STRAIGHT_STEP_M));
+    for (let k = 1; k <= steps; k++) {
+      const t = k / steps;
+      const cell = cellOf(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+      if (cell >= 0 && cell !== from && blocked(cell) && !targetBuilding?.cells.has(cell)) return false;
+    }
+    return true;
+  };
+  // Time to walk or wade straight to the building, or null if the water on the way is too deep
+  // or a building is in the way.
   const walk = (p: number[], d: number) => {
+    if (!clear(p, target, d)) return null;
     const deepest = segmentDepth(grid, flood, p, target, d);
     return deepest > FOOT_LIMIT ? null : d / (deepest > WADE_DEPTH ? WADE_SPEED : FOOT_SPEED);
   };
@@ -385,15 +406,15 @@ export function planRoute(
       if (t != null) boatLinks.set(N + cell, [t, "foot"]);
     }
   }
-  const targetCell = cellOf(target[0], target[1]);
-  const inBuilding = targetCell >= 0 && blocked(targetCell);
   if (isBoat && !inBuilding) {
-    for (const [cell, d] of deepCellsNear(target, BOAT_REACH_M)) boatLinks.set(N + cell, [d / BOAT_SPEED, "water"]);
+    for (const [cell, d] of deepCellsNear(target, BOAT_REACH_M)) {
+      if (clear(cellCenter(cell), target, d)) boatLinks.set(N + cell, [d / BOAT_SPEED, "water"]);
+    }
   }
   // In a building the water doesn't top, a boat pulls up anywhere along its walls, however big
   // it is, and the crew goes in on foot from there.
-  if (isBoat && inBuilding) {
-    for (const cell of buildingEdge(targetCell)) {
+  if (targetBuilding && isBoat) {
+    for (const cell of targetBuilding.edge) {
       const [x, y] = cellCenter(cell);
       const t = planar(x, y, target[0], target[1], graph.cosLat) / FOOT_SPEED;
       const known = boatLinks.get(N + cell);
@@ -441,7 +462,9 @@ export function planRoute(
       // Launch where the road runs into water. Only checked near wet roads, to keep it cheap.
       if (isBoat && (depths.node[u] > DRY_DEPTH || wetEdgeAt(u))) {
         const at = [graph.lon[u], graph.lat[u]];
-        for (const [cell, d] of deepCellsNear(at, LAUNCH_REACH_M)) relax(u, N + cell, LAUNCH_SECONDS + d / BOAT_SPEED, "water");
+        for (const [cell, d] of deepCellsNear(at, LAUNCH_REACH_M)) {
+          if (clear(at, cellCenter(cell), d)) relax(u, N + cell, LAUNCH_SECONDS + d / BOAT_SPEED, "water");
+        }
       }
       const foot = footLinks.get(u);
       if (foot != null) relax(u, TARGET, foot, "foot");

@@ -30,6 +30,10 @@ const CUT_OFF_CELLS = 4;
 /** Unaddressed buildings are described from a named or addressed landmark this close. */
 const LANDMARK_M = 250;
 const STAGING_POINTS = 10;
+/** Places no scripted caller is put in or describes themselves next to. */
+const NO_CALLS: Partial<Record<typeof region.id, { name: RegExp; lon: number; lat: number; radiusM: number }[]>> = {
+  "sf-waterfront": [{ name: /palace of fine arts/i, lon: -122.4485, lat: 37.8026, radiusM: 250 }],
+};
 
 // ---- Deterministic randomness ------------------------------------------------------
 
@@ -286,6 +290,10 @@ async function main() {
       name = `the ${storeys} building just ${side} of ${best.label}`;
       address = best.street;
     }
+    const excluded = (NO_CALLS[region.id] ?? []).some(
+      (z) => z.name.test(name ?? "") || metres([z.lon, z.lat], [lon, lat]) < z.radiusM,
+    );
+    if (excluded) continue;
     candidates.push({ id: b.id, lon, lat, kind, name, address, floors, onset });
   }
   console.log(`${candidates.length} buildings are cut off by water by the peak`);

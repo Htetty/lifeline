@@ -203,6 +203,15 @@ const DEFAULT_HEIGHT_M = 5;
 const MIN_SAMPLES = 4;
 const { dLat, dLon, cols, rows } = gridShape(B);
 const heights = new Float32Array(cols * rows);
+// Which of each cell's 3×3 sample points fall in any building, so a row of narrow houses
+// sharing walls (or a building split across tiles) fills its cells.
+const covered = new Uint16Array(cols * rows);
+const SAMPLE = [0.2, 0.5, 0.8];
+const bitCount = (n: number) => {
+  let count = 0;
+  for (; n; n &= n - 1) count++;
+  return count;
+};
 const within = (lon: number, lat: number, ring: Ring) => {
   let hit = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -222,14 +231,17 @@ for (const p of polygons) {
   const r1 = Math.min(rows - 1, Math.floor((B.north - Math.min(...lats)) / dLat));
   for (let r = r0; r <= r1; r++) {
     for (let c = c0; c <= c1; c++) {
-      let samples = 0;
-      for (const fy of [0.2, 0.5, 0.8]) {
-        for (const fx of [0.2, 0.5, 0.8]) if (within(B.west + (c + fx) * dLon, B.north - (r + fy) * dLat, p.outer)) samples++;
+      let hits = 0;
+      for (let k = 0; k < 9; k++) {
+        if (within(B.west + (c + SAMPLE[k % 3]) * dLon, B.north - (r + SAMPLE[Math.floor(k / 3)]) * dLat, p.outer)) hits |= 1 << k;
       }
-      if (samples >= MIN_SAMPLES) heights[r * cols + c] = Math.max(heights[r * cols + c], h);
+      if (!hits) continue;
+      covered[r * cols + c] |= hits;
+      heights[r * cols + c] = Math.max(heights[r * cols + c], h);
     }
   }
 }
+for (let i = 0; i < heights.length; i++) if (bitCount(covered[i]) < MIN_SAMPLES) heights[i] = 0;
 const runs: number[][] = [];
 for (let i = 0; i < heights.length; ) {
   if (!heights[i]) {
