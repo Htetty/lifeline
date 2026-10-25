@@ -225,9 +225,12 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 10px; align-content: start; }
 .sheet-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sheet-actions-col { order: -1; }
+/* Narrow (right dock): chips and tools share the top row, the title gets the full width below. */
 @container (max-width: 560px) {
-  .sheet-header { flex-wrap: wrap; }
-  .sheet-tags { order: 3; width: 100%; justify-content: flex-start; margin-left: 0; padding-top: 0; }
+  .sheet-header { flex-wrap: wrap; row-gap: 10px; }
+  .sheet-tags { flex: 1 1 0; min-width: 0; max-width: none; justify-content: flex-start; padding-top: 0; }
+  .sheet-header > .min-w-0 { order: 3; flex-basis: 100%; }
+  .sheet-title { -webkit-line-clamp: 3; }
 }
 @container (min-width: 860px) {
   /* Side by side: each column scrolls on its own, so the sheet stays short. */
