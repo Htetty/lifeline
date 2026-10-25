@@ -225,7 +225,7 @@ async def test_audio_does_not_wait_for_playback_ack_storage(monkeypatch):
     monkeypatch.setattr(main.convex_store,'mark_announced',slow_ack)
     monkeypatch.setattr(main.convex_store,'start_voice_call',AsyncMock(return_value={'nextSequence':1}))
     monkeypatch.setattr(main,'end_call',AsyncMock())
-    monkeypatch.setattr(main,'process_utterance',AsyncMock(return_value=SimpleNamespace(incident={},extraction_error=None,next_question=None)))
+    monkeypatch.setattr(main,'process_utterance',AsyncMock(return_value=SimpleNamespace(incident={},extraction=None, extraction_error=None,reply=None)))
     session=Session(CALL,Speech(),AsyncMock())
     session.audio_frame_alignment=1
     session.playback=Playback('p','approved','event','playing')

@@ -85,9 +85,20 @@ async def call_ended(call_id: str) -> None:
     await _mutation("calls:callEnded", {"callId": call_id})
 
 
+# Internal bookkeeping, never spoken: a saved report isn't a dispatcher action. Convex still
+# queues it on a new incident; filtering here also covers events already in the database.
+INTERNAL_UPDATES = {"details_received"}
+
+
 async def call_state(call_id: str) -> dict[str, Any]:
     """Status card plus updates still worth speaking (what the voice stream pushes)."""
-    return await _query("calls:callState", {"callId": call_id})
+    return _speakable(await _query("calls:callState", {"callId": call_id}))
+
+
+def _speakable(state):
+    if isinstance(state, dict) and isinstance(state.get("pending"), list):
+        state = {**state, "pending": [e for e in state["pending"] if e.get("type") not in INTERNAL_UPDATES]}
+    return state
 
 
 async def status_for_call(call_id: str) -> dict[str, Any] | None:
@@ -95,8 +106,9 @@ async def status_for_call(call_id: str) -> dict[str, Any] | None:
 
 
 async def pending_events(call_id: str) -> list[dict[str, Any]]:
-    """Current, unspoken updates (empty after hang-up). Used by the browser voice bridge."""
-    return await _query("calls:pendingEvents", {"callId": call_id})
+    """Current, unspoken updates to speak (empty after hang-up), without internal bookkeeping."""
+    events = await _query("calls:pendingEvents", {"callId": call_id})
+    return [e for e in events if e.get("type") not in INTERNAL_UPDATES]
 
 
 async def recorded_hazards(call_id: str) -> list[str]:
@@ -147,6 +159,6 @@ async def subscribe_call_state(call_id: str) -> AsyncIterator[dict[str, Any]]:
     subscription = _client.subscribe("calls:callState", {"secret": settings.backend_secret, "callId": call_id})
     try:
         async for snapshot in subscription:
-            yield snapshot
+            yield _speakable(snapshot)
     finally:
         subscription.unsubscribe()

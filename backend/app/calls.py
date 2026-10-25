@@ -63,7 +63,18 @@ class UtteranceResult(BaseModel):
     saved: bool
     incident: dict | None
     extraction: Extraction | None
+    # What to say to the caller now (answers their question, or asks the next detail, or both).
+    reply: str | None = None
+    # Deprecated alias of `reply` for existing API clients; same value.
     next_question: str | None
+
+    @model_validator(mode="before")
+    @classmethod
+    def receipt_before_reply(cls, data):
+        # Receipts saved before `reply` existed stored the spoken text as next_question.
+        if isinstance(data, dict) and "reply" not in data:
+            data = {**data, "reply": data.get("next_question")}
+        return data
     location_match: str | None = None
     extraction_error: str | None = None
 
@@ -112,13 +123,20 @@ async def _classify(call_id: str, version: int, transcript: str) -> None:
 
 
 async def process_utterance(
-    call_id: str, utterance: Utterance, *, extract: bool = True, latest_message: str | None = None
+    call_id: str,
+    utterance: Utterance,
+    *,
+    extract: bool = True,
+    latest_message: str | None = None,
+    conversation_state: str | None = None,
 ) -> UtteranceResult:
     """Save a turn and (by default) extract facts from the whole transcript.
 
     extract=False saves a caller turn without extraction, for a voice session that already
     has a newer caller turn queued: that turn's extraction reads the whole transcript, with
     `latest_message` covering every caller turn saved since the last extraction.
+    `conversation_state` is what the agent may say about actions in progress on this call
+    (the location link and any location the caller shared); it is never stored.
     """
     async with _locks[call_id]:
         started = time.monotonic()
@@ -161,8 +179,10 @@ async def process_utterance(
             try:
                 t = time.monotonic()
                 # Simulated callers use the cheaper simulation model; live callers always get CLAUDE_MODEL.
-                model = settings.sim_claude_model if utterance.source == "simulation" else None
-                extraction = await extract_incident(transcript, recorded, latest_message, model=model)
+                model_options = {"model": settings.sim_claude_model} if utterance.source == "simulation" else {}
+                extraction = await extract_incident(
+                    transcript, recorded, latest_message, conversation_state, **model_options
+                )
                 extract_s = time.monotonic() - t
             except ExtractionUnavailable as e:
                 error = f"Extraction unavailable ({e}); the dispatcher will read the transcript."
@@ -185,16 +205,17 @@ async def process_utterance(
             log.info("call %s: location candidate %r from %r", call_id, candidate.label, candidate.query)
 
         # "Is anyone coming?": answer with the confirmed status (approved wording) first.
-        next_question = extraction.next_question if extraction else None
+        reply = extraction.reply if extraction else None
         if extraction and extraction.caller_asked_status:
-            next_question = " ".join(filter(None, [await _confirmed_status_text(call_id), next_question]))
+            reply = " ".join(filter(None, [await _confirmed_status_text(call_id), reply]))
 
         # Save even when extraction fails, so the report is never lost.
         response = dict(
             saved=True,
             incident=None,
             extraction=extraction.model_dump() if extraction else None,
-            next_question=next_question,
+            reply=reply,
+            next_question=reply,
             location_match=candidate.label if candidate else None,
             extraction_error=error,
         )
@@ -254,6 +275,7 @@ async def process_utterance(
             saved=True,
             incident=incident,
             extraction=extraction,
+            reply=response["reply"],
             next_question=response["next_question"],
             location_match=response["location_match"],
             extraction_error=error,

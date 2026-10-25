@@ -19,15 +19,15 @@ the agent to finish before you reply. Updates are spoken at the next pause, neve
 
 | # | You say (caller) | You do (dashboard) | You should hear / see |
 |---|---|---|---|
-| 0 | (wait) | — | *"Hello, this is Lifeline, a non-emergency hackathon simulation…"* |
+| 0 | (wait) | — | *"Hello, this is Lifeline. Tell me what's happening and where help is needed."* |
 | 1 | "Help, the water's coming up the stairs. We're at the Courtyard hotel in Mission Valley, room 905." | Watch the queue | Incident appears with **Auto-located · confirm**; the Courtyard turns red on the map. The agent asks a follow-up (e.g. how many people). |
-| 2 | "There's two of us. My wife can't swim and it's getting really high." | — | Agent: *"I've passed your details to the dispatcher. Stay on the line with me."* Dashboard: 2 people, risk factors listed. |
+| 2 | "There's two of us. My wife can't swim and it's getting really high." | — | The agent responds to what you said (e.g. acknowledges and asks the next detail). No canned "passed your details" line: saving the report isn't announced. Dashboard: 2 people, risk factors listed. |
 | 3 | "Is anyone actually coming?" | — | Agent: *"Your details are with the dispatcher, who is confirming your location. No team has been assigned yet."*, then a question. |
 | 4 | (wait) | Open the incident → **Confirm location** | Agent: *"The dispatcher has confirmed your location and is arranging a rescue team."* |
-| 5 | (wait) | Pick a team → **Approve assignment** | Agent: *"Simulation update from the dispatcher: a simulated rescue team, <team>, has been assigned to this fictional incident."* |
+| 5 | (wait) | Pick a team → **Approve assignment** | Agent: *"Update from the dispatcher: a rescue team, <team>, has been assigned to you."* |
 | 6 | "Okay, are they on their way?" | — | Agent: *"A rescue team (<team>) has been assigned to you. It hasn't been marked as on its way yet."* |
 | 7 | (wait) | In **What the caller has heard**, send: "Hang a towel from your window so the boat crew can spot you." | Agent: *"The dispatcher asked me to tell you: Hang a towel from your window…"* Panel shows it as **SPOKEN**. |
-| 8 | (wait) | **Mark en route** | Agent: *"Simulation update: the dispatcher has marked the simulated team as en route."* |
+| 8 | (wait) | **Mark en route** | Agent: *"The dispatcher has marked the rescue team as on its way to you."* |
 | 9 | "How long until they get here?" | — | Agent says the team is on its way and that it has **no arrival time**; it never makes one up. |
 | 10 | Click **End session** on the voice page | **Mark resolved** | The incident shows **Call ended** and stays open until you resolve it. Nothing is spoken after hang-up. |
 

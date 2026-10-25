@@ -1,0 +1,21 @@
+{
+  "name": "lifeline-photon",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=../../backend/.env --env-file-if-exists=.env src/index.mjs",
+    "location": "node --env-file-if-exists=../../backend/.env --env-file-if-exists=.env src/index.mjs --location",
+    "check": "node --env-file-if-exists=../../backend/.env --env-file-if-exists=.env src/index.mjs --check",
+    "test": "node --test test/*.test.mjs",
+    "test:ui": "node scripts/check-location-ui.mjs"
+  },
+  "dependencies": {
+    "@photon-ai/advanced-imessage": "2.4.0",
+    "@spectrum-ts/core": "12.14.0",
+    "@spectrum-ts/imessage": "12.14.0",
+    "maplibre-gl": "6.15.0"
+  }
+}

@@ -11,7 +11,7 @@ from app.voice import Playback, Session, QUIET_SECONDS
 
 # Dev saves the approved, role-aware wording on each update; the phone speaks that text.
 EVENT={'_id':'approved-event','type':'assignment_approved','teamName':'Swift Water Boat 1','announcedAt':100,
-       'text':'Simulation update from the dispatcher: a simulated rescue team, Swift Water Boat 1, has been assigned to this fictional incident.'}
+       'text':'Update from the dispatcher: a rescue team, Swift Water Boat 1, has been assigned to you.'}
 STAGE='The dispatcher has confirmed your location and is arranging a rescue team. No team has been assigned yet.'
 
 
@@ -54,7 +54,7 @@ async def test_completed_assignment_replays_only_on_request_and_survives_interru
 @pytest.mark.asyncio
 async def test_real_repeat_utterance_does_not_trigger_an_injury_question(session):
     session.last_audible=Playback('original','assignment',EVENT['_id'],'completed')
-    session.persist=AsyncMock(return_value=SimpleNamespace(incident={},extraction_error=None,next_question='Is anyone hurt or in need of medical help?'))
+    session.persist=AsyncMock(return_value=SimpleNamespace(incident={},extraction=None, extraction_error=None,reply='Is anyone hurt or in need of medical help?'))
     await session.queue.put(('ink-4','caller','Wait, sorry, can you repeat that?',0))
     worker=asyncio.create_task(session.worker())
     try:

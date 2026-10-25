@@ -66,7 +66,7 @@ async def test_audio_turns_continue_while_extraction_waits(session,monkeypatch):
     started,release=asyncio.Event(),asyncio.Event()
     async def slow_process(call_id,turn):
         started.set(); await release.wait()
-        return SimpleNamespace(incident={},extraction_error=None,next_question="old follow-up")
+        return SimpleNamespace(incident={},extraction=None, extraction_error=None,reply="old follow-up")
     monkeypatch.setattr(main,"process_utterance",slow_process)
     await session.queue.put(("ink-1","caller","first",0))
     worker=asyncio.create_task(session.worker())
@@ -90,7 +90,7 @@ async def test_order_and_retry_identity(session, monkeypatch):
     async def process(call_id, turn):
         seen.append((call_id,turn.turn_id,turn.sequence))
         if len(seen)==1: raise RuntimeError("lost response")
-        return SimpleNamespace(incident={}, extraction_error=None, next_question=None)
+        return SimpleNamespace(incident={}, extraction=None, extraction_error=None, reply=None)
     monkeypatch.setattr(main,"process_utterance",process)
     monkeypatch.setattr(voice.asyncio,"sleep",AsyncMock())
     await session.persist(("ink-1","caller","first",0))
@@ -231,7 +231,7 @@ async def test_disconnect_drains_final_turn_and_cleans_tasks(monkeypatch):
     monkeypatch.setattr(voice.convex_store,"start_voice_call",AsyncMock(return_value={"nextSequence":1}))
     monkeypatch.setattr(voice.convex_store,"pending_events",AsyncMock(return_value=[]))
     ended=AsyncMock(); monkeypatch.setattr(main,"end_call",ended)
-    process=AsyncMock(return_value=SimpleNamespace(incident={},extraction_error=None,next_question=None))
+    process=AsyncMock(return_value=SimpleNamespace(incident={},extraction=None, extraction_error=None,reply=None))
     monkeypatch.setattr(main,"process_utterance",process)
     s=Session('drain',Speech(),socket.send_json)
     before=set(asyncio.all_tasks())
