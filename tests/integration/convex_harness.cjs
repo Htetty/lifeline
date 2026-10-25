@@ -91,6 +91,14 @@ const db = {
   },
 };
 
+// Scheduled work (e.g. trip planning when a team goes en route) is recorded, not run:
+// these handler tests check what a mutation saves and queues for callers.
+const scheduled = [];
+const scheduler = {
+  async runAfter(delay, fn, args) { scheduled.push({ delay, fn, args }); },
+  async runAt(at, fn, args) { scheduled.push({ at, fn, args }); },
+};
+
 const allowed = new Set([
   "calls:upsertFromCall", "calls:callEnded", "calls:statusForCall",
   "calls:transcriptForCall", "calls:pendingEvents", "calls:markAnnounced",
@@ -115,7 +123,7 @@ async function main() {
       if (!allowed.has(request.name)) throw new Error("Handler not allowed by isolated harness");
       const [moduleName, name] = request.name.split(":");
       const value = await handlers[moduleName][name]._handler(
-        { db, auth: { getUserIdentity: async () => null } }, request.args,
+        { db, auth: { getUserIdentity: async () => null }, scheduler }, request.args,
       );
       process.stdout.write(`${JSON.stringify({ ok: true, value: value ?? null })}\n`);
     } catch (error) {
