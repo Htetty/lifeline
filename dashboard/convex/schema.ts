@@ -209,6 +209,41 @@ export default defineSchema({
     decisionRevision: v.optional(v.number()),
   }).index("by_call_announced", ["callId", "announcedAt"]),
 
+  /**
+   * Assignment suggestions the dashboard computed, as the dispatcher saw them. Recording one
+   * changes nothing else. `inputs` is the server's own snapshot of the planning inputs then.
+   */
+  assignmentPlans: defineTable({
+    exerciseId: v.string(),
+    planId: v.string(),
+    /** Fingerprint of the inputs the dashboard planned from. */
+    fingerprint: v.string(),
+    /** Whether that matched the server's inputs when the plan was recorded. */
+    matchedServer: v.boolean(),
+    inputs: v.string(),
+    proposals: v.array(
+      v.object({ incidentId: v.id("incidents"), teamId: v.id("teams"), tier: priorityTier, seconds: v.number(), reason: v.string() }),
+    ),
+    unassigned: v.array(v.object({ incidentId: v.id("incidents"), reason: v.string() })),
+    status: v.union(v.literal("proposed"), v.literal("approved")),
+    createdAt: v.number(),
+  })
+    .index("by_planId", ["planId"])
+    .index("by_exercise", ["exerciseId"]),
+
+  /** Every approval attempt on a plan: what was applied, or why it was refused. */
+  planDecisions: defineTable({
+    exerciseId: v.string(),
+    approvalId: v.string(),
+    planId: v.string(),
+    outcome: v.union(v.literal("approved"), v.literal("rejected_stale"), v.literal("rejected_invalid")),
+    reason: v.union(v.string(), v.null()),
+    selected: v.array(v.object({ incidentId: v.id("incidents"), teamId: v.id("teams") })),
+    at: v.number(),
+  })
+    .index("by_approvalId", ["approvalId"])
+    .index("by_exercise", ["exerciseId"]),
+
   voiceCalls: defineTable({
     callId: v.string(), nextSequence: v.number(), ended: v.boolean(),
   }).index("by_call", ["callId"]),

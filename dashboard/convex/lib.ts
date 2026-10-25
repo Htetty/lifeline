@@ -84,7 +84,7 @@ export async function getExercise(ctx: QueryCtx, exerciseId = EXERCISE_ID) {
 }
 
 export async function clearExercise(ctx: MutationCtx, exerciseId = EXERCISE_ID) {
-  for (const table of ["incidents", "teams"] as const) {
+  for (const table of ["incidents", "teams", "assignmentPlans", "planDecisions"] as const) {
     const rows = await ctx.db
       .query(table)
       .withIndex("by_exercise", (q) => q.eq("exerciseId", exerciseId))

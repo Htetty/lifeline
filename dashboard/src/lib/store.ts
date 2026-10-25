@@ -209,6 +209,15 @@ export async function dispatch(action: Action): Promise<void> {
   }
 }
 
+// Assignment planning (see src/lib/planner.ts and convex/planner.ts).
+type PlannerArgs<F extends keyof typeof api.planner> = Omit<(typeof api.planner)[F]["_args"], "dispatcherToken">;
+
+export const recordProposal = (args: PlannerArgs<"recordProposal">) =>
+  convex.mutation(api.planner.recordProposal, { dispatcherToken: currentToken(), ...args });
+export const approvePlan = (args: PlannerArgs<"approvePlan">) =>
+  convex.mutation(api.planner.approvePlan, { dispatcherToken: currentToken(), ...args });
+export const explainPlan = (facts: string) => convex.action(api.planner.explainPlan, { dispatcherToken: currentToken(), facts });
+
 /** A readable message for a failed mutation (ConvexError data or a generic note). */
 export function errorMessage(e: unknown): string {
   if (e instanceof ConvexError && typeof e.data === "string") return e.data;
