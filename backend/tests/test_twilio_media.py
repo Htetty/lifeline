@@ -76,7 +76,8 @@ def test_signed_stream_binds_call_and_native_codec_once(monkeypatch):
             ws.send_json({"event":"connected","protocol":"Call","version":"1.0.0"})
             ws.send_json(start(token))
             with pytest.raises(Exception): ws.receive_json()
-        assert captured==[{'input_encoding':'pcm_mulaw','output_format':{'container':'raw','encoding':'pcm_mulaw','sample_rate':8000}},(CALL,STREAM,1,8000)]
+        assert captured==[{'input_encoding':'pcm_mulaw','output_format':{'container':'raw','encoding':'pcm_mulaw','sample_rate':8000},'turn':phone.PHONE_TURN},(CALL,STREAM,1,8000)]
+        assert phone.PHONE_TURN=={'turn_end_threshold':0.15}  # see replay evidence in PHONE_TURN comment
         with client.websocket_connect(phone.MEDIA_PATH,headers=signature(phone.MEDIA_PATH)) as ws:
             ws.send_json(start(token))
             with pytest.raises(Exception): ws.receive_json()

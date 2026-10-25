@@ -9,6 +9,7 @@ Real: HTTP routes and auth, the Convex client, and every Convex query/mutation a
 Set LIFELINE_TRACE=1 to print the end-to-end walkthrough.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -312,6 +313,31 @@ class Withdrawals(Base):
         inc = self.incident()
         self.assertEqual((inc["status"], inc["peopleCount"]), ("assigned", None))
         self.assertIn(team["name"], self.announcements()[0]["text"])
+
+
+class CoalescedTurns(Base):
+    """A turn saved without extraction (newer caller turn queued) loses nothing."""
+
+    def test_correction_in_a_coalesced_turn_still_resets_the_location(self):
+        self.say("Three of us at 18 Lantern Lane.")
+        inc = self.incident()
+        convex.mutation("incidents:verifyLocation", {**DISPATCHER, "incidentId": inc["_id"], "latitude": 32.76, "longitude": -117.17})
+        calls_before = self.parse.await_count
+        utter = lambda text: calls.Utterance(speaker="caller", text=text)
+        saved = asyncio.run(calls.process_utterance(self.call, utter("Sorry, it's 81 Lantern Lane, not 18."), extract=False))
+        self.assertTrue(saved.saved)
+        self.assertEqual(self.parse.await_count, calls_before)  # no extraction for the superseded turn
+        mid = self.incident()
+        self.assertTrue(mid["locationVerified"])  # nothing decided from a turn that wasn't extracted
+        self.assertIn("81 Lantern Lane, not 18", mid["transcript"])
+        self.extract(facts(reported_address="81 Lantern Lane (fictional)", location_changed=True))
+        latest = "Sorry, it's 81 Lantern Lane, not 18.\nThere are two of us upstairs."
+        asyncio.run(calls.process_utterance(self.call, utter("There are two of us upstairs."), latest_message=latest))
+        sent = self.parse.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("<latest_caller_message>\n" + latest + "\n</latest_caller_message>", sent)
+        now = self.incident()
+        self.assertEqual((now["status"], now["locationVerified"]), ("needs_review", False))
+        self.assertEqual(now["transcript"].count("Caller:"), 3)
 
 
 class NoFalseSuccess(Base):

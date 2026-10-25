@@ -94,6 +94,10 @@ progress: whether anyone is coming, when, whether the dispatcher got their call,
 "what's happening?", "are you sending someone?". The agent will then tell them the
 confirmed status before asking anything else.
 
+When <latest_caller_message> is given, it is the caller's most recent message (it may
+span several short turns at the end of the transcript); use it wherever these
+instructions say "most recent message" or "latest message".
+
 `withdrawn` lists facts the caller's most recent message explicitly takes back without
 giving a replacement, each with the caller's words as `evidence`:
 - people_count: "I was wrong, I don't know how many of us there are". A new number
@@ -181,8 +185,14 @@ class ExtractionUnavailable(Exception):
     """Claude could not produce an extraction (refusal or invalid output)."""
 
 
-async def extract_incident(transcript: str, recorded_hazards: list[str] | None = None) -> Extraction:
+async def extract_incident(
+    transcript: str, recorded_hazards: list[str] | None = None, latest_message: str | None = None
+) -> Extraction:
     content = f"<transcript>\n{transcript}\n</transcript>"
+    if latest_message:
+        # Several short caller turns saved since the last extraction: together they are the
+        # "most recent message" (so a correction or withdrawal in any of them still counts).
+        content += f"\n<latest_caller_message>\n{latest_message}\n</latest_caller_message>"
     if recorded_hazards:
         # So a withdrawal can name the stored hazard exactly.
         content += "\n<recorded_hazards>\n" + "\n".join(recorded_hazards) + "\n</recorded_hazards>"

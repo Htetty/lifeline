@@ -65,6 +65,10 @@ class Session:
         self.requested_repeat = None
         # An intake question that arrived while a caller update was pending: asked after it.
         self.deferred_question = None
+        # Backlog control: caller turns still waiting in the queue, and caller text saved
+        # without extraction because a newer caller turn was already queued behind it.
+        self.queued_callers = 0
+        self.unextracted: list[str] = []
 
     def repeat_request(self, text, turn_id):
         """Narrow playback/status intents from verified caller text, not LLM IDs."""
@@ -121,18 +125,33 @@ class Session:
             self.last_speech = time.monotonic()
             text = (event.get("transcript") or "").strip()
             if text:
+                self.queued_callers += 1
                 await self.queue.put((f"{self.turn_prefix}-{number}", "caller", text, self.generation))
                 await self.notify(type="transcript", text=text)
 
     async def persist(self, item):
         from .main import Utterance, process_utterance
         turn_id, speaker, text, _ = item
+        options = {}
+        if speaker == "caller":
+            self.queued_callers -= 1
+            if self.queued_callers > 0:
+                # A newer caller turn is already queued: save this one now, in order, and let
+                # that turn's extraction (which reads the whole transcript) cover it too.
+                options = {"extract": False}
+            elif self.unextracted:
+                options = {"latest_message": "\n".join([*self.unextracted, text])}
         # Same sequence and identity on EVERY retry, including lost responses.
         for attempt in range(6):
             try:
                 result = await process_utterance(self.call_id, Utterance(
-                    speaker=speaker, text=text, turn_id=turn_id, sequence=self.sequence))
+                    speaker=speaker, text=text, turn_id=turn_id, sequence=self.sequence), **options)
                 self.sequence += 1
+                if speaker == "caller":
+                    if options.get("extract") is False:
+                        self.unextracted.append(text)
+                    else:
+                        self.unextracted.clear()
                 return result
             except asyncio.CancelledError:
                 raise

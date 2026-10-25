@@ -19,7 +19,7 @@ def voice_environment():
 
 
 class CartesiaSpeech:
-    def __init__(self, *, input_encoding="pcm_f32le", output_format=None):
+    def __init__(self, *, input_encoding="pcm_f32le", output_format=None, turn=None):
         env = voice_environment()
         if not env.get("CARTESIA_API_KEY"):
             raise RuntimeError("Set CARTESIA_API_KEY in backend/.env")
@@ -32,6 +32,7 @@ class CartesiaSpeech:
         self.model = env.get("CARTESIA_TTS_MODEL")
         self.input_encoding = input_encoding
         self.output_format = output_format
+        self.turn = turn or {}  # Cartesia turn-detection overrides, e.g. {"turn_end_threshold": 0.15}
 
     async def configure(self):
         if not self.voice or not self.model:
@@ -50,7 +51,7 @@ class CartesiaSpeech:
     async def listen(self, sample_rate):
         async with self.client.stt.auto_finalize.websocket(
             model="ink-2", encoding=self.input_encoding, sample_rate=sample_rate,
-            extra_query={"cartesia_version": VERSION}, max_retries=0,
+            extra_query={"cartesia_version": VERSION}, max_retries=0, **self.turn,
         ) as connection:
             yield connection
 
