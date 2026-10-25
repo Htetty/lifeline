@@ -230,7 +230,10 @@ class ExtractionUnavailable(Exception):
 
 
 async def extract_incident(
-    transcript: str, recorded_hazards: list[str] | None = None, latest_message: str | None = None
+    transcript: str,
+    recorded_hazards: list[str] | None = None,
+    latest_message: str | None = None,
+    model: str | None = None,
 ) -> Extraction:
     content = f"<transcript>\n{transcript}\n</transcript>"
     if latest_message:
@@ -240,16 +243,22 @@ async def extract_incident(
     if recorded_hazards:
         # So a withdrawal can name the stored hazard exactly.
         content += "\n<recorded_hazards>\n" + "\n".join(recorded_hazards) + "\n</recorded_hazards>"
+    model = model or settings.claude_model
+    # If a safety classifier declines, re-run on Anthropic's recommended fallback model.
+    # Haiku has no server-side fallback.
+    fallback = (
+        {}
+        if model.startswith("claude-haiku")
+        else dict(extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"}, extra_body={"fallbacks": "default"})
+    )
     response = await client.messages.parse(
-        model=settings.claude_model,
+        model=model,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
         output_config={"effort": settings.extraction_effort},
         messages=[{"role": "user", "content": content}],
         output_format=Extraction,
-        # If a safety classifier declines, re-run on Anthropic's recommended fallback model.
-        extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
-        extra_body={"fallbacks": "default"},
+        **fallback,
     )
     if response.stop_reason == "refusal" or response.parsed_output is None:
         raise ExtractionUnavailable(f"stop_reason={response.stop_reason}")

@@ -54,3 +54,4 @@ ml/data/processed/
 backend/.venv/
 
 docs
+.claude/settings.local.json

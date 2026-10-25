@@ -203,7 +203,7 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 
 /* ---- Incident sheet: slides over the map instead of resizing it, and is as tall as its content ---- */
 .incident-sheet { --text-muted: #c4c9d0; --text-faint: #a2a8b1; --color-slate-500: #9ea4ad; --color-slate-400: #bcc2ca; position: absolute; z-index: 20; display: flex; flex-direction: column; container-type: inline-size; background: #111316f5; border: 1px solid var(--line-strong); border-radius: 18px; box-shadow: 0 -10px 50px #000a; backdrop-filter: blur(14px); overflow: hidden; }
-.incident-sheet[data-dock="bottom"] { left: 10px; right: 10px; bottom: 10px; max-height: min(75%, 680px); animation: sheet-up .34s cubic-bezier(.2, .8, .2, 1); }
+.incident-sheet[data-dock="bottom"] { left: 10px; right: 10px; bottom: 10px; max-height: min(52%, 460px); animation: sheet-up .34s cubic-bezier(.2, .8, .2, 1); }
 .incident-sheet[data-dock="right"] { top: 10px; right: 10px; bottom: 10px; width: min(440px, 48%); animation: sheet-left .34s cubic-bezier(.2, .8, .2, 1); }
 .incident-sheet.is-closing[data-dock="bottom"] { animation: sheet-down .22s cubic-bezier(.4, 0, 1, 1) forwards; }
 .incident-sheet.is-closing[data-dock="right"] { animation: sheet-right .22s cubic-bezier(.4, 0, 1, 1) forwards; }
@@ -230,7 +230,9 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
   .sheet-tags { order: 3; width: 100%; justify-content: flex-start; margin-left: 0; padding-top: 0; }
 }
 @container (min-width: 860px) {
-  .sheet-body { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(270px, .85fr); align-items: start; }
+  /* Side by side: each column scrolls on its own, so the sheet stays short. */
+  .sheet-body { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(270px, .85fr); grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+  .sheet-col { min-height: 0; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
   .sheet-actions-col { order: 0; }
 }
 .sheet-card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 16px; }
@@ -255,6 +257,11 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .team-option { display: block; width: 100%; text-align: left; padding: 9px 11px; border-radius: 10px; font-size: 13px; background: var(--surface-1); border: 1px solid var(--line); }
 .team-option:hover { border-color: var(--line-strong); }
 .team-option[aria-checked="true"] { border-color: #8fc2ff88; background: #8fc2ff12; }
+/* "Show more" toggles in the incident sheet. */
+.show-more { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.show-more:hover { color: var(--text); }
+.unreachable ul { margin-top: 6px; display: grid; gap: 6px; font-size: 11px; line-height: 1.45; color: var(--text-faint); }
+.unreachable b { font-weight: 500; color: var(--text-muted); }
 .sheet-col > details { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
 .sheet-col > details > summary { font-size: 12px; font-weight: 500; color: var(--text-muted); list-style: none; }
 .sheet-col > details > summary::-webkit-details-marker { display: none; }
@@ -363,6 +370,7 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .planner-label { margin: 4px 0 8px; font: 500 10px var(--font-geist-mono), monospace; text-transform: uppercase; letter-spacing: .08em; color: var(--text-faint); }
 .plan-card { display: grid; gap: 6px; padding: 12px 14px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line); transition: opacity .15s, border-color .15s; }
 .plan-card.is-unchecked { opacity: .55; }
+.plan-card.is-outdated { opacity: .4; transition: opacity .2s; }
 .plan-card.is-unassigned { background: transparent; border-style: dashed; }
 .plan-card-top { display: flex; align-items: flex-start; gap: 10px; }
 .plan-card-top input { flex-shrink: 0; width: 15px; height: 15px; margin-top: 2px; accent-color: #8fc2ff; }

@@ -250,7 +250,9 @@ export const upsertFromCall = mutation({
     const dispatched = !existing.linkedTo && (existing.status === "assigned" || existing.status === "en_route");
 
     const norm = (a: string) => a.trim().toLowerCase();
+    // A simulated caller's pin comes from the scenario (simulation.pinCall), not their words.
     const corrected =
+      existing.source !== "simulation" &&
       args.locationChanged === true &&
       hadAddress &&
       args.reportedAddress != null &&

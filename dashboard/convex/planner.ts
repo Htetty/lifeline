@@ -9,9 +9,11 @@ import {
   fingerprintOf,
   floodFingerprint,
   incidentInput,
+  pairBasis,
   planningFingerprint,
   snapshotOf,
   teamInput,
+  WATER_TOLERANCE_M,
   type PlanningInputs,
 } from "./planning";
 import { priorityTier, routeEvidence } from "./schema";
@@ -19,9 +21,11 @@ import { EXERCISE_ID } from "./seedData";
 
 // Dispatcher-reviewed assignment plans (src/lib/planner.ts computes them in the dashboard).
 // Suggesting a plan changes nothing. Approval re-checks the selected assignments against the
-// database, refuses a plan made from inputs that have since changed or with routes other
-// than the ones the dispatcher reviewed, and applies the whole batch in one transaction
-// through the normal assignment path, or nothing at all.
+// database, refuses one whose incident, linked reports or team changed since it was planned
+// (or if the river moved more than WATER_TOLERANCE_M), or with routes other than the ones the
+// dispatcher reviewed, and applies the whole batch in one transaction through the normal
+// assignment path, or nothing at all. Changes elsewhere don't stale a plan: in a busy
+// exercise something changes every second.
 
 async function currentState(ctx: QueryCtx) {
   const exercise = await ctx.db
@@ -55,6 +59,8 @@ export const recordProposal = mutation({
     fingerprint: v.string(),
     /** The dashboard's floodFingerprint: the caller water reports it planned with. */
     floodFingerprint: v.string(),
+    /** River level the dashboard planned with. */
+    water: v.number(),
     proposals: v.array(
       v.object({
         incidentId: v.id("incidents"),
@@ -64,16 +70,21 @@ export const recordProposal = mutation({
         reason: v.string(),
         /** The route the dispatcher is shown; approval must send this same route. */
         evidence: routeEvidence,
+        /** pairBasis of the incident and team as the dashboard saw them. */
+        basis: v.string(),
       }),
     ),
     unassigned: v.array(v.object({ incidentId: v.id("incidents"), reason: v.string() })),
   },
-  handler: async (ctx, { dispatcherToken, planId, fingerprint, floodFingerprint: flood, proposals, unassigned }) => {
+  handler: async (ctx, { dispatcherToken, planId, fingerprint, floodFingerprint: flood, water, proposals, unassigned }) => {
     requireDispatcher(dispatcherToken);
     const existing = await ctx.db.query("assignmentPlans").withIndex("by_planId", (q) => q.eq("planId", planId)).unique();
-    const state = await currentState(ctx);
-    const matched = fingerprint === state.fingerprint && flood === state.flood;
     if (existing) return { matched: existing.matchedServer };
+    const state = await currentState(ctx);
+    // Whether the dashboard saw the latest data for everything this plan proposes.
+    const matched =
+      Math.abs(water - state.inputs.waterSurfaceElevation) <= WATER_TOLERANCE_M &&
+      proposals.every((p) => p.basis === pairBasis(state.inputs, p.incidentId, p.teamId));
     await ctx.db.insert("assignmentPlans", {
       exerciseId: EXERCISE_ID,
       planId,
@@ -81,6 +92,7 @@ export const recordProposal = mutation({
       matchedServer: matched,
       inputs: snapshotOf(state.inputs),
       flood, // the client's, never filled in from the server's current state
+      water,
       proposals,
       unassigned,
       status: "proposed",
@@ -89,6 +101,9 @@ export const recordProposal = mutation({
     return { matched };
   },
 });
+
+const proposedPair = (plan: Doc<"assignmentPlans">, incidentId: Id<"incidents">, teamId: Id<"teams">) =>
+  plan.proposals.find((p) => p.incidentId === incidentId && p.teamId === teamId);
 
 export type ApprovalResult =
   | { ok: true; outcome: "approved"; assigned: number }
@@ -135,17 +150,30 @@ export const approvePlan = mutation({
     if (plan.status === "approved") return refuse("rejected_stale", "this plan was already approved. Suggest assignments again for the rest.");
     if (!selected.length) return refuse("rejected_invalid", "no assignments were selected.");
     const state = await currentState(ctx);
-    // Plans recorded before route and flood bindings were required can't be approved.
-    if (plan.flood === undefined) {
+    // Plans recorded before route, flood and per-proposal bindings were required can't be approved.
+    if (plan.flood === undefined || plan.water === undefined) {
       return refuse("rejected_stale", "this plan was recorded without the flood data it used. Suggest assignments again.");
     }
-    if (!plan.matchedServer) {
-      return refuse("rejected_stale", "the dashboard was behind the latest data when this plan was made. Suggest assignments again.");
+    const rose = state.inputs.waterSurfaceElevation - plan.water;
+    if (Math.abs(rose) > WATER_TOLERANCE_M) {
+      return refuse(
+        "rejected_stale",
+        `the river level changed (${rose > 0 ? "up" : "down"} ${Math.abs(rose).toFixed(2)} m since the plan was made), so its routes are out of date. Suggest assignments again.`,
+      );
     }
-    if (state.fingerprint !== plan.fingerprint || state.flood !== plan.flood) {
-      const what = changesBetween(plan.inputs, state.inputs, state.names);
-      if (state.flood !== plan.flood) what.push("a caller's water report changed the simulated flood");
-      return refuse("rejected_stale", `things changed since the plan was made (${what.slice(0, 4).join("; ") || "planning inputs"}). Suggest assignments again.`);
+
+    // Each selected proposal must have been planned from what is in the database now.
+    const outdated = selected.filter(({ incidentId, teamId }) => {
+      const reviewed = proposedPair(plan, incidentId, teamId);
+      return reviewed?.basis !== undefined && reviewed.basis !== pairBasis(state.inputs, incidentId, teamId);
+    });
+    if (outdated.length) {
+      const scope = { incidents: new Set<string>(outdated.map((s) => s.incidentId)), teams: new Set<string>(outdated.map((s) => s.teamId)) };
+      const what = changesBetween(plan.inputs, state.inputs, state.names, scope);
+      if (!what.length) {
+        return refuse("rejected_stale", "the dashboard was behind the latest data when this plan was made. Suggest assignments again.");
+      }
+      return refuse("rejected_stale", `things changed since the plan was made (${what.slice(0, 4).join("; ")}). Suggest assignments again.`);
     }
 
     // Same inputs as when planned: still check every pair against the database itself.
@@ -170,7 +198,7 @@ export const approvePlan = mutation({
       else {
         const routeProblem = checkRouteEvidence(team, incident, evidence);
         if (routeProblem) fail(routeProblem);
-        else if (!reviewed.evidence) fail("no reviewed route was recorded for it; suggest assignments again");
+        else if (!reviewed.evidence || reviewed.basis === undefined) fail("no reviewed route was recorded for it; suggest assignments again");
         else if (Math.round(evidence.realSeconds) !== Math.round(reviewed.seconds)) {
           fail("route time differs from the proposal that was reviewed; suggest assignments again");
         } else if (fingerprintOf(reviewed.evidence) !== fingerprintOf(evidence)) {

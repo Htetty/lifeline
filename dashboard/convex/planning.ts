@@ -129,6 +129,33 @@ export function planningFingerprint(inputs: PlanningInputs): string {
   );
 }
 
+// ---- Per-assignment binding ------------------------------------------------------------
+//
+// During a busy exercise something changes every second (new calls, teams arriving, the river
+// rising), so a plan bound to all of it could never be approved. Each proposal is instead
+// bound to what it depends on directly: its incident, the reports linked to it, and its team.
+// The river may move by up to WATER_TOLERANCE_M before the plan's routes count as out of date.
+
+/** How far the river may move after a plan is made before its routes are out of date. */
+export const WATER_TOLERANCE_M = 0.3;
+
+const byId = <T extends { id: string }>(x: T, y: T) => (x.id < y.id ? -1 : 1);
+
+/** Only the given incidents (with the reports linked to them) and teams. */
+export function scopeInputs(inputs: PlanningInputs, incidentIds: Set<string>, teamIds: Set<string>): PlanningInputs {
+  return {
+    ...inputs,
+    incidents: inputs.incidents.filter((i) => incidentIds.has(i.id) || (i.linkedTo != null && incidentIds.has(i.linkedTo))).sort(byId),
+    teams: inputs.teams.filter((t) => teamIds.has(t.id)).sort(byId),
+  };
+}
+
+/** Fingerprint of what one proposal depends on: its incident, the reports linked to it, and its team. */
+export function pairBasis(inputs: PlanningInputs, incidentId: string, teamId: string): string {
+  const { incidents, teams } = scopeInputs(inputs, new Set([incidentId]), new Set([teamId]));
+  return fingerprintOf({ incidents, team: teams[0] ?? null });
+}
+
 /** Where a caller's water report sits: it shapes the simulated flood whatever the incident's status. */
 interface WaterObservationInput {
   id: string;
@@ -276,9 +303,19 @@ const TEAM_FIELDS: [keyof TeamInput, string][] = [
   ["moving", "travel"],
 ];
 
-/** Human-readable differences between two snapshots, for refusing a stale approval. */
-export function changesBetween(before: string, after: PlanningInputs, names: Map<string, string>): string[] {
-  const old = JSON.parse(before) as PlanningInputs;
+/**
+ * Human-readable differences between two snapshots, for refusing a stale approval. With a
+ * scope, only those incidents and teams are compared, and the river level is left out.
+ */
+export function changesBetween(
+  before: string,
+  current: PlanningInputs,
+  names: Map<string, string>,
+  scope?: { incidents: Set<string>; teams: Set<string> },
+): string[] {
+  const parsed = JSON.parse(before) as PlanningInputs;
+  const old = scope ? { ...scopeInputs(parsed, scope.incidents, scope.teams), waterSurfaceElevation: 0, waterObservedAt: null } : parsed;
+  const after = scope ? { ...scopeInputs(current, scope.incidents, scope.teams), waterSurfaceElevation: 0, waterObservedAt: null } : current;
   const out = new Set<string>();
   if (old.waterSurfaceElevation !== after.waterSurfaceElevation || (old.waterObservedAt ?? null) !== (after.waterObservedAt ?? null)) {
     out.add("the river level changed");

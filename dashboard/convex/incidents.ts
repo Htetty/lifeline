@@ -1,4 +1,4 @@
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
@@ -178,48 +178,60 @@ export const setStatus = mutation({
     if (!TRANSITIONS[incident.status].includes(status)) {
       throw new ConvexError(`Can't change from "${STATUS_LABEL[incident.status]}" to "${STATUS_LABEL[status]}"`);
     }
-
-    const team = incident.assignedTeamId ? await ctx.db.get(incident.assignedTeamId) : null;
-    const unassigning = status === "awaiting_assignment";
-    // Leaving dispatch (unassigned or resolved) frees the team.
-    if (team && (unassigning || status === "resolved") && team.currentAssignment === incident._id) {
-      await stopTrip(ctx, team);
-      await ctx.db.patch(team._id, { available: true, currentAssignment: null, updatedAt: Date.now() });
-    }
-    await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status }, true);
-    // After the status is saved, so the trip sees the incident as en route.
-    if (team && status === "en_route") {
-      if (plan) await beginTrip(ctx, team._id, incident._id, { ...plan, route: "planned" });
-      else await ctx.scheduler.runAfter(0, internal.trips.planTrip, { teamId: team._id, incidentId: incident._id });
-    }
-
-    await logActivity(
-      ctx,
-      unassigning && team
-        ? `${team.name} unassigned from ${incident.reportedAddress}; awaiting a team.`
-        : `${incident.reportedAddress}: ${STATUS_LABEL[status]}.`,
-      incident._id,
-    );
-    const teamName = team?.name ?? null;
-    if (unassigning) await queueCallerUpdate(ctx, incident, "assignment_changed", { teamName });
-    if (status === "en_route") await queueCallerUpdate(ctx, incident, "team_en_route", { teamName });
-    if (status === "resolved") await queueCallerUpdate(ctx, incident, "rescue_resolved", { teamName });
-    const update = unassigning
-      ? "assignment_changed"
-      : status === "en_route"
-        ? "team_en_route"
-        : status === "resolved"
-          ? "rescue_resolved"
-          : null;
-    await syncLinked(
-      ctx,
-      incident,
-      { status, assignedTeamId: unassigning ? null : incident.assignedTeamId },
-      update,
-      teamName,
-    );
+    await applyStatus(ctx, incident, status, plan);
   },
 });
+
+/**
+ * Saves an allowed status change (checked by the caller) with everything that goes with it:
+ * freeing or sending the team, the activity log, caller updates and linked reports.
+ */
+export async function applyStatus(
+  ctx: MutationCtx,
+  incident: Doc<"incidents">,
+  status: Doc<"incidents">["status"],
+  plan?: Infer<typeof routePlan>,
+) {
+  const team = incident.assignedTeamId ? await ctx.db.get(incident.assignedTeamId) : null;
+  const unassigning = status === "awaiting_assignment";
+  // Leaving dispatch (unassigned or resolved) frees the team.
+  if (team && (unassigning || status === "resolved") && team.currentAssignment === incident._id) {
+    await stopTrip(ctx, team);
+    await ctx.db.patch(team._id, { available: true, currentAssignment: null, updatedAt: Date.now() });
+  }
+  await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status }, true);
+  // After the status is saved, so the trip sees the incident as en route.
+  if (team && status === "en_route") {
+    if (plan) await beginTrip(ctx, team._id, incident._id, { ...plan, route: "planned" });
+    else await ctx.scheduler.runAfter(0, internal.trips.planTrip, { teamId: team._id, incidentId: incident._id });
+  }
+
+  await logActivity(
+    ctx,
+    unassigning && team
+      ? `${team.name} unassigned from ${incident.reportedAddress}; awaiting a team.`
+      : `${incident.reportedAddress}: ${STATUS_LABEL[status]}.`,
+    incident._id,
+  );
+  const teamName = team?.name ?? null;
+  if (unassigning) await queueCallerUpdate(ctx, incident, "assignment_changed", { teamName });
+  if (status === "en_route") await queueCallerUpdate(ctx, incident, "team_en_route", { teamName });
+  if (status === "resolved") await queueCallerUpdate(ctx, incident, "rescue_resolved", { teamName });
+  const update = unassigning
+    ? "assignment_changed"
+    : status === "en_route"
+      ? "team_en_route"
+      : status === "resolved"
+        ? "rescue_resolved"
+        : null;
+  await syncLinked(
+    ctx,
+    incident,
+    { status, assignedTeamId: unassigning ? null : incident.assignedTeamId },
+    update,
+    teamName,
+  );
+}
 
 /**
  * Link reports about the same people to a main incident (e.g. ten witnesses calling about one

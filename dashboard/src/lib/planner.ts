@@ -4,6 +4,7 @@ import {
   incidentInput,
   planningFingerprint,
   teamInput,
+  type PlanningInputs,
   type RouteEvidence,
 } from "../../convex/planning";
 import type { Priority } from "./priority";
@@ -30,11 +31,15 @@ import type { ExerciseState, Incident, PriorityTier, RescueTeam } from "./types"
 // Covering more incidents of a tier always beats saving travel time, which is what keeps
 // a scarce team (say the only boat) for the incident nobody else can reach.
 //
-// Exact and bounded: dynamic programming over subsets of teams, O(incidents × 2^teams ×
-// teams). Limits below; a bigger queue is refused rather than planned approximately.
+// Exact: dynamic programming over subsets of teams. Only each incident's n fastest teams are
+// considered (n = incidents waiting), which can't change the best plan: at most n − 1 of them
+// are taken by other incidents, so swapping to a free one never covers less or travels more.
+// When even that leaves too many subsets (many incidents and many free teams at once), the
+// plan falls back to fastest-team-first in queue order, and says so.
 
-export const MAX_PLAN_TEAMS = 12;
 export const MAX_PLAN_INCIDENTS = 40;
+/** Most team subsets the exact search will hold at once. */
+export const MAX_PLAN_STATES = 50_000;
 
 export type RouteResult = RoutePlan | NoRoute | null;
 
@@ -156,11 +161,11 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
   if (!candidates.length) {
     return { ...base, status: "nothing_waiting", message: "No confirmed incident is waiting for a team.", unassigned: notConfirmed };
   }
-  if (free.length > MAX_PLAN_TEAMS || candidates.length > MAX_PLAN_INCIDENTS) {
+  if (candidates.length > MAX_PLAN_INCIDENTS) {
     return {
       ...base,
       status: "too_large",
-      message: `The planner handles up to ${MAX_PLAN_TEAMS} free teams and ${MAX_PLAN_INCIDENTS} waiting incidents; assign manually.`,
+      message: `The planner handles up to ${MAX_PLAN_INCIDENTS} waiting incidents; assign manually.`,
       unassigned: notConfirmed,
     };
   }
@@ -184,9 +189,26 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
     };
   }
 
+  // Each incident's n fastest eligible teams (see the note at the top), as bits of a subset.
+  const T = free.length;
+  const shortlist = candidates.map((_, k) =>
+    free
+      .map((_, j) => j)
+      .filter((j) => eligible(k, j))
+      .sort((a, b) => secs(k, a) - secs(k, b) || a - b)
+      .slice(0, candidates.length),
+  );
+  const used = [...new Set(shortlist.flat())].sort((a, b) => a - b);
+  const bit = new Map(used.map((j, b) => [j, b]));
+  let subsets = 0;
+  for (let i = 0, c = 1; i <= Math.min(candidates.length, used.length); i++) {
+    subsets += c;
+    c = (c * (used.length - i)) / (i + 1);
+  }
+  const exact = used.length <= 30 && subsets <= MAX_PLAN_STATES;
+
   // Exact DP over which teams are used. `forced` pins one incident to one team, to see
   // what the best plan would be if that choice were made (used to explain the plan).
-  const T = free.length;
   const solve = (forced?: { k: number; j: number }) => {
     let layer = new Map<number, { score: Score; pick: number[] }>([[0, { score: [0, 0, 0, 0, 0, 0], pick: [] }]]);
     candidates.forEach((incident, k) => {
@@ -196,14 +218,16 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
         if (!cur || better(score, pick, cur.score, cur.pick)) next.set(mask, { score, pick });
       };
       const tier = TIER_RANK[tierOf(incident)];
+      const options = forced?.k === k ? [forced.j].filter((j) => eligible(k, j)) : shortlist[k];
       for (const [mask, s] of layer) {
         if (forced?.k !== k) offer(mask, s.score, [...s.pick, -1]);
-        for (let j = 0; j < T; j++) {
-          if (mask & (1 << j) || !eligible(k, j) || (forced?.k === k && forced.j !== j)) continue;
+        for (const j of options) {
+          const b = 1 << (bit.get(j) ?? 31);
+          if (!bit.has(j) || mask & b) continue;
           const score = [...s.score];
           score[tier] += 1;
           score[3 + tier] -= secs(k, j);
-          offer(mask | (1 << j), score, [...s.pick, j]);
+          offer(mask | b, score, [...s.pick, j]);
         }
       }
       layer = next;
@@ -212,7 +236,22 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
     for (const s of layer.values()) if (!best || better(s.score, s.pick, best.score, best.pick)) best = s;
     return best;
   };
-  const best = solve()!;
+  /** Too many subsets: each incident in queue order (most urgent first) takes its fastest free team. */
+  const quick = () => {
+    const taken = new Set<number>();
+    const score: Score = [0, 0, 0, 0, 0, 0];
+    const pick = candidates.map((incident, k) => {
+      const j = shortlist[k].find((x) => !taken.has(x)) ?? -1;
+      if (j >= 0) {
+        taken.add(j);
+        score[TIER_RANK[tierOf(incident)]] += 1;
+        score[3 + TIER_RANK[tierOf(incident)]] -= secs(k, j);
+      }
+      return j;
+    });
+    return { score, pick };
+  };
+  const best = exact ? solve()! : quick();
   const pick = best.pick;
   /** Team index → the candidate it is proposed for. */
   const servedBy = new Map<number, number>();
@@ -245,6 +284,7 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
       faster.seconds! < seconds
         ? `${faster.team.name} would be faster (${duration(faster.seconds!)} vs ${duration(seconds)})`
         : `${faster.team.name} is just as fast (${duration(seconds)})`;
+    if (!exact) return `${lead}, but it is proposed for a more urgent or earlier incident.`;
     const alt = solve({ k, j: free.indexOf(faster.team) });
     if (!alt) return `${lead}, but no complete plan can send it here.`;
     for (let t = 0; t < 3; t++) {
@@ -299,7 +339,7 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
 
   return {
     status: "ok",
-    message: null,
+    message: exact ? null : `${candidates.length} incidents and ${T} free teams: too many to compare every plan, so each incident takes the fastest team still free, most urgent first.`,
     proposals,
     unassigned: [...unassigned, ...notConfirmed],
     totalSeconds: proposals.reduce((n, p) => n + p.seconds, 0),
@@ -309,15 +349,20 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
 
 /** The same fingerprint the server computes, from what the dashboard sees. */
 export function stateFingerprint(state: ExerciseState): string {
+  return planningFingerprint(stateInputs(state));
+}
+
+/** The planning inputs the server computes, from what the dashboard sees. */
+export function stateInputs(state: ExerciseState): PlanningInputs {
   // Dashboard ids are plain strings; the fingerprint only reads them as text.
   type In = Parameters<typeof incidentInput>[0];
   type TIn = Parameters<typeof teamInput>[0];
-  return planningFingerprint({
+  return {
     waterSurfaceElevation: state.waterSurfaceElevation,
     waterObservedAt: state.waterObservedAt,
     incidents: state.incidents.map((i) => incidentInput(i as unknown as In)),
     teams: state.teams.map((t) => teamInput(t as unknown as TIn)),
-  });
+  };
 }
 
 /** The server's floodFingerprint, from what the dashboard sees (resolved reports included). */

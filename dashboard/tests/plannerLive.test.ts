@@ -2,7 +2,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { describe, expect, test } from "vitest";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import { floodFingerprint, incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../convex/planning";
+import { floodFingerprint, incidentInput, planningFingerprint, teamInput, type RouteEvidence, pairBasis } from "../convex/planning";
 import { moverFor, PROFILES } from "../convex/vehicles";
 
 // Real concurrent approvals against a disposable local Convex (true transaction conflicts,
@@ -53,9 +53,17 @@ describe.skipIf(!local)("approvals on a real local Convex", () => {
     const plan = async (incidentId: Id<"incidents">) => {
       const planId = `live-${tag}-${incidentId}`;
       const route = evidence(team, s.incidents.find((i) => i._id === incidentId)!);
+      const seen = {
+        waterSurfaceElevation: s.exercise.waterSurfaceElevation, waterObservedAt: s.exercise.waterObservedAt ?? null,
+        incidents: s.incidents.map(incidentInput), teams: s.teams.map(teamInput),
+      };
       await client.mutation(api.planner.recordProposal, {
         dispatcherToken, planId, fingerprint: fp, floodFingerprint: floodFingerprint(s.incidents.map((i) => ({ ...i, id: i._id }))),
-        proposals: [{ incidentId, teamId: team._id, tier: "high", seconds: Math.round(route.realSeconds), reason: "race", evidence: route }],
+        water: seen.waterSurfaceElevation,
+        proposals: [{
+          incidentId, teamId: team._id, tier: "high", seconds: Math.round(route.realSeconds), reason: "race", evidence: route,
+          basis: pairBasis(seen, incidentId, team._id),
+        }],
         unassigned: [],
       });
       return { planId, selected: [{ incidentId, teamId: team._id, evidence: route }] };

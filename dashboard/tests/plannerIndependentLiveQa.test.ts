@@ -5,7 +5,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { describe, expect, test } from "vitest";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import { floodFingerprint, incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../convex/planning";
+import { floodFingerprint, incidentInput, planningFingerprint, teamInput, type RouteEvidence, pairBasis, type PlanningInputs } from "../convex/planning";
 import { moverFor, PROFILES } from "../convex/vehicles";
 import { MIN_TRIP_MS, TRIP_SPEEDUP } from "../convex/tripMath";
 import { computeFlood, type FloodGrid } from "../src/lib/flood";
@@ -22,11 +22,12 @@ let serial = 0;
 describe.skipIf(!enabled)("Independent planner QA: real disposable local Convex", () => {
   const client = () => new ConvexHttpClient(url!);
   const state = async () => (await client().query(api.exercise.get, { dispatcherToken }))!;
-  const fp = async () => {
+  const inputs = async (): Promise<PlanningInputs> => {
     const s = await state();
-    return planningFingerprint({ waterSurfaceElevation: s.exercise.waterSurfaceElevation, waterObservedAt: s.exercise.waterObservedAt ?? null,
-      incidents: s.incidents.map(incidentInput), teams: s.teams.map(teamInput) });
+    return { waterSurfaceElevation: s.exercise.waterSurfaceElevation, waterObservedAt: s.exercise.waterObservedAt ?? null,
+      incidents: s.incidents.map(incidentInput), teams: s.teams.map(teamInput) };
   };
+  const fp = async () => planningFingerprint(await inputs());
   // Recorded proposals now require the reviewed route and the client's flood fingerprint.
   const flood = async () => floodFingerprint((await state()).incidents.map((i) => ({ ...i, id: i._id })));
   async function report(callId: string, peopleCount: number, water = false) {
@@ -47,8 +48,11 @@ describe.skipIf(!enabled)("Independent planner QA: real disposable local Convex"
     const evidence: RouteEvidence = suppliedEvidence ?? { mover, realSeconds: 600, start: [team.longitude, team.latitude], end: [-117.168, 32.762], points: mover === "air" ? 2 : 6,
       modes: [mover === "air" ? "air" : "road"], maxDepth: 0.1, limit: mover === "air" ? null : PROFILES[mover].limit };
     const planId = `${tag}-plan-${++serial}`;
+    const seen = await inputs();
     await client().mutation(api.planner.recordProposal, { dispatcherToken, planId, fingerprint: await fp(), floodFingerprint: await flood(),
-      proposals: [{ incidentId, teamId: team._id, tier: "high", seconds: evidence.realSeconds, reason: "Simulated QA", evidence: { ...evidence } }], unassigned: [] });
+      water: seen.waterSurfaceElevation,
+      proposals: [{ incidentId, teamId: team._id, tier: "high", seconds: evidence.realSeconds, reason: "Simulated QA", evidence: { ...evidence },
+        basis: pairBasis(seen, incidentId, team._id) }], unassigned: [] });
     return { dispatcherToken, planId, approvalId: `${tag}-approval-${++serial}`, selected: [{ incidentId, teamId: team._id, evidence }] };
   }
   async function finish(...ids: Id<"incidents">[]) {
@@ -65,8 +69,11 @@ describe.skipIf(!enabled)("Independent planner QA: real disposable local Convex"
       const pb = await propose(b.incidentId, truck);
       const planId = `${tag}-batch-${++serial}`;
       const selected = [...pa.selected, ...pb.selected];
+      const seen = await inputs();
       await client().mutation(api.planner.recordProposal, { dispatcherToken, planId, fingerprint: await fp(), floodFingerprint: await flood(),
-        proposals: selected.map(({ incidentId, teamId, evidence }) => ({ incidentId, teamId, tier: "high" as const, seconds: evidence.realSeconds, reason: "Simulated batch QA", evidence: { ...evidence } })), unassigned: [] });
+        water: seen.waterSurfaceElevation,
+        proposals: selected.map(({ incidentId, teamId, evidence }) => ({ incidentId, teamId, tier: "high" as const, seconds: evidence.realSeconds,
+          reason: "Simulated batch QA", evidence: { ...evidence }, basis: pairBasis(seen, incidentId, teamId) })), unassigned: [] });
       const assignments = (s: Awaited<ReturnType<typeof state>>) => ({
         incidents: s.incidents.map((i) => [i._id, i.status, i.assignedTeamId]),
         teams: s.teams.map((t) => [t._id, t.available, t.currentAssignment, t.trip]),

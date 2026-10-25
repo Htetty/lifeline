@@ -2,7 +2,15 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import { floodFingerprint, incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../convex/planning";
+import {
+  floodFingerprint,
+  incidentInput,
+  pairBasis,
+  planningFingerprint,
+  teamInput,
+  type PlanningInputs,
+  type RouteEvidence,
+} from "../convex/planning";
 import schema from "../convex/schema";
 import { moverFor, PROFILES } from "../convex/vehicles";
 
@@ -44,16 +52,19 @@ async function callIncident(t: T, callId: string, address: string, extra: Record
   return id;
 }
 
-async function fingerprint(t: T) {
+async function inputs(t: T): Promise<PlanningInputs> {
   return await t.run(async (ctx) => {
     const ex = (await ctx.db.query("exercises").first())!;
-    return planningFingerprint({
+    return {
       waterSurfaceElevation: ex.waterSurfaceElevation,
       waterObservedAt: ex.waterObservedAt ?? null,
       incidents: (await ctx.db.query("incidents").collect()).map(incidentInput),
       teams: (await ctx.db.query("teams").collect()).map(teamInput),
-    });
+    };
   });
+}
+async function fingerprint(t: T) {
+  return planningFingerprint(await inputs(t));
 }
 
 /** A copy of `o` without the field `k`. */
@@ -81,17 +92,19 @@ function evidence(team: Doc<"teams">, incident: Doc<"incidents">): RouteEvidence
   };
 }
 
-/** Record a plan for these pairs from the current state, as the dashboard does. */
-async function propose(t: T, pairs: [Id<"incidents">, Id<"teams">][], fp?: string) {
+/** Record a plan for these pairs from the current state, as the dashboard does. `basis` overrides what the dashboard saw. */
+async function propose(t: T, pairs: [Id<"incidents">, Id<"teams">][], basis?: string) {
   const planId = `plan-${++planCounter}`;
   // The dashboard records the routes it shows, and keeps them for approval.
   const planned = await t.run(async (ctx) =>
     Promise.all(pairs.map(async ([incidentId, teamId]) => evidence((await ctx.db.get(teamId))!, (await ctx.db.get(incidentId))!))),
   );
+  const seen = await inputs(t);
   const matched = await t.mutation(api.planner.recordProposal, {
-    dispatcherToken, planId, fingerprint: fp ?? (await fingerprint(t)), floodFingerprint: await flood(t),
+    dispatcherToken, planId, fingerprint: await fingerprint(t), floodFingerprint: await flood(t), water: seen.waterSurfaceElevation,
     proposals: pairs.map(([incidentId, teamId], k) => ({
       incidentId, teamId, tier: "critical" as const, seconds: Math.round(planned[k].realSeconds), reason: "test", evidence: planned[k],
+      basis: basis ?? pairBasis(seen, incidentId, teamId),
     })),
     unassigned: [],
   });
@@ -226,9 +239,6 @@ describe("stale plans are refused, with what changed", () => {
         withdrawn: [{ fact: "risk_factor", name: "serious_injury", evidence: "nobody is hurt" }],
       });
     }, /reported risks changed/],
-    ["a new incident started waiting", async (t) => {
-      await mapIncident(t, "5 New Rd");
-    }, /incident "5 New Rd" is new/],
     ["the caller corrected the number of people", async (t) => {
       await t.mutation(api.calls.upsertFromCall, {
         secret, callId: "call-a", source: "live_demo", reportedAddress: "1 Fictional Way", peopleCount: 7,
@@ -242,15 +252,10 @@ describe("stale plans are refused, with what changed", () => {
         withdrawn: [{ fact: "people_count", name: null, evidence: "I don't know how many" }],
       });
     }, /"1 Fictional Way": number of people changed/],
-    ["a resolved caller's water report changed the flood", async (t) => {
-      const r = await callIncident(t, "call-r", "3 Resolved Way");
-      await t.mutation(api.incidents.setStatus, { dispatcherToken, incidentId: r, status: "resolved" });
-      await t.mutation(api.calls.upsertFromCall, {
-        secret, callId: "call-r", source: "live_demo", reportedAddress: "3 Resolved Way", peopleCount: 3,
-        reportedPosition: "second floor", hazards: [], summary: "water", transcript: "Caller: water is at my chest",
-        waterReport: { level: "chest", floor: 0, evidence: "water is at my chest", measuredMeters: null },
-      });
-    }, /water report changed the simulated flood/],
+    ["a report was linked to the proposed incident", async (t) => {
+      const other = await mapIncident(t, "1b Fictional Way", 32.7, -117.1);
+      await t.mutation(api.incidents.linkReports, { dispatcherToken, mainId: (await t.run((ctx) => ctx.db.query("incidents").first()))!._id, reportIds: [other] });
+    }, /"1b Fictional Way"/],
   ];
   for (const [what, change, reason] of cases) {
     test(`${what}`, async () => {
@@ -270,45 +275,70 @@ describe("stale plans are refused, with what changed", () => {
     });
   }
 
-  test("a resolved report is set up before the plan: only its later water change stales it", async () => {
-    // Guards the case above: resolving an incident before planning is not itself a change.
-    const { t, boat } = await setup();
-    const a = await callIncident(t, "call-a", "1 Fictional Way");
-    const r = await callIncident(t, "call-r", "3 Resolved Way", {
-      waterReport: { level: "knee", floor: 0, evidence: "knee deep", measuredMeters: null },
+  // In a busy exercise something changes every second; only what a proposal depends on stales it.
+  const elsewhere: [string, (t: T, ids: { truck: Doc<"teams"> }) => Promise<void>][] = [
+    ["a new incident started waiting", async (t) => {
+      await mapIncident(t, "5 New Rd", 32.758, -117.16);
+    }],
+    ["another team was assigned", async (t, { truck }) => {
+      const other = await mapIncident(t, "9 Elsewhere Rd", 32.758, -117.16);
+      await t.mutation(api.incidents.assignTeam, { dispatcherToken, incidentId: other, teamId: truck._id });
+    }],
+    ["a resolved caller's water report changed the flood", async (t) => {
+      const r = await callIncident(t, "call-r", "3 Resolved Way");
+      await t.mutation(api.incidents.setStatus, { dispatcherToken, incidentId: r, status: "resolved" });
+      await t.mutation(api.calls.upsertFromCall, {
+        secret, callId: "call-r", source: "live_demo", reportedAddress: "3 Resolved Way", peopleCount: 3,
+        reportedPosition: "second floor", hazards: [], summary: "water", transcript: "Caller: water is at my chest",
+        waterReport: { level: "chest", floor: 0, evidence: "water is at my chest", measuredMeters: null },
+      });
+    }],
+    ["the river rose a little", async (t) => {
+      const ex = (await t.run((ctx) => ctx.db.query("exercises").first()))!;
+      await t.mutation(api.exercise.setWaterLevel, { dispatcherToken, meters: ex.waterSurfaceElevation + 0.2, observedAt: null });
+    }],
+  ];
+  for (const [what, change] of elsewhere) {
+    test(`not stale when ${what}`, async () => {
+      const { t, boat, truck } = await setup();
+      const a = await callIncident(t, "call-a", "1 Fictional Way");
+      const plan = await propose(t, [[a, boat._id]]);
+      await change(t, { truck });
+      expect(await approve(t, plan)).toMatchObject({ ok: true, assigned: 1 });
     });
-    await t.mutation(api.incidents.setStatus, { dispatcherToken, incidentId: r, status: "resolved" });
-    expect(await approve(t, await propose(t, [[a, boat._id]]))).toMatchObject({ ok: true });
-  });
+  }
 
-  test("a dashboard whose caller water reports differ from the server's is told it's behind", async () => {
+  test("a dashboard that saw a proposed incident differently is told it's behind", async () => {
     const { t, boat } = await setup();
     const a = await mapIncident(t, "1 Fictional Way");
-    const planId = `plan-${++planCounter}`;
-    const route = evidence(boat, (await t.run((ctx) => ctx.db.get(a)))!);
-    const r = await t.mutation(api.planner.recordProposal, {
-      dispatcherToken, planId, fingerprint: await fingerprint(t), floodFingerprint: "0000000000000000",
-      proposals: [{ incidentId: a, teamId: boat._id, tier: "high", seconds: Math.round(route.realSeconds), reason: "test", evidence: route }],
-      unassigned: [],
-    });
-    expect(r).toEqual({ matched: false });
-    // The client's token is what's stored, not the server's current one.
-    expect((await t.run((ctx) => ctx.db.query("assignmentPlans").first()))!.flood).toBe("0000000000000000");
+    const plan = await propose(t, [[a, boat._id]], "0000000000000000");
+    expect(plan.matched).toEqual({ matched: false });
+    const r = await approve(t, plan);
+    expect(r).toMatchObject({ ok: false, outcome: "rejected_stale", reason: expect.stringMatching(/dashboard was behind/) });
   });
 
   test("a new proposal must carry its reviewed routes and the client's flood fingerprint", async () => {
     const { t, boat } = await setup();
     const a = await mapIncident(t, "1 Fictional Way");
     const route = evidence(boat, (await t.run((ctx) => ctx.db.get(a)))!);
+    const seen = await inputs(t);
     const complete = {
       dispatcherToken, planId: `plan-${++planCounter}`, fingerprint: await fingerprint(t), floodFingerprint: await flood(t),
-      proposals: [{ incidentId: a, teamId: boat._id, tier: "high" as const, seconds: Math.round(route.realSeconds), reason: "test", evidence: route }],
+      water: seen.waterSurfaceElevation,
+      proposals: [{
+        incidentId: a, teamId: boat._id, tier: "high" as const, seconds: Math.round(route.realSeconds), reason: "test", evidence: route,
+        basis: pairBasis(seen, a, boat._id),
+      }],
       unassigned: [],
     };
     const noFlood = without(complete, "floodFingerprint");
+    const noWater = without(complete, "water");
     const noEvidence = { ...complete, proposals: complete.proposals.map((p) => without(p, "evidence")) };
+    const noBasis = { ...complete, proposals: complete.proposals.map((p) => without(p, "basis")) };
     await expect(t.mutation(api.planner.recordProposal, noFlood as never)).rejects.toThrow(/floodFingerprint/);
+    await expect(t.mutation(api.planner.recordProposal, noWater as never)).rejects.toThrow(/water/);
     await expect(t.mutation(api.planner.recordProposal, noEvidence as never)).rejects.toThrow(/evidence/);
+    await expect(t.mutation(api.planner.recordProposal, noBasis as never)).rejects.toThrow(/basis/);
     expect(await t.run((ctx) => ctx.db.query("assignmentPlans").collect())).toEqual([]);
     expect(await t.mutation(api.planner.recordProposal, complete)).toEqual({ matched: true });
   });
@@ -334,14 +364,6 @@ describe("stale plans are refused, with what changed", () => {
       expect(await snapshot(t)).toEqual(before);
     });
   }
-
-  test("a plan made from out-of-date dashboard data can't be approved", async () => {
-    const { t, boat } = await setup();
-    const a = await mapIncident(t, "1 Fictional Way");
-    const plan = await propose(t, [[a, boat._id]], "0000000000000000");
-    expect(plan.matched).toEqual({ matched: false });
-    expect(await approve(t, plan)).toMatchObject({ ok: false, outcome: "rejected_stale" });
-  });
 
   test("two approvals racing for the same team: one wins, the other is refused as stale", async () => {
     const { t, boat } = await setup();

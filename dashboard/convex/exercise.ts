@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { clearExercise, getExercise, logActivity, requireDispatcher, seedExercise } from "./lib";
+import { clearExercise, getExercise, logActivity, requireDispatcher, seedExercise, setWater } from "./lib";
 import { EXERCISE_ID } from "./seedData";
 
 /** Everything the dashboard renders, in one reactive query. Null until seeded. */
@@ -58,11 +58,7 @@ export const setWaterLevel = mutation({
   },
   handler: async (ctx, { dispatcherToken, meters, observedAt = null }) => {
     requireDispatcher(dispatcherToken);
-    const exercise = await getExercise(ctx);
-    if (!exercise) return;
-    const clamped = Math.min(40, Math.max(0, Math.round(meters * 100) / 100));
-    if (clamped === exercise.waterSurfaceElevation && observedAt === (exercise.waterObservedAt ?? null)) return;
-    await ctx.db.patch(exercise._id, { waterSurfaceElevation: clamped, waterObservedAt: observedAt });
+    await setWater(ctx, meters, observedAt);
   },
 });
 

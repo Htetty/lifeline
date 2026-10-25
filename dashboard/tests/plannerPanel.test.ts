@@ -20,7 +20,7 @@ const hooks = vi.hoisted(() => {
   };
 });
 // Effects (the panel suggesting on open) don't run here; tests press "Suggest assignments" themselves.
-vi.mock("react", () => ({ useEffect: () => {}, useMemo: hooks.useMemo, useState: hooks.useState }));
+vi.mock("react", () => ({ useEffect: () => {}, useMemo: hooks.useMemo, useRef: (current: unknown) => ({ current }), useState: hooks.useState }));
 const store = vi.hoisted(() => ({
   recordProposal: vi.fn(),
   approvePlan: vi.fn(),
@@ -126,19 +126,22 @@ test("a pending location edit, or a change in the local route model, blocks appr
   expect(f.button("Approve 2 selected").props.disabled).toBe(true);
 });
 
-test("a caller's water report on a resolved incident stales the plan on screen", async () => {
+test("only a change to a proposed incident or team, or a big river move, stales the plan on screen", async () => {
   const f = fixture();
   f.button("Suggest assignments").props.onClick!();
   await f.flush();
-  const resolved = { ...incident("r", 3), status: "resolved" as const };
-  f.props.state = { ...f.props.state, incidents: [...f.props.state.incidents, resolved] };
-  // Adding a resolved report alone changes nothing the plan uses.
+  // Changes elsewhere (a new report, the river moving a little) don't block approval.
+  const other = { ...incident("r", 3), status: "resolved" as const, waterReport: { level: "chest", floor: 0, evidence: "chest deep", measuredMeters: null } };
+  f.props.state = { ...f.props.state, waterSurfaceElevation: 9.2, incidents: [...f.props.state.incidents, other] } as ExerciseState;
   expect(f.button("Approve 2 selected").props.disabled).toBe(false);
-  f.props.state = {
-    ...f.props.state,
-    incidents: [...f.props.state.incidents.slice(0, 2), { ...resolved, waterReport: { level: "chest", floor: 0, evidence: "chest deep", measuredMeters: null } }],
-  } as ExerciseState;
+  // Unchecking the changed incident's proposal lets the rest be approved.
+  const [a, b] = f.props.state.incidents;
+  f.props.state = { ...f.props.state, incidents: [{ ...a, peopleCount: 5 }, b, other] } as ExerciseState;
   expect(f.button("Approve 2 selected").props.disabled).toBe(true);
+  f.checkbox(0).props.onChange!();
+  expect(f.button("Approve 1 selected").props.disabled).toBe(false);
+  f.props.state = { ...f.props.state, waterSurfaceElevation: 9.5 } as ExerciseState;
+  expect(f.button("Approve 1 selected").props.disabled).toBe(true);
 });
 
 test("a failed record for an earlier plan doesn't show on the current one", async () => {

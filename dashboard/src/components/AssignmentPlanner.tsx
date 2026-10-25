@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { fingerprintOf, pairBasis, WATER_TOLERANCE_M } from "../../convex/planning";
 import {
   planAssignments,
-  priorityFingerprint,
   stateFingerprint,
   stateFloodFingerprint,
+  stateInputs,
   type Plan,
   type Proposal,
   type RouteResult,
@@ -20,9 +21,13 @@ import type { ExerciseState, Incident, RescueTeam } from "@/lib/types";
 import { capitalize } from "@/lib/text";
 import { TierPill } from "./TierPill";
 
-// Review panel for assignment suggestions. The plan is frozen when computed; if anything it
-// depends on changes (server data, caller water reports, the computed priorities, the local
-// route model) or a local edit is pending, approval waits for a fresh suggestion.
+// Review panel for assignment suggestions. Each proposal is frozen when computed and bound to
+// what it depends on: its incident (and linked reports), its team, its priority and the river
+// level within WATER_TOLERANCE_M. While the panel is open it suggests again by itself (REFRESH_MS
+// after a proposal goes out of date, an incident starts waiting or a team frees up), keeping
+// the dispatcher's unchecked incidents unchecked.
+
+const REFRESH_MS = 2000;
 
 const OPTION_LABEL: Record<TeamOption["state"], string> = {
   proposed: "Proposed",
@@ -36,9 +41,12 @@ const OPTION_LABEL: Record<TeamOption["state"], string> = {
 interface Suggestion {
   plan: Plan;
   planId: string;
-  fingerprint: string;
-  flood: string;
-  priorities: string;
+  /** River level planned with. */
+  water: number;
+  /** pairBasis of each proposal, by incident id. */
+  basis: Map<string, string>;
+  /** The waiting incidents and free teams planned for. */
+  scope: string;
   routeContext: string;
   /** Whether the server's data matched the dashboard's when recorded; null while recording. */
   matched: boolean | null;
@@ -48,6 +56,15 @@ interface Suggestion {
 
 const newId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
 const minutes = (s: number) => `${Math.max(1, Math.round(s / 60))} min`;
+
+/** Which incidents are waiting for a team and which teams are free: a change may allow a better plan. */
+function scopeOf(state: ExerciseState) {
+  const waiting = state.incidents
+    .filter((i) => !i.linkedTo && i.status === "awaiting_assignment" && i.locationVerified && i.latitude != null)
+    .map((i) => i.id);
+  const free = state.teams.filter((t) => t.available && t.currentAssignment == null && !t.trip).map((t) => t.id);
+  return fingerprintOf([waiting.sort(), free.sort()]);
+}
 
 export function AssignmentPlanner({
   state,
@@ -64,7 +81,7 @@ export function AssignmentPlanner({
   state: ExerciseState;
   priorities: Map<string, Priority>;
   routeFor: (team: RescueTeam, incident: Incident) => RouteResult;
-  /** Identifies the local road and flood model routeFor uses; a change makes a plan stale. */
+  /** Identifies the local road and elevation data routeFor uses; a change makes a plan stale. */
   routeContext?: string;
   /** Why suggestions can't be made or approved right now (e.g. a local edit pending), or null. */
   notReady: string | null;
@@ -77,49 +94,62 @@ export function AssignmentPlanner({
 }) {
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** Incidents the dispatcher unchecked; they stay unchecked when the plan refreshes. */
+  const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
   const [approvalId, setApprovalId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
 
-  const current = useMemo(() => stateFingerprint(state), [state]);
+  const inputs = useMemo(() => stateInputs(state), [state]);
   const currentFlood = useMemo(() => stateFloodFingerprint(state), [state]);
-  const currentPriorities = useMemo(() => priorityFingerprint(priorities), [priorities]);
-  const stale =
-    suggestion != null &&
-    (suggestion.fingerprint !== current ||
-      suggestion.flood !== currentFlood ||
-      suggestion.priorities !== currentPriorities ||
-      suggestion.routeContext !== routeContext);
+  const currentScope = useMemo(() => scopeOf(state), [state]);
+  /** Incidents whose proposal no longer matches what it was planned from. */
+  const outdated = useMemo(() => {
+    const out = new Set<string>();
+    if (!suggestion) return out;
+    const all =
+      Math.abs(state.waterSurfaceElevation - suggestion.water) > WATER_TOLERANCE_M || suggestion.routeContext !== routeContext;
+    for (const p of suggestion.plan.proposals) {
+      if (
+        all ||
+        suggestion.basis.get(p.incident.id) !== pairBasis(inputs, p.incident.id, p.team.id) ||
+        priorities.get(p.incident.id)?.tier !== p.tier
+      ) {
+        out.add(p.incident.id);
+      }
+    }
+    return out;
+  }, [suggestion, inputs, priorities, routeContext, state.waterSurfaceElevation]);
   /** Applies an update only if this plan is still the one on screen. */
   const forPlan = (planId: string, update: (s: Suggestion) => Suggestion) =>
     setSuggestion((s) => (s?.planId === planId ? update(s) : s));
 
-  const suggest = (exclusions = excluded) => {
+  const suggest = (exclusions = excluded, { auto = false } = {}) => {
     const plan = planAssignments({ incidents: state.incidents, teams: state.teams, priorities, route: routeFor, excluded: exclusions });
     const next: Suggestion = {
       plan,
       planId: newId(),
-      fingerprint: current,
-      flood: currentFlood,
-      priorities: currentPriorities,
+      water: state.waterSurfaceElevation,
+      basis: new Map(plan.proposals.map((p) => [p.incident.id, pairBasis(inputs, p.incident.id, p.team.id)])),
+      scope: currentScope,
       routeContext,
       matched: null,
       recordError: null,
     };
     setSuggestion(next);
-    setSelected(new Set(plan.proposals.map((p) => p.incident.id)));
     setApprovalId(null);
     setRefusal(null);
-    onPreview(null);
+    if (!auto) onPreview(null);
     if (plan.status !== "ok") return;
     recordProposal({
       planId: next.planId,
-      fingerprint: next.fingerprint,
-      floodFingerprint: next.flood,
+      fingerprint: stateFingerprint(state),
+      floodFingerprint: currentFlood,
+      water: next.water,
       proposals: plan.proposals.map((p) => ({
         incidentId: p.incident.id as never, teamId: p.team.id as never, tier: p.tier, seconds: p.seconds, reason: p.reason, evidence: p.evidence,
+        basis: next.basis.get(p.incident.id)!,
       })),
       unassigned: plan.unassigned.map((u) => ({ incidentId: u.incident.id as never, reason: u.reason })),
     })
@@ -139,7 +169,7 @@ export function AssignmentPlanner({
     setApprovalId(id);
     setBusy(true);
     try {
-      const chosen = suggestion.plan.proposals.filter((p) => selected.has(p.incident.id));
+      const chosen = suggestion.plan.proposals.filter((p) => !unchecked.has(p.incident.id));
       const result = await approvePlan({
         planId: suggestion.planId,
         approvalId: id,
@@ -160,19 +190,31 @@ export function AssignmentPlanner({
     }
   };
 
-  // Suggest as soon as the panel opens (or becomes ready), and again whenever the plan goes stale,
-  // e.g. a suggested team or incident was assigned elsewhere, so there is always a plan to approve.
-  const autoSuggest = (suggestion == null || stale) && notReady == null && !busy;
+  // Suggest as soon as the panel opens (or becomes ready), and again whenever a proposal goes
+  // out of date or the waiting incidents or free teams change.
+  const refresh =
+    suggestion == null ||
+    outdated.size > 0 ||
+    suggestion.scope !== currentScope ||
+    suggestion.matched === false;
+  const autoSuggest = refresh && notReady == null && !busy;
+  // The timer must plan from the data on screen when it fires, not when it was set.
+  const latestSuggest = useRef(suggest);
+  useEffect(() => {
+    latestSuggest.current = suggest;
+  });
+  const planId = suggestion?.planId ?? null;
   useEffect(() => {
     if (!autoSuggest) return;
-    const t = setTimeout(() => suggest(), 0);
+    // Right away when the panel opens; otherwise after a pause, so a burst of changes is one refresh.
+    const t = setTimeout(() => latestSuggest.current(undefined, { auto: planId != null }), planId == null ? 0 : REFRESH_MS);
     return () => clearTimeout(t);
-    // Only when the panel opens, becomes ready or the plan goes stale, not on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoSuggest]);
+    // When a refresh becomes due, and again after each plan if one is still due.
+  }, [autoSuggest, planId]);
 
   const plan = suggestion?.plan;
-  const chosen = plan?.proposals.filter((p) => selected.has(p.incident.id)) ?? [];
+  const chosen = plan?.proposals.filter((p) => !unchecked.has(p.incident.id)) ?? [];
+  const stale = chosen.some((p) => outdated.has(p.incident.id));
   const canApprove = !!plan && chosen.length > 0 && !stale && notReady == null && suggestion?.matched === true && !busy;
 
   return (
@@ -216,15 +258,11 @@ export function AssignmentPlanner({
             </dl>
           )}
           {plan.message && <p className="planner-notice planner-notice-amber">{plan.message}</p>}
-          {stale && (
+          {(stale || suggestion?.matched === false) && (
             <p role="alert" className="planner-notice planner-notice-amber">
-              Something this plan depends on has changed (a team, an incident, a caller&apos;s water report, the river, or a computed
-              priority). Suggest again before approving.
-            </p>
-          )}
-          {suggestion?.matched === false && !stale && (
-            <p role="alert" className="planner-notice planner-notice-amber">
-              This screen was behind the latest data. Suggest again.
+              {notReady == null
+                ? "Things changed since these suggestions were made (a team, an incident, the river or a priority). Updating…"
+                : "Things changed since these suggestions were made. Suggest again before approving."}
             </p>
           )}
           {notReady && <p className="planner-notice planner-notice-amber">{notReady}</p>}
@@ -239,12 +277,13 @@ export function AssignmentPlanner({
               <ProposalCard
                 key={p.incident.id}
                 proposal={p}
-                checked={selected.has(p.incident.id)}
+                checked={!unchecked.has(p.incident.id)}
+                outdated={outdated.has(p.incident.id)}
                 expanded={open === p.incident.id}
                 onToggle={() => {
                   // A different selection is a different request: it gets its own approval ID.
                   setApprovalId(null);
-                  setSelected((s) => {
+                  setUnchecked((s) => {
                     const n = new Set(s);
                     if (n.has(p.incident.id)) n.delete(p.incident.id);
                     else n.add(p.incident.id);
@@ -296,6 +335,7 @@ export function AssignmentPlanner({
 function ProposalCard({
   proposal: p,
   checked,
+  outdated,
   expanded,
   onToggle,
   onExpand,
@@ -305,6 +345,7 @@ function ProposalCard({
 }: {
   proposal: Proposal;
   checked: boolean;
+  outdated: boolean;
   expanded: boolean;
   onToggle: () => void;
   onExpand: () => void;
@@ -313,7 +354,7 @@ function ProposalCard({
   onExclude: () => void;
 }) {
   return (
-    <li className={`plan-card ${checked ? "" : "is-unchecked"}`}>
+    <li className={`plan-card ${checked ? "" : "is-unchecked"} ${outdated ? "is-outdated" : ""}`}>
       <div className="plan-card-top">
         <input type="checkbox" checked={checked} onChange={onToggle} aria-label={`Include ${p.incident.reportedAddress}`} />
         <button onClick={onSelect} className="plan-card-title" title="Open incident">

@@ -19,6 +19,8 @@ export const incidentSource = v.union(
   v.literal("recording"),
   v.literal("fixture"),
   v.literal("map_report"),
+  /** A scripted caller from the demo simulation (backend/scripts/demo_sim.py). */
+  v.literal("simulation"),
 );
 
 export const hazard = v.object({
@@ -111,6 +113,12 @@ export default defineSchema({
     waterSurfaceElevation: v.number(),
     /** Time of the replayed gauge reading behind the level; null when set by hand. */
     waterObservedAt: v.optional(v.union(v.number(), v.null())),
+    /**
+     * Demo simulation: teams finish a rescue by themselves after a time on scene that depends
+     * on the incident (see convex/rescueTime.ts), played `onSceneSpeedup` times faster.
+     */
+    autoResolve: v.optional(v.boolean()),
+    onSceneSpeedup: v.optional(v.number()),
   }).index("by_exerciseId", ["exerciseId"]),
 
   incidents: defineTable({
@@ -236,6 +244,9 @@ export default defineSchema({
     /** The dashboard's fingerprint of every caller water report it planned with (resolved ones too).
      * Required on new plans; optional only so older rows still load (they can't be approved). */
     flood: v.optional(v.string()),
+    /** River level the dashboard planned with. Required on new plans (approval checks each
+     * proposal on its own, see planning.ts); optional only so older rows still load. */
+    water: v.optional(v.number()),
     proposals: v.array(
       v.object({
         incidentId: v.id("incidents"),
@@ -246,6 +257,8 @@ export default defineSchema({
         /** The route the dispatcher was shown; approval must send this same route. Required on
          * new plans; optional only so older rows still load (they can't be approved). */
         evidence: v.optional(routeEvidence),
+        /** The dashboard's pairBasis for this proposal; required on new plans. */
+        basis: v.optional(v.string()),
       }),
     ),
     unassigned: v.array(v.object({ incidentId: v.id("incidents"), reason: v.string() })),

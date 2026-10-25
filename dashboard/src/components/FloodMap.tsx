@@ -10,7 +10,7 @@ import type { ExerciseState, Incident } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES } from "@/lib/types";
 import { ROUTE_COLOR } from "@/lib/router";
 import { OBSERVATION_RADIUS_M } from "@/lib/flood";
-import { etaMinutes, remainingLegs, tripProgress, type LegMode, type TripLeg } from "../../convex/tripMath";
+import { etaMinutes, remainingLegs, vehiclePosition, type LegMode, type TripLeg } from "../../convex/tripMath";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const BUILDING_SOURCE = { source: "openmaptiles", sourceLayer: "building" } as const;
@@ -95,7 +95,7 @@ function incidentPoints(state: ExerciseState, selectedId: string | null): GeoJSO
 }
 
 function teamPosition(team: ExerciseState["teams"][number], now: number) {
-  return team.trip ? tripProgress(team.trip, now).position : [team.longitude, team.latitude];
+  return team.trip ? vehiclePosition(team.trip, now) : [team.longitude, team.latitude];
 }
 
 function teamPoints(state: ExerciseState, now: number, focusedId: string | null): GeoJSON.FeatureCollection {

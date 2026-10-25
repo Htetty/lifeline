@@ -11,7 +11,7 @@ export type IncidentStatus =
   | "en_route"
   | "resolved";
 
-export type IncidentSource = "live_demo" | "recording" | "fixture" | "map_report";
+export type IncidentSource = "live_demo" | "recording" | "fixture" | "map_report" | "simulation";
 
 export interface Incident {
   id: string;

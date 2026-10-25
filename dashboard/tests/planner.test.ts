@@ -206,15 +206,16 @@ describe("eligibility and unknowns", () => {
     expect(none.unassigned[0].reason).toBe("The teams that can reach it were excluded by the dispatcher.");
   });
 
-  test("refuses a queue beyond its stated bounds instead of approximating", () => {
+  test("plans exactly with many free teams when few incidents wait", () => {
     const plan = planAssignments({
       incidents: [incident("A")],
-      teams: Array.from({ length: 13 }, (_, k) => team(`t${k}`, `Truck ${k}`)),
+      teams: Array.from({ length: 20 }, (_, k) => team(`t${k}`, `Truck ${k}`)),
       priorities: priorities({ A: "high" }),
-      route: () => ok(100),
+      route: (t) => ok(100 + Number(t.id.slice(1))),
     });
-    expect(plan.status).toBe("too_large");
-    expect(plan.proposals).toEqual([]);
+    expect(plan.status).toBe("ok");
+    expect(plan.message).toBeNull();
+    expect(plan.proposals.map((p) => p.team.id)).toEqual(["t0"]);
   });
 });
 

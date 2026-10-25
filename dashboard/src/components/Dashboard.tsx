@@ -10,6 +10,7 @@ import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
 import {
   buildFloodGrid,
+  loadBuildings,
   channelDepth,
   computeFlood,
   depthAt,
@@ -28,7 +29,7 @@ import {
   deepestAhead,
   loadRoads,
   moverFor,
-  planRoute,
+  cachedRoute,
   PROFILES,
   ROUTE_COLOR,
   type NoRoute,
@@ -51,7 +52,7 @@ import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } f
 import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
 import { capitalize, capitalizeEach } from "@/lib/text";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
-import { etaMinutes, TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
+import { etaMinutes, TRIP_SPEEDUP, vehiclePosition } from "../../convex/tripMath";
 import { describeReport } from "../../convex/waterReports";
 import { AssignmentPlanner } from "./AssignmentPlanner";
 import { TierPill } from "./TierPill";
@@ -209,6 +210,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [pendingPick, setPendingPick] = useState<BuildingPick | null>(null);
   const [liveFeed, setLiveFeed] = useState(false);
   const [elevation, setElevation] = useState<ElevationGrid | null>(null);
+  const [buildings, setBuildings] = useState<Float32Array | null>(null);
   const [elevationError, setElevationError] = useState<string | null>(null);
   const [resolved, setResolved] = useState<Record<string, ResolvedBuilding>>({});
   const [toast, setToast] = useState<string | null>(null);
@@ -264,11 +266,15 @@ function DashboardView({ state }: { state: ExerciseState }) {
     loadRoads()
       .then(setRoads)
       .catch((e: Error) => setToast(`Routing unavailable: ${e.message}`));
+    // Without it boats still route, just straight across flooded buildings.
+    loadBuildings(DEMO_AREA.floodBounds)
+      .then(setBuildings)
+      .catch((e: Error) => console.warn(`Building footprints unavailable: ${e.message}`));
   }, []);
 
   const grid: FloodGrid | null = useMemo(
-    () => (elevation ? buildFloodGrid(elevation, DEMO_AREA.floodBounds, GAUGE.longitude) : null),
-    [elevation],
+    () => (elevation ? { ...buildFloodGrid(elevation, DEMO_AREA.floodBounds, GAUGE.longitude), buildings: buildings ?? undefined } : null),
+    [elevation, buildings],
   );
   // Callers' descriptions of the water, placed where they are.
   const observations: WaterObservation[] = useMemo(() => {
@@ -298,12 +304,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
     () => (grid && observations.length ? computeFlood(grid, waterLevel, observations) : riverFlood),
     [grid, waterLevel, observations, riverFlood],
   );
-  // What the planner's routes depend on locally: road and elevation data, river level and
-  // caller observations. A plan made under different values is stale.
-  const routeContext = useMemo(
-    () => JSON.stringify([roads != null, grid != null, waterLevel, observations]),
-    [roads, grid, waterLevel, observations],
-  );
+  // What the planner's routes depend on locally besides the river level (which the planner
+  // allows to move a little, see WATER_TOLERANCE_M): the road and elevation data.
+  const routeContext = useMemo(() => JSON.stringify([roads != null, grid != null, buildings != null]), [roads, grid, buildings]);
   const depthOverChannel = grid ? Math.max(0, channelDepth(grid, waterLevel)) : null;
   const observedAt = waterDraft == null ? state.waterObservedAt : null;
 
@@ -322,8 +325,8 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const planFor = useCallback(
     (team: RescueTeam, incident: Incident, at: number): RoutePlan | NoRoute | null => {
       if (!roads || !grid || !flood || incident.latitude == null || incident.longitude == null) return null;
-      const [longitude, latitude] = team.trip ? tripProgress(team.trip, at).position : [team.longitude, team.latitude];
-      return planRoute(
+      const [longitude, latitude] = team.trip ? vehiclePosition(team.trip, at) : [team.longitude, team.latitude];
+      return cachedRoute(
         roads,
         grid,
         flood,
@@ -528,25 +531,36 @@ function DashboardView({ state }: { state: ExerciseState }) {
       observer?.disconnect();
       clearTimeout(timer);
     };
-    const onToggle = (e: Event) => {
-      const details = e.target;
-      const body = details instanceof HTMLElement ? details.closest<HTMLElement>(".sheet-body") : null;
-      if (!(details instanceof HTMLDetailsElement) || !details.open || !body) return;
+    /** While `section` grows, scroll whatever holds it (its column, or the whole body) to keep it in view. */
+    const reveal = (section: HTMLElement) => {
+      const col = section.closest<HTMLElement>(".sheet-col");
+      const scroller = col && getComputedStyle(col).overflowY !== "visible" ? col : section.closest<HTMLElement>(".sheet-body");
+      if (!scroller) return;
       stop();
       observer = new ResizeObserver(() => {
-        const section = details.getBoundingClientRect();
-        const view = body.getBoundingClientRect();
-        const hidden = section.bottom - view.bottom + SECTION_SCROLL_MARGIN;
-        if (hidden > 0) body.scrollTop += Math.min(hidden, section.top - view.top - SECTION_SCROLL_MARGIN);
+        const box = section.getBoundingClientRect();
+        const view = scroller.getBoundingClientRect();
+        const hidden = box.bottom - view.bottom + SECTION_SCROLL_MARGIN;
+        if (hidden > 0) scroller.scrollTop += Math.min(hidden, box.top - view.top - SECTION_SCROLL_MARGIN);
       });
-      observer.observe(details);
+      observer.observe(section);
       timer = setTimeout(stop, SECTION_OPEN_MS * 3);
+    };
+    const onToggle = (e: Event) => {
+      if (e.target instanceof HTMLDetailsElement && e.target.open) reveal(e.target);
+    };
+    // "Show more" lists grow their card the same way a section opens.
+    const onClick = (e: Event) => {
+      const card = e.target instanceof HTMLElement && e.target.closest(".show-more")?.closest<HTMLElement>(".sheet-card");
+      if (card) reveal(card);
     };
     // `toggle` doesn't bubble, so listen while it's captured on the way down.
     sheet.addEventListener("toggle", onToggle, true);
+    sheet.addEventListener("click", onClick);
     return () => {
       stop();
       sheet.removeEventListener("toggle", onToggle, true);
+      sheet.removeEventListener("click", onClick);
     };
   }, [sheetKey]);
   const coveredBy = useCallback((): [number, number] => {
@@ -602,10 +616,8 @@ function DashboardView({ state }: { state: ExerciseState }) {
           <button
             key={activityToast.id}
             className="activity-toast"
-            onClick={() => {
-              setToastedActivityId(activityToast.id);
-              setActivityOpen(true);
-            }}
+            onClick={() => setToastedActivityId(activityToast.id)}
+            title="Dismiss"
           >
             <BellIcon />
             <span>{activityToast.message}</span>
@@ -824,9 +836,13 @@ function DashboardView({ state }: { state: ExerciseState }) {
             </div>
           )}
           {toast && (
-            <div className="absolute bottom-8 left-1/2 z-30 -translate-x-1/2 rounded-lg bg-red-600 px-3 py-2 text-sm shadow-lg">
+            <button
+              onClick={() => setToast(null)}
+              title="Dismiss"
+              className="absolute bottom-8 left-1/2 z-30 -translate-x-1/2 rounded-lg bg-red-600 px-3 py-2 text-left text-sm shadow-lg"
+            >
               {toast}
-            </div>
+            </button>
           )}
           <Legend />
 
@@ -950,18 +966,20 @@ function UnitsPanel({
 }) {
   const [open, setOpen] = useState(true);
   const available = teams.filter((t) => t.available).length;
-  const status = (t: RescueTeam): { text: string; color: string } => {
+  // `rank` orders the list: available first, then en route, on scene, and assigned but not sent.
+  const status = (t: RescueTeam): { text: string; color: string; rank: number } => {
     const incident = incidents.find((i) => i.id === t.currentAssignment);
     const where = incident ? ` · ${incident.reportedAddress}` : "";
-    if (t.available) return { text: "Available", color: "#2563eb" };
+    if (t.available) return { text: "Available", color: "#2563eb", rank: 0 };
     if (t.trip && now < t.trip.arriveAt) {
-      return { text: `En route, ETA ${etaMinutes(t.trip, now)} min${where}`, color: "#f59e0b" };
+      return { text: `En route, ETA ${etaMinutes(t.trip, now)} min${where}`, color: "#f59e0b", rank: 1 };
     }
-    if (incident?.status === "en_route") return { text: `On scene${where}`, color: "#16a34a" };
-    return { text: `Assigned, not yet sent${where}`, color: "#64748b" };
+    if (incident?.status === "en_route") return { text: `On scene${where}`, color: "#16a34a", rank: 2 };
+    return { text: `Assigned, not yet sent${where}`, color: "#64748b", rank: 3 };
   };
+  const rows = teams.map((t) => ({ team: t, status: status(t) })).sort((a, b) => a.status.rank - b.status.rank);
   return (
-    <div className="map-overlay absolute left-3 top-3 w-72 text-xs">
+    <div className="map-overlay absolute left-3 top-3 w-80 text-xs">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -973,9 +991,9 @@ function UnitsPanel({
         </span>
       </button>
       {open && (
-        <ul className="border-t border-white/5 p-1">
-          {teams.map((t) => {
-            const s = status(t);
+        // About six rows tall, then it scrolls.
+        <ul className="max-h-[19.5rem] overflow-y-auto overscroll-contain border-t border-white/5 p-1">
+          {rows.map(({ team: t, status: s }) => {
             return (
               <li key={t.id}>
                 <button
@@ -1035,6 +1053,10 @@ function Legend() {
   );
 }
 
+/** Fastest reachable teams listed before "Show more", and hazards before "+N more". */
+const TEAMS_SHOWN = 3;
+const HAZARDS_SHOWN = 2;
+
 function IncidentDetail({
   incident,
   water,
@@ -1074,7 +1096,16 @@ function IncidentDetail({
 }) {
   const main = incident.linkedTo ? allIncidents.find((i) => i.id === incident.linkedTo) : null;
   const [teamId, setTeamId] = useState("");
+  // Lists shown in full, as `${incident id}:${list}`, so switching incidents starts collapsed again.
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const isOpen = (list: string) => expanded.includes(`${incident.id}:${list}`);
+  const toggle = (list: string) =>
+    setExpanded((e) => (isOpen(list) ? e.filter((k) => k !== `${incident.id}:${list}`) : [...e, `${incident.id}:${list}`]));
   const available = options.filter((o) => o.team.available);
+  // The fastest few teams that can get there; the rest, and every team that can't, are folded away.
+  const reachable = available.filter((o) => o.plan?.ok !== false);
+  const unreachable = available.filter((o) => o.plan?.ok === false);
+  const shownTeams = isOpen("teams") ? reachable : reachable.slice(0, TEAMS_SHOWN);
   const assigned = teams.find((t) => t.id === incident.assignedTeamId);
   const assignedPlan = options.find((o) => o.team.id === incident.assignedTeamId)?.plan ?? null;
   const onMap = incident.latitude != null && incident.longitude != null;
@@ -1118,14 +1149,21 @@ function IncidentDetail({
   fact(
     "Hazards",
     incident.hazards.length > 0 && (
-      <ul className="space-y-2">
-        {incident.hazards.map((h) => (
-          <li key={h.hazard}>
-            {capitalize(h.hazard)}
-            {h.evidence && <q className="fact-evidence">{h.evidence}</q>}
-          </li>
-        ))}
-      </ul>
+      <>
+        <ul className="space-y-2">
+          {(isOpen("hazards") ? incident.hazards : incident.hazards.slice(0, HAZARDS_SHOWN)).map((h) => (
+            <li key={h.hazard}>
+              {capitalize(h.hazard)}
+              {h.evidence && <q className="fact-evidence">{h.evidence}</q>}
+            </li>
+          ))}
+        </ul>
+        {incident.hazards.length > HAZARDS_SHOWN && (
+          <button onClick={() => toggle("hazards")} className="show-more">
+            {isOpen("hazards") ? "Show fewer" : `+${incident.hazards.length - HAZARDS_SHOWN} more`}
+          </button>
+        )}
+      </>
     ),
   );
   const nextStep = main
@@ -1277,7 +1315,7 @@ function IncidentDetail({
             ) : incident.status === "awaiting_assignment" ? (
               <div className="space-y-2">
                 <div className="space-y-1.5" role="radiogroup" aria-label="Choose team">
-                  {available.map(({ team, plan }, i) => (
+                  {shownTeams.map(({ team, plan }, i) => (
                     <button
                       key={team.id}
                       role="radio"
@@ -1302,7 +1340,31 @@ function IncidentDetail({
                       </span>
                     </button>
                   ))}
+                  {reachable.length > TEAMS_SHOWN && (
+                    <button onClick={() => toggle("teams")} className="show-more">
+                      {isOpen("teams") ? "Show fewer" : `Show ${reachable.length - TEAMS_SHOWN} more`}
+                    </button>
+                  )}
                   {available.length === 0 && <p className="action-note">No teams available.</p>}
+                  {available.length > 0 && reachable.length === 0 && (
+                    <p className="action-note">No available team can reach it under the simulated flood.</p>
+                  )}
+                  {unreachable.length > 0 && (
+                    <div className="unreachable">
+                      <button onClick={() => toggle("unreachable")} aria-expanded={isOpen("unreachable")} className="show-more">
+                        {unreachable.length} {unreachable.length === 1 ? "team can't" : "teams can't"} reach it {isOpen("unreachable") ? "▾" : "▸"}
+                      </button>
+                      {isOpen("unreachable") && (
+                        <ul>
+                          {unreachable.map(({ team, plan }) => (
+                            <li key={team.id}>
+                              <b>{team.name}</b> {plan && !plan.ok ? plan.reason : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <button
                   disabled={!teamId}
