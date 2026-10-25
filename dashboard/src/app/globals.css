@@ -351,3 +351,9 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion: reduce) {
   .planner-sheet { animation: none; }
 }
+
+/* ---- Teams on the move: map markers placed every animation frame (FloodMap moveMarkers) ---- */
+.team-mover { position: relative; width: 18px; height: 18px; padding: 0; cursor: pointer; }
+.team-mover-dot { position: absolute; inset: 0; border-radius: 50%; background: #f59e0b; border: 2px solid #0f1113; box-shadow: 0 0 0 4px #f59e0b33; }
+.team-mover.is-focused .team-mover-dot { inset: -3px; border: 4px solid #8fc2ff; }
+.team-mover-label { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); white-space: nowrap; font: 700 11px/1.2 var(--font-geist-sans), sans-serif; color: #bcd6ff; text-shadow: 0 0 2px #0f1113, 0 0 2px #0f1113, 0 0 3px #0f1113; pointer-events: none; }

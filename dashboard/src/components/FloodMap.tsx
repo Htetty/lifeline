@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Map as MLMap, NavigationControl, ScaleControl, setWorkerUrl, type GeoJSONSource } from "maplibre-gl";
+import { Map as MLMap, Marker, NavigationControl, ScaleControl, setWorkerUrl, type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { DEMO_AREA } from "@/data/fixtures";
 import type { FloodResult } from "@/lib/flood";
@@ -17,7 +17,8 @@ const BUILDING_SOURCE = { source: "openmaptiles", sourceLayer: "building" } as c
 const BUILDING_LAYER = "building-3d";
 const INCIDENT_BUILDING_LAYER = "incident-buildings";
 const SNAP_DISTANCE_M = 25;
-const TEAM_FRAME_MS = 200;
+/** How often the remaining-route lines are trimmed; moving teams themselves move every animation frame. */
+const ROUTE_FRAME_MS = 250;
 
 // The bundler can't serve MapLibre's worker next to its chunk, so it is copied
 // to public/ by the postinstall script.
@@ -145,13 +146,51 @@ function previewRoute(preview: Props["preview"]): GeoJSON.FeatureCollection {
   return { type: "FeatureCollection", features: legLines(legs) };
 }
 
-function drawTeams(map: MLMap, props: Props, follow: string | null) {
+function drawTeams(map: MLMap, props: Props) {
   const now = Date.now();
   (map.getSource("teams") as GeoJSONSource).setData(teamPoints(props.state, now, props.focusTeam?.id ?? null));
   (map.getSource("team-routes") as GeoJSONSource).setData(teamRoutes(props.state, now));
-  // Keep a followed team in view, without fighting a camera move already under way.
-  const team = follow ? props.state.teams.find((t) => t.id === follow) : null;
-  if (team?.trip && !map.isMoving()) map.jumpTo({ center: teamPosition(team, now) as [number, number] });
+}
+
+/**
+ * Teams on the move are DOM markers placed every animation frame: a GeoJSON source
+ * updates through MapLibre's worker, which can't keep up at 60 fps. The followed team's
+ * camera moves in the same frame, so the view glides with it.
+ */
+function moveMarkers(map: MLMap, props: Props, markers: Map<string, Marker>, follow: string | null, onFocus: (id: string) => void) {
+  const now = Date.now();
+  const moving = props.state.teams.filter((t) => t.trip && now < t.trip.arriveAt);
+  for (const [id, marker] of markers) {
+    if (!moving.some((t) => t.id === id)) {
+      marker.remove();
+      markers.delete(id);
+    }
+  }
+  for (const team of moving) {
+    let marker = markers.get(team.id);
+    if (!marker) {
+      const el = document.createElement("button");
+      el.className = "team-mover";
+      el.title = "Follow on map";
+      el.append(Object.assign(document.createElement("span"), { className: "team-mover-dot" }));
+      el.append(Object.assign(document.createElement("span"), { className: "team-mover-label" }));
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onFocus(team.id);
+      });
+      marker = new Marker({ element: el }).setLngLat(teamPosition(team, now) as [number, number]).addTo(map);
+      markers.set(team.id, marker);
+    }
+    const position = teamPosition(team, now) as [number, number];
+    marker.setLngLat(position);
+    const el = marker.getElement();
+    const label = `${team.name} · ETA ${etaMinutes(team.trip!, now)} min`;
+    const text = el.lastElementChild!;
+    if (text.textContent !== label) text.textContent = label;
+    el.classList.toggle("is-focused", team.id === (props.focusTeam?.id ?? null));
+    // Keep a followed team in view, without fighting a camera move already under way.
+    if (team.id === follow && !map.isMoving()) map.jumpTo({ center: position });
+  }
 }
 
 /** A ring around each caller's water report, with a label at its northern edge. */
@@ -397,6 +436,7 @@ export default function FloodMap(props: Props) {
         id: "teams-dot",
         type: "circle",
         source: "teams",
+        filter: ["!", ["get", "moving"]],
         paint: {
           "circle-radius": ["case", ["get", "focused"], 12, ["get", "moving"], 9, 7],
           "circle-color": ["case", ["get", "moving"], "#f59e0b", ["get", "available"], "#2563eb", "#64748b"],
@@ -408,6 +448,7 @@ export default function FloodMap(props: Props) {
         id: "teams-label",
         type: "symbol",
         source: "teams",
+        filter: ["!", ["get", "moving"]],
         layout: {
           "text-field": ["get", "name"],
           "text-font": ["Noto Sans Bold"],
@@ -538,7 +579,7 @@ export default function FloodMap(props: Props) {
     const map = mapRef.current;
     if (!map || !readyRef.current) return;
     (map.getSource("incidents") as GeoJSONSource).setData(incidentPoints(props.state, props.selectedId));
-    drawTeams(map, propsRef.current, followRef.current);
+    drawTeams(map, propsRef.current);
     syncBuildings.current();
   }, [props.state, props.selectedId]);
 
@@ -567,18 +608,37 @@ export default function FloodMap(props: Props) {
       zoom: Math.max(map.getZoom(), 16),
       duration: 900,
     });
-    if (readyRef.current) drawTeams(map, propsRef.current, followRef.current);
+    if (readyRef.current) drawTeams(map, propsRef.current);
   }, [focus]);
 
-  // Moving teams are redrawn from the clock while any trip is under way.
+  // While any trip is under way, moving teams glide every animation frame and the route lines shorten.
   const anyTrip = props.state.teams.some((t) => t.trip);
+  const markersRef = useRef(new Map<string, Marker>());
   useEffect(() => {
     if (!anyTrip) return;
-    const timer = setInterval(() => {
+    const markers = markersRef.current;
+    let frame = 0;
+    let lastRoutes = 0;
+    const tick = (time: number) => {
       const map = mapRef.current;
-      if (map && readyRef.current) drawTeams(map, propsRef.current, followRef.current);
-    }, TEAM_FRAME_MS);
-    return () => clearInterval(timer);
+      if (map && readyRef.current) {
+        const focus = (id: string) => propsRef.current.onFocusTeam(id);
+        moveMarkers(map, propsRef.current, markers, followRef.current, focus);
+        if (time - lastRoutes >= ROUTE_FRAME_MS) {
+          lastRoutes = time;
+          drawTeams(map, propsRef.current);
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(frame);
+      for (const marker of markers.values()) marker.remove();
+      markers.clear();
+      const map = mapRef.current;
+      if (map && readyRef.current) drawTeams(map, propsRef.current);
+    };
   }, [anyTrip]);
 
   // Centre on the selected incident.
