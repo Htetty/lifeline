@@ -12,7 +12,9 @@ export function createEchoHandler({ line, allowedSenders, onIgnored = () => {} }
     // SDK representation uses phone="shared", not the recipient's assigned line.
     // Project authentication + enrolled sender + direct iMessage chat bind that
     // route. Dedicated lines must still match the configured phone exactly.
-    if (space.type !== "dm" || !space.id?.startsWith("iMessage;-;")) return ignore("not-direct-imessage");
+    // Native service-specific GUIDs and the SDK's service-neutral `any` GUIDs
+    // both identify DMs. The sender's service below determines iMessage vs SMS.
+    if (space.type !== "dm" || !/^(?:iMessage|any);-;.+$/.test(space.id ?? "")) return ignore("not-direct-imessage");
     if (space.phone !== "shared" && space.phone !== line) return ignore("different-line");
     if (message.sender?.service !== "iMessage") return ignore("not-imessage-service");
     if (!allowedSenders.has(message.sender?.address)) return ignore("sender-not-allowed");

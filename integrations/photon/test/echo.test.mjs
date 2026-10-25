@@ -54,6 +54,18 @@ test("Free/Pro shared-line sentinel permits only enrolled inbound iMessage DMs",
   assert.deepEqual(ignored, ["sender-not-allowed", "not-imessage-service", "not-direct-imessage"]);
 });
 
+test("service-neutral any DM IDs accept iMessage while rejecting SMS and groups", async () => {
+  const sends = [];
+  const space = { ...chat(async text => { sends.push(text); return { id: "reply" }; }),
+    phone: "shared", id: `any;-;${caller}` };
+  const handle = createEchoHandler(config);
+  assert.equal(await handle(space, { ...incoming(), sender: { address: caller, service: "SMS" } }), false);
+  assert.equal(await handle(space, { ...incoming(), sender: { address: caller, service: "unknown" } }), false);
+  assert.equal(await handle({ ...space, id: "any;+;group", type: "group" }, incoming()), false);
+  assert.equal(await handle(space, incoming()), true);
+  assert.deepEqual(sends, ["echo: hi"]);
+});
+
 test("failed sends remain retryable", async () => {
   let attempts = 0;
   const space = chat(async () => { if (++attempts === 1) throw new Error("offline"); return { id: "reply" }; });

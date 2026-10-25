@@ -42,8 +42,16 @@ next increment before incident creation, location links or dispatcher updates.
 
 Free/Pro shared proxy events use the SDK's `phone="shared"` sentinel. Dedicated
 events must match the configured line. Both require an allowed sender and an
-inbound direct iMessage conversation. Logs include stream heartbeats and rejection
+inbound direct iMessage conversation. Shared direct chat IDs use `any;-;...`;
+the sender's `service` determines whether the message is iMessage or SMS. Do not
+infer transport solely from the chat ID prefix. Logs include stream heartbeats and rejection
 reason codes, without message text, sender addresses, or credentials.
+
+Live verification (2026-10-25): recovered the enrolled user's received `hi` from
+the shared proxy's chat history, processed it with the same echo handler, and
+queried the resulting reply through the provider. It transitioned from
+`isSent=true, isDelivered=false` to `isSent=true, isDelivered=true`, with
+`sendErrorCode=0`. Provider delivery is distinct from the user confirming receipt.
 
 Dependency check: the pinned SDK currently brings a moderate OpenTelemetry baggage
 allocation advisory through `@photon-ai/otel` (`@opentelemetry/core <2.8.0`). Telemetry

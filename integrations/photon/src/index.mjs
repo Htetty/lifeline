@@ -39,9 +39,14 @@ async function main() {
   try {
     for await (const [space, message] of app.messages) {
       if (stopping) break;
-      console.log(`Message event received (${message.direction}, ${message.content?.type}).`);
+      const native = imessage(space);
+      console.log(JSON.stringify({ event: "message.received", direction: message.direction,
+        content: message.content?.type, spaceType: native.type,
+        chatService: ["iMessage", "any", "SMS", "RCS"].includes(native.id?.split(";")[0]) ? native.id.split(";")[0] : "other",
+        sharedLine: native.phone === "shared", senderService: message.sender?.service ?? "absent",
+        senderAllowed: config.allowedSenders.has(message.sender?.address) }));
       try {
-        if (await handle(imessage(space), message)) console.log("Photon accepted an echo reply; check receipt on the phone.");
+        if (await handle(native, message)) console.log("Photon accepted an echo reply; check receipt on the phone.");
       } catch {
         console.error("Echo reply failed. Check Photon line health; send a fresh message to retry.");
       }
