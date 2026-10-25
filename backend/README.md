@@ -46,6 +46,12 @@ and deletes test incidents. Prefer the isolated fixture tests in the bridge guid
 Then in the dashboard: select the new incident, place it on its building, confirm the
 location, approve a team. The simulator prints the confirmed update the caller would hear.
 
+For phone calls using Photon location sharing, the caller's Confirm supplies the incident's
+map coordinates directly instead of geocoding a spoken address. It uses the same incident,
+map pin, dispatcher confirmation and assignment flow; see
+[Photon setup](../integrations/photon/README.md). The backend's `CONVEX_URL` and dashboard's
+`NEXT_PUBLIC_CONVEX_URL` must refer to the same deployment, with a matching `BACKEND_SECRET`.
+
 ## Voice agent stream (use this)
 
 One WebSocket per call: `ws://localhost:8000/calls/{callId}/stream`. Pick any unique `callId`.

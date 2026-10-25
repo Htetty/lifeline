@@ -15,6 +15,14 @@ const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLow
 
 const NO_ADDRESS_YET = "Location not given yet";
 
+/** Both address searches and phone fixes enter the existing incident location path. */
+function locationCandidate(incident: Doc<"incidents">, latitude?: number, longitude?: number, label?: string,
+  fromPhone = false): Partial<Doc<"incidents">> {
+  if (incident.locationVerified || latitude == null || longitude == null ||
+      (!fromPhone && incident.phoneLocation?.active)) return {};
+  return { latitude, longitude, locationNote: label ?? null };
+}
+
 async function byCall(ctx: QueryCtx, callId: string) {
   return await ctx.db
     .query("incidents")
@@ -259,6 +267,7 @@ export const upsertFromCall = mutation({
       norm(args.reportedAddress) !== norm(existing.reportedAddress);
 
     if (corrected) {
+      if (existing.phoneLocation) patch.phoneLocation = { ...existing.phoneLocation, active: false };
       // Anything queued for the caller was decided for the old location.
       patch.decisionRevision = (existing.decisionRevision ?? 0) + 1;
       if (dispatched) {
@@ -279,10 +288,8 @@ export const upsertFromCall = mutation({
         // Only worth telling the caller if they had already heard the location was confirmed.
         tellCallerLocationUnclear = existing.locationVerified;
       }
-    } else if (!existing.locationVerified && args.candidateLatitude != null && args.candidateLongitude != null) {
-      patch.latitude = args.candidateLatitude;
-      patch.longitude = args.candidateLongitude;
-      patch.locationNote = args.candidateLabel ?? null;
+    } else {
+      Object.assign(patch, locationCandidate(existing, args.candidateLatitude, args.candidateLongitude, args.candidateLabel));
     }
 
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });
@@ -305,6 +312,47 @@ export const upsertFromCall = mutation({
     }
     await autoGroup(ctx, existing._id);
     return await finish((await ctx.db.get(existing._id))!);
+  },
+});
+
+/** Photon replaces address lookup with a caller-confirmed coordinate on the same incident. */
+export const locationFromPhone = mutation({
+  args: { secret: v.string(), callId: v.string(), requestId: v.string(), latitude: v.number(),
+    longitude: v.number(), accuracyMeters: v.number(), capturedAt: v.string() },
+  handler: async (ctx, { secret, callId, requestId, latitude, longitude, accuracyMeters, capturedAt }) => {
+    requireBackend(secret);
+    const captured = Date.parse(capturedAt);
+    if (!/^CA[a-f0-9]{32}$/.test(callId) || !/^[a-f0-9]{32}$/.test(requestId) ||
+        ![latitude, longitude, accuracyMeters, captured].every(Number.isFinite) ||
+        Math.abs(latitude) > 90 || Math.abs(longitude) > 180 || accuracyMeters < 0) {
+      throw new ConvexError("Invalid phone location");
+    }
+    const incident = await byCall(ctx, callId);
+    if (!incident) return { saved: false, reason: "incident_not_found" };
+    const previous = incident.phoneLocation;
+    if (previous?.requestId === requestId) {
+      if (previous.latitude !== latitude || previous.longitude !== longitude ||
+          previous.accuracyMeters !== accuracyMeters || previous.capturedAt !== capturedAt) {
+        throw new ConvexError("Location request identity conflict");
+      }
+      return { saved: previous.active, reason: previous.active ? "already_saved" : "location_corrected" };
+    }
+    const call = await ctx.db.query("voiceCalls").withIndex("by_call", q => q.eq("callId", callId)).unique();
+    if (!call || call.ended || !incident.callConnected) return { saved: false, reason: "call_ended" };
+    if (incident.locationVerified || !["needs_review", "awaiting_assignment"].includes(incident.status)) {
+      return { saved: false, reason: "location_already_reviewed" };
+    }
+    if (previous && captured <= Date.parse(previous.capturedAt)) return { saved: false, reason: "stale_location" };
+    const patch = locationCandidate(incident, latitude, longitude,
+      `Caller-shared phone location (accuracy ±${Math.round(accuracyMeters)} m)`, true);
+    await ctx.db.patch(incident._id, { ...patch,
+      phoneLocation: { requestId, latitude, longitude, accuracyMeters, capturedAt, active: true },
+      updatedAt: Date.now(), version: incident.version + 1 });
+    const moved = latitude !== incident.latitude || longitude !== incident.longitude;
+    if (moved) await reevaluateLinks(ctx, incident._id, "the caller shared their phone location");
+    await autoGroup(ctx, incident._id);
+    await logActivity(ctx, "Caller shared a phone location. Map candidate updated.", incident._id);
+    return { saved: true, reason: "saved" };
   },
 });
 

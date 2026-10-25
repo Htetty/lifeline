@@ -7,8 +7,8 @@ request IDs are generated here, never by the model. The model only reports what 
 caller said (location clarity, whether they are with the people needing help, their
 answer to the consent question).
 
-Terminal-only: a confirmed location is given to this call's conversation and logged.
-It is never written to the incident, moved on the map, or treated as verified.
+A confirmed location supplies the incident's ordinary map candidate instead of a
+geocoded address. Dispatcher confirmation and assignment use the existing flow.
 """
 
 import asyncio
@@ -50,6 +50,7 @@ UNCONFIRMED_AFTER_S = 20
 # How long the acknowledgement may wait for its written continuation before it is said alone.
 CONTINUE_WAIT_S = 6.0
 REFRESH_S = 1.0
+MAP_FLUSH_S = 2.0
 
 
 class PhotonBridge:
@@ -86,7 +87,8 @@ class PhotonBridge:
 
 
 class LocationShare:
-    def __init__(self, call_id: str, recipient: str | None, bridge: PhotonBridge, clock=time.monotonic):
+    def __init__(self, call_id: str, recipient: str | None, bridge: PhotonBridge, clock=time.monotonic,
+                 save_location=None):
         self.call_id, self.bridge, self.clock = call_id, bridge, clock
         self.recipient = recipient if recipient and PHONE.fullmatch(recipient) else None
         self.eligible: bool | None = None
@@ -100,6 +102,9 @@ class LocationShare:
         self.requests = 0
         self.location: dict | None = None
         self.at_location = "unknown"
+        self.save_location = save_location
+        self.map_saved: bool | None = None
+        self.map_save_task: asyncio.Task | None = None
         # Changes whenever what the agent may truthfully say about the link changes; a reply
         # written against an older version is not spoken.
         self.version = 0
@@ -118,7 +123,10 @@ class LocationShare:
     @classmethod
     def for_call(cls, call_id: str, recipient: str | None) -> "LocationShare | None":
         bridge = PhotonBridge.from_env()
-        return cls(call_id, recipient, bridge) if bridge else None
+        if bridge is None:
+            return None
+        from .convex_store import location_from_phone
+        return cls(call_id, recipient, bridge, save_location=location_from_phone)
 
     # Lifecycle ------------------------------------------------------------------
 
@@ -130,6 +138,11 @@ class LocationShare:
         """The call ended: withdraw any open request so a late confirmation is refused."""
         self.closed = True
         self.outbox.clear()
+        # A confirmation received before hang-up is already accepted input. Give its
+        # pending write a short drain before the session marks the call ended in Convex.
+        if self.map_save_task and not self.map_save_task.done():
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(self.map_save_task), MAP_FLUSH_S)
         for task in list(self.tasks):
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -247,7 +260,12 @@ class LocationShare:
                 f"A GPS point with reported accuracy of about {loc['accuracyMeters']:.0f} metres "
                 f"({loc['accuracyMeters'] * 3.28084:.0f} feet), captured {loc['capturedAt']}; latitude "
                 f"{loc['latitude']:.6f}, longitude {loc['longitude']:.6f}. No street address or place name is "
-                f"known for this point. It isn't shown to or verified by the dispatcher.")
+                f"known for this point. It is caller-supplied, not verified by the dispatcher.")
+            if self.map_saved is True:
+                lines.append("The phone location is saved as the incident's map candidate. "
+                             "This does not mean the dispatcher has reviewed it or assigned a team.")
+            elif self.save_location is not None:
+                lines.append("The map update hasn't been confirmed saved; don't claim the dispatcher can see it.")
             if self.at_location == "no":
                 lines.append("The caller now says they aren't with the people needing help, so this point is "
                              "not the rescue location.")
@@ -326,6 +344,7 @@ class LocationShare:
         previous = self.request
         request_id = uuid.uuid4().hex
         self.request = {"id": request_id, "status": "creating", "since": self.clock(), "said": set()}
+        self.map_saved = None
         self.requests += 1
         self.version += 1
         self._unsay("instructions", "unconfirmed", "failed", "expired")
@@ -405,6 +424,31 @@ class LocationShare:
             loc = self.location
             log.info("call %s: location request %s confirmed by caller: %.6f, %.6f (±%.0f m) captured %s; not dispatcher-verified",
                      self.call_id, request["id"], loc["latitude"], loc["longitude"], loc["accuracyMeters"], loc["capturedAt"])
+            if self.save_location is not None:
+                self.map_save_task = self._spawn(self._save_location(request["id"], dict(loc)))
+
+    async def _save_location(self, request_id, location):
+        # Database work never delays the receipt acknowledgement or caller intake.
+        # Retrying after a lost response is safe: Convex receipts are bound to this request.
+        for delay in (0, 0.5, 1, 2, 4):
+            if delay:
+                await asyncio.sleep(delay)
+            if (self.closed and delay) or not self.request or self.request["id"] != request_id:
+                return
+            if self.at_location != "yes":
+                return  # a witness's phone fix must not locate people somewhere else
+            try:
+                result = await self.save_location(self.call_id, request_id, location)
+            except Exception as exc:
+                log.warning("call %s: map location save failed (%s); retrying", self.call_id, type(exc).__name__)
+                continue
+            if self.request["id"] != request_id:
+                return
+            self.map_saved = result.get("saved") is True
+            if self.map_saved or result.get("reason") != "incident_not_found":
+                return
+        self.map_saved = False
+        log.warning("call %s: phone location received but incident map update was not saved", self.call_id)
 
     def _accept_location(self, location) -> bool:
         if not isinstance(location, dict):

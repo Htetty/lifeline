@@ -340,6 +340,65 @@ class CoalescedTurns(Base):
         self.assertEqual(now["transcript"].count("Caller:"), 3)
 
 
+class PhotonLocationFlow(Base):
+    """Real Photon confirmation handler -> real store adapter -> real Convex -> dispatcher."""
+
+    def share_phone_location(self, point, request_id=None):
+        from app.location_share import LocationShare
+
+        async def share():
+            location = LocationShare(self.call, "+15555550124", None,
+                                     save_location=convex_store.location_from_phone)
+            location.at_location = "yes"
+            location.request = {"id": request_id or uuid.uuid4().hex, "status": "delivered",
+                                "since": location.clock(), "said": set()}
+            location.apply({"callId": self.call, "requestId": location.request["id"],
+                            "status": "confirmed", "location": point})
+            await asyncio.gather(*location.tasks)
+            self.assertTrue(location.map_saved)
+            await location.close()
+        asyncio.run(share())
+
+    def start_phone_incident(self):
+        self.call = "CA" + uuid.uuid4().hex
+        convex.mutation("calls:startVoiceCall", {"secret": SECRET, "callId": self.call})
+        self.say()
+
+    def test_confirm_uses_the_existing_incident_and_dispatch_updates_reach_the_call(self):
+        self.start_phone_incident()
+        point = dict(latitude=32.7612, longitude=-117.1675, accuracyMeters=9,
+                     capturedAt="2026-10-25T10:00:00.000Z")
+        before = self.incident()
+        self.share_phone_location(point)
+        row = self.incident()
+        self.assertEqual(row["_id"], before["_id"])
+        self.assertEqual((row["latitude"], row["longitude"]), (point["latitude"], point["longitude"]))
+        self.assertEqual((row["transcript"], row["summary"], row["peopleCount"]),
+                         (before["transcript"], before["summary"], before["peopleCount"]))
+        self.assertFalse(row["locationVerified"])
+        self.assertEqual(row["status"], "needs_review")
+        convex.mutation("incidents:verifyLocation", {**DISPATCHER, "incidentId": row["_id"]})
+        team = self.free_team()
+        convex.mutation("incidents:assignTeam", {**DISPATCHER, "incidentId": row["_id"], "teamId": team["_id"]})
+        self.assertEqual(self.incident()["status"], "assigned")
+        updates = self.announcements()
+        self.assertEqual(updates[0]["type"], "assignment_approved")
+        self.assertIn(team["name"], updates[0]["text"])
+
+    def test_a_new_call_from_the_same_phone_gets_its_own_location(self):
+        point = dict(latitude=32.7612, longitude=-117.1675, accuracyMeters=9,
+                     capturedAt="2026-10-25T10:00:00.000Z")
+        self.start_phone_incident()
+        first_call = self.call
+        self.share_phone_location(point)
+        asyncio.run(calls.end_call(first_call))
+        self.start_phone_incident()
+        self.share_phone_location({**point, "latitude": 32.764})
+        self.assertNotEqual(self.incident()["_id"], self.incident(first_call)["_id"])
+        self.assertEqual(self.incident()["latitude"], 32.764)
+        self.assertEqual(self.incident(first_call)["latitude"], point["latitude"])
+
+
 class NoFalseSuccess(Base):
     def test_convex_rejection_is_502_and_never_saved(self):
         with patch.object(convex_store, "upsert_from_call", AsyncMock(side_effect=ConvexError("bad", "bad"))):

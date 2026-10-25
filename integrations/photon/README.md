@@ -58,7 +58,7 @@ allocation advisory through `@photon-ai/otel` (`@opentelemetry/core <2.8.0`). Te
 is disabled here. Do not force npm's proposed SDK downgrade; recheck the upstream
 dependency before enabling telemetry or adding an HTTP ingress.
 
-## Location preview → blue dot → terminal
+## Location preview → blue dot → incident location
 
 Install `cloudflared` for an automatic temporary HTTPS address, or set
 `LOCATION_PUBLIC_URL` to an HTTPS origin you already route to this service.
@@ -86,8 +86,10 @@ an arrow recenters/retries GPS.
 
 The server prints `location.confirmed` with latitude, longitude, accuracy in metres,
 capture/confirmation times, and the call and request IDs (manual `--send-location` links
-print a request ID and an Apple Maps link instead). It does not write
-to Convex or the dispatcher dashboard. The location is the device's reported fix,
+print a request ID and an Apple Maps link instead). The Photon process does not write
+to Convex itself: for call-bound requests the voice backend saves the confirmed fix as
+the existing incident's map candidate, replacing address lookup. The backend and dashboard
+must use the same Convex deployment. Manual links remain terminal-only. The location is the device's reported fix,
 not a server-verified position. Coordinates are not sent to this server until the
 user explicitly confirms. OpenStreetMap serves the map tiles.
 
@@ -136,8 +138,11 @@ iMessage sender. One request can be active per call and per number.
 - A confirmation is recorded only for an active request with its own call ID. When
   the call ends, the backend cancels the request, and the page then refuses new
   confirmations (410). The backend gives the confirmed point to that call's
-  conversation and logs it. It is never written to the incident or dashboard and never
-  treated as dispatcher-verified.
+  conversation and saves it on the same incident as the ordinary map candidate. The existing
+  dashboard displays the pin, and dispatcher confirmation and assignment work as before.
+  A receipt makes database retries idempotent; closed calls and older fixes cannot move the pin.
+  A dispatcher-confirmed destination is retained, and explicit spoken corrections still use
+  the normal correction path. Caller confirmation is never treated as dispatcher verification.
 
 First contact: Photon's deliverability guidance
 (<https://photon.codes/docs/best-practices/imessage-deliverability>) says Apple can

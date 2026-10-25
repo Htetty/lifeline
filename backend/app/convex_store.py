@@ -85,6 +85,15 @@ async def call_ended(call_id: str) -> None:
     await _mutation("calls:callEnded", {"callId": call_id})
 
 
+async def location_from_phone(call_id: str, request_id: str, location: dict) -> dict:
+    """Use a confirmed Photon fix as this call's ordinary incident map candidate."""
+    return await _mutation("calls:locationFromPhone", {
+        "callId": call_id, "requestId": request_id,
+        "latitude": float(location["latitude"]), "longitude": float(location["longitude"]),
+        "accuracyMeters": float(location["accuracyMeters"]), "capturedAt": location["capturedAt"],
+    })
+
+
 # Internal bookkeeping, never spoken: a saved report isn't a dispatcher action. Convex still
 # queues it on a new incident; filtering here also covers events already in the database.
 INTERNAL_UPDATES = {"details_received"}
