@@ -57,9 +57,10 @@ export const REGIONS: Record<RegionId, Region> = {
   },
   "sf-waterfront": {
     id: "sf-waterfront",
-    name: "SF Waterfront, San Francisco",
-    bounds: { west: -122.42, south: 37.74, east: -122.377, north: 37.793 },
-    view: { center: [-122.3925, 37.7735], zoom: 14.6, pitch: 55, bearing: -30 },
+    name: "Marina District, San Francisco",
+    // The Golden Gate shore: Crissy Field and the Palace of Fine Arts east past the Marina to Fort Mason.
+    bounds: { west: -122.463, south: 37.796, east: -122.423, north: 37.812 },
+    view: { center: [-122.443, 37.8025], zoom: 15, pitch: 55, bearing: -50 },
     flood: { kind: "bay" },
     // The Jan 1983 record storm tide at the Golden Gate (NOAA 9414290), replayed with a
     // hypothetical 1 m of sea-level rise; see src/data/tideReplay.ts. Starts at the low tide before the peak.

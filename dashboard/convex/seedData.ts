@@ -116,16 +116,16 @@ export const SEED_INCIDENTS: SeedIncident[] = [
   },
 ];
 
-/** Default teams for the San Francisco waterfront, at staging points that stay dry at the replayed peak. */
+/** Default teams for the San Francisco Marina shore, at staging points that stay dry at the replayed peak. */
 export const SF_SEED_TEAMS: SeedTeam[] = [
-  { key: "boat-1", name: "Swift Water Boat 1", latitude: 37.763892, longitude: -122.38872, capabilities: ["boat"] },
-  { key: "boat-2", name: "Swift Water Boat 2", latitude: 37.781247, longitude: -122.389755, capabilities: ["boat"] },
+  { key: "boat-1", name: "Swift Water Boat 1", latitude: 37.804906, longitude: -122.432241, capabilities: ["boat"] },
+  { key: "boat-2", name: "Swift Water Boat 2", latitude: 37.803604, longitude: -122.450062, capabilities: ["boat"] },
   {
     key: "hwv-1",
     name: "High-Water Truck 7",
-    latitude: 37.772246,
-    longitude: -122.402206,
+    latitude: 37.80299,
+    longitude: -122.441763,
     capabilities: ["high_water_vehicle", "road_vehicle"],
   },
-  { key: "air-1", name: "Helicopter Rescue 1", latitude: 37.779267, longitude: -122.398462, capabilities: ["air"] },
+  { key: "air-1", name: "Helicopter Rescue 1", latitude: 37.805597, longitude: -122.4253, capabilities: ["air"] },
 ];

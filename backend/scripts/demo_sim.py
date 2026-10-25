@@ -1,7 +1,7 @@
 """Demo simulation: a storm's worth of calls while the water rises, plus your own live calls.
 
     python scripts/demo_sim.py                       # ~1.5 min: 22 callers, water peaks after 60 s
-    python scripts/demo_sim.py --region sf-waterfront   # the San Francisco waterfront instead
+    python scripts/demo_sim.py --region sf-waterfront   # the SF Marina shore instead (or demo_sim_sf.py)
     python scripts/demo_sim.py --calls 46 --rise 150 --max-turns 5   # the long version, every caller
     python scripts/demo_sim.py --calls 3 --rise 30   # a short smoke test
     python scripts/demo_sim.py --no-reset            # keep the current exercise (no new teams)

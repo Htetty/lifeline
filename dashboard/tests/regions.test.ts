@@ -47,8 +47,8 @@ describe("switching the exercise region", () => {
 });
 
 test("route checks use the exercise region's area", () => {
-  const team = { longitude: -122.39, latitude: 37.77, capabilities: ["air" as const] };
-  const incident = { longitude: -122.395, latitude: 37.775 };
+  const team = { longitude: -122.44, latitude: 37.803, capabilities: ["air" as const] };
+  const incident = { longitude: -122.445, latitude: 37.805 };
   const route: RouteEvidence = {
     mover: "air", realSeconds: 60, start: [team.longitude, team.latitude], end: [incident.longitude, incident.latitude],
     points: 2, modes: ["air"], maxDepth: 0, limit: null,
