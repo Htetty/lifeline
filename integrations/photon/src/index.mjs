@@ -2,7 +2,6 @@ import { configuration } from "./config.mjs";
 import { createEchoHandler } from "./echo.mjs";
 import { startLocationServer } from "./location-server.mjs";
 import { startQuickTunnel } from "./tunnel.mjs";
-import { readFile } from "node:fs/promises";
 
 async function main() {
   const config = configuration();
@@ -10,17 +9,10 @@ async function main() {
     console.log("Spectrum configuration is present. Credentials have not been verified with Photon.");
     return;
   }
-  const { Spectrum, app: appCard, richlink } = await import("@spectrum-ts/core");
+  const { Spectrum, richlink } = await import("@spectrum-ts/core");
   const { imessage } = await import("@spectrum-ts/imessage");
   const liveStreams = new Set();
   const locationMode = process.argv.includes("--location");
-  const browserLink = process.argv.includes("--browser-link");
-  const preview = locationMode && !browserLink
-    ? await readFile(new URL("../public/preview.jpg", import.meta.url)) : undefined;
-  const locationCard = url => browserLink ? richlink(url) : appCard(url, { layout: {
-    image: preview, imageTitle: "Lifeline", caption: "Confirm location",
-    summary: "Lifeline: confirm your location",
-  } });
   let locationServer, tunnel, app;
   try {
     if (locationMode) {
@@ -47,7 +39,7 @@ async function main() {
     });
     const handle = createEchoHandler({ ...config,
       onIgnored: reason => console.log(`Message ignored: ${reason}.`),
-      ...(locationMode ? { reply: (space, message) => locationCard(locationServer.issue({
+      ...(locationMode ? { reply: (space, message) => richlink(locationServer.issue({
         chat: space.id, sender: message.sender.address, messageId: message.id,
       })) } : {}),
     });
@@ -66,9 +58,8 @@ async function main() {
         if (!locationMode || config.allowedSenders.size !== 1) throw new Error("Use --send-location with --location and exactly one allowed sender.");
         const sender = [...config.allowedSenders][0];
         const space = await imessage(app).space.get(`any;-;${sender}`);
-        const result = await space.send(locationCard(locationServer.issue({ chat: space.id, sender })));
+        const result = await space.send(richlink(locationServer.issue({ chat: space.id, sender })));
         if (!result) throw new Error("Location preview did not return a sent-message record");
-        console.log(JSON.stringify({ event: "location.card.accepted", nativeAppCard: Boolean(result.miniAppCardSession) }));
         console.log("Photon accepted the location preview. Open the card on your phone.");
       }
       for await (const [space, message] of app.messages) {
