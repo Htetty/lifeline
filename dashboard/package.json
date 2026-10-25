@@ -8,10 +8,11 @@
     "start": "next start",
     "lint": "eslint",
     "test:voice": "vitest run",
-    "test:priority": "tsc --outDir .test-build --module commonjs --target es2022 --moduleResolution node --skipLibCheck src/lib/priority.ts && node scripts/test-priority.cjs .test-build",
+    "test:priority": "tsc --outDir .test-build --module commonjs --target es2022 --moduleResolution node --skipLibCheck src/lib/priority.ts && node scripts/test-priority.cjs .test-build/src/lib",
     "postinstall": "node -e \"require('fs').copyFileSync('node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs','public/maplibre-gl-worker.mjs')\""
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
     "convex": "^1.48.0",
     "maplibre-gl": "^6.15.0",
     "next": "16.4.3",

@@ -136,13 +136,22 @@ export const assignTeam = mutation({
     if (!team.available) throw new ConvexError(`${team.name} is no longer available`);
     if (incident.status !== "awaiting_assignment") throw new ConvexError("Incident is not awaiting a team");
 
-    await bump(ctx, incident, { status: "assigned", assignedTeamId: team._id }, true);
-    await ctx.db.patch(team._id, { available: false, currentAssignment: incident._id, updatedAt: Date.now() });
-    await logActivity(ctx, `${team.name} assigned to ${incident.reportedAddress}.`, incident._id);
-    await queueCallerUpdate(ctx, incident, "assignment_approved", { teamName: team.name });
-    await syncLinked(ctx, incident, { status: "assigned", assignedTeamId: team._id }, "assignment_approved", team.name);
+    await assignTeamTo(ctx, incident, team);
   },
 });
+
+/**
+ * The one way a team is assigned (manual approval and approved plans alike). Callers check
+ * that the pair is valid first; this saves it in the caller's transaction and queues the
+ * approved caller update, which is only delivered once the transaction commits.
+ */
+export async function assignTeamTo(ctx: MutationCtx, incident: Doc<"incidents">, team: Doc<"teams">) {
+  await bump(ctx, incident, { status: "assigned", assignedTeamId: team._id }, true);
+  await ctx.db.patch(team._id, { available: false, currentAssignment: incident._id, updatedAt: Date.now() });
+  await logActivity(ctx, `${team.name} assigned to ${incident.reportedAddress}.`, incident._id);
+  await queueCallerUpdate(ctx, incident, "assignment_approved", { teamName: team.name });
+  await syncLinked(ctx, incident, { status: "assigned", assignedTeamId: team._id }, "assignment_approved", team.name);
+}
 
 /** Allowed status changes. Assignment itself goes through assignTeam. */
 const TRANSITIONS: Record<Doc<"incidents">["status"], Doc<"incidents">["status"][]> = {

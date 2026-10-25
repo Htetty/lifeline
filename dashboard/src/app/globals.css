@@ -156,7 +156,7 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .console-body { gap: 12px; padding: 0 12px 12px; }
 .panel { background: var(--surface-1); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
 .dispatcher .incident-sidebar { width: 360px; background: var(--surface-1); border-right: 1px solid var(--line); }
-.dispatcher .queue-heading { align-items: center; padding: 18px 18px 10px; }
+.dispatcher .queue-heading { justify-content: flex-start; align-items: center; gap: 8px; padding: 18px 18px 10px; }
 .dispatcher .queue-heading h2 { font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
 .soft-button { border-radius: 8px; padding: 6px 11px; font-size: 12px; font-weight: 500; background: var(--surface-3); border: 1px solid var(--line); color: var(--text); }
 .soft-button:hover { background: #2a2f36; }
@@ -342,3 +342,12 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
   .activity-toast { animation: none; }
 }
 
+/* ---- Assignment planner: a right-hand overlay on the map, like the incident sheet docked right ---- */
+.suggest-button { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; height: 28px; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 600; background: #8fc2ff; color: #07111f; }
+.suggest-button:hover { background: #b3d6ff; }
+.planner-sheet { position: absolute; z-index: 20; top: 10px; right: 10px; bottom: 10px; width: min(440px, 48%); overflow-y: auto; padding: 16px; background: #111316f5; border: 1px solid var(--line-strong); border-radius: 18px; box-shadow: 0 10px 50px #000a; backdrop-filter: blur(14px); animation: sheet-left .34s cubic-bezier(.2, .8, .2, 1); --text-muted: #c4c9d0; --text-faint: #a2a8b1; --color-slate-500: #9ea4ad; --color-slate-400: #bcc2ca; }
+.sheet-back { align-self: flex-start; margin: 10px 16px 0; font-size: 12px; color: #8fc2ff; }
+.sheet-back:hover { text-decoration: underline; }
+@media (prefers-reduced-motion: reduce) {
+  .planner-sheet { animation: none; }
+}

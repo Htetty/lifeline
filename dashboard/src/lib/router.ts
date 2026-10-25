@@ -1,6 +1,7 @@
 import { CELL_METERS, depthAt, type FloodGrid, type FloodResult } from "./flood";
 import type { RescueTeam } from "./types";
 import { tripProgress, type LegMode, type Trip, type TripLeg } from "../../convex/tripMath";
+import { moverFor, PROFILES, type Mover, type Profile } from "../../convex/vehicles";
 
 // Flood-aware routing for the simulated rescue teams, on OpenStreetMap roads
 // (public/data/roads.json, from scripts/fetch-roads.mjs) and the flood grid.
@@ -51,29 +52,7 @@ const CLASS_SPEED: Record<string, number> = {
   service: 5,
 };
 
-export type Mover = "road_vehicle" | "high_water_vehicle" | "boat" | "air";
-
-interface Profile {
-  label: string;
-  /** Deepest water the vehicle (or a boat's tow vehicle) can drive through. */
-  limit: number;
-  /** Top speed once in water. */
-  wadingSpeed: number;
-}
-
-export const PROFILES: Record<Exclude<Mover, "air">, Profile> = {
-  road_vehicle: { label: "road vehicle", limit: 0.3, wadingSpeed: 3 },
-  high_water_vehicle: { label: "high-water truck", limit: 0.75, wadingSpeed: 5 },
-  // Towed on its trailer until the water is deep enough to launch.
-  boat: { label: "boat (towed on roads)", limit: 0.6, wadingSpeed: 4 },
-};
-
-export function moverFor(capabilities: RescueTeam["capabilities"]): Mover {
-  if (capabilities.includes("air")) return "air";
-  if (capabilities.includes("boat")) return "boat";
-  if (capabilities.includes("high_water_vehicle")) return "high_water_vehicle";
-  return "road_vehicle";
-}
+export { moverFor, PROFILES, type Mover } from "../../convex/vehicles";
 
 const ONEWAY = 1;
 const BRIDGE = 2;

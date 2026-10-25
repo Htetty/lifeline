@@ -53,6 +53,9 @@ import { capitalize, capitalizeEach } from "@/lib/text";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
 import { etaMinutes, TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
 import { describeReport } from "../../convex/waterReports";
+import { AssignmentPlanner } from "./AssignmentPlanner";
+import { TierPill } from "./TierPill";
+import { routeSummary } from "@/lib/routeText";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
 
@@ -99,6 +102,7 @@ const icon = (path: React.ReactNode) => (
 );
 const SearchIcon = () => icon(<><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></>);
 const QueueIcon = () => icon(<path d="M3 4h10M3 8h10M3 12h6" />);
+const SparkIcon = () => icon(<path d="M8 2v3M8 11v3M2 8h3M11 8h3M4 4l1.8 1.8M10.2 10.2 12 12M4 12l1.8-1.8M10.2 5.8 12 4" />);
 const PinIcon = () => icon(<><path d="M8 14s4.5-4.2 4.5-7.5a4.5 4.5 0 0 0-9 0C3.5 9.8 8 14 8 14z" /><circle cx="8" cy="6.5" r="1.5" /></>);
 const BellIcon = () => icon(<><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3z" /><path d="M6.5 14a1.5 1.5 0 0 0 3 0" /></>);
 const GearIcon = () => icon(<><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></>);
@@ -212,6 +216,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [roads, setRoads] = useState<RoadGraph | null>(null);
   /** Team whose route is previewed for an incident. */
   const [preview, setPreview] = useState<{ incidentId: string; teamId: string } | null>(null);
+  /** Assignment suggestions panel, and the route of the proposal being looked at. */
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerPreview, setPlannerPreview] = useState<RoutePlan | null>(null);
   /** Team the map shows and follows; `key` lets the same team be re-centred. */
   const [focusTeam, setFocusTeam] = useState<{ id: string; key: number } | null>(null);
   /** Clock for where moving teams are, refreshed while any team is travelling. */
@@ -290,6 +297,12 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const flood = useMemo(
     () => (grid && observations.length ? computeFlood(grid, waterLevel, observations) : riverFlood),
     [grid, waterLevel, observations, riverFlood],
+  );
+  // What the planner's routes depend on locally: road and elevation data, river level and
+  // caller observations. A plan made under different values is stale.
+  const routeContext = useMemo(
+    () => JSON.stringify([roads != null, grid != null, waterLevel, observations]),
+    [roads, grid, waterLevel, observations],
   );
   const depthOverChannel = grid ? Math.max(0, channelDepth(grid, waterLevel)) : null;
   const observedAt = waterDraft == null ? state.waterObservedAt : null;
@@ -699,6 +712,17 @@ function DashboardView({ state }: { state: ExerciseState }) {
             <span className="count-badge">
               <QueueIcon /> {mainIncidents.filter((i) => ACTIVE_STATUSES.includes(i.status)).length} waiting
             </span>
+            <button
+              onClick={() => {
+                setPlannerOpen(true);
+                setSelectedId(null);
+                setPendingPick(null);
+              }}
+              title="Suggest assignments"
+              className="suggest-button"
+            >
+              <SparkIcon /> Suggest
+            </button>
           </div>
 
           <label className="queue-search">
@@ -768,7 +792,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
           <FloodMap
             state={mapState}
             flood={flood}
-            preview={previewPlan}
+            preview={plannerOpen && plannerPreview ? { path: plannerPreview.path, legs: plannerPreview.legs } : previewPlan}
             selectedId={selectedId}
             reportMode={reportMode || placingFor != null}
             onSelect={toggleSelected}
@@ -806,6 +830,34 @@ function DashboardView({ state }: { state: ExerciseState }) {
           )}
           <Legend />
 
+          {plannerOpen && (
+            // Kept mounted while an incident is open, so the plan under review survives.
+            <section
+              aria-label="Suggested assignments"
+              className={`planner-sheet ${selected || pendingPick ? "hidden" : ""}`}
+            >
+              <AssignmentPlanner
+                state={state}
+                priorities={priorities}
+                routeFor={(team, incident) => planFor(team, incident, Date.now())}
+                routeContext={routeContext}
+                notReady={
+                  waterDraft != null
+                    ? "Wait for the river level change to save, then suggest."
+                    : pendingPick || placingFor
+                      ? "Finish or cancel the location you're placing on the map, then suggest."
+                      : null
+                }
+                onPreview={setPlannerPreview}
+                onSelectIncident={openIncident}
+                onDone={setToast}
+                onClose={() => {
+                  setPlannerOpen(false);
+                  setPlannerPreview(null);
+                }}
+              />
+            </section>
+          )}
           {(selected || pendingPick) && (
             <section
               ref={sheetRef}
@@ -813,6 +865,11 @@ function DashboardView({ state }: { state: ExerciseState }) {
               data-dock={dock}
               className={`incident-sheet ${closing ? "is-closing" : ""}`}
             >
+              {plannerOpen && (
+                <button onClick={closeSheet} className="sheet-back">
+                  ← Back to suggested assignments
+                </button>
+              )}
               {pendingPick ? (
                 <NewReportForm
                   pick={pendingPick}
@@ -1334,22 +1391,6 @@ function TranscriptIcon() {
   );
 }
 
-const LEG_WORDS = { road: "drive", water: "boat", foot: "on foot", air: "fly" } as const;
-
-function distance(m: number) {
-  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
-}
-
-/** e.g. "tow 2.3 km → boat 380 m → on foot 80 m · deepest water 0.3 of 0.6 m" */
-function routeSummary(plan: RoutePlan) {
-  const steps = [...new Set(plan.legs.map((l) => l.mode))].map((mode) => {
-    const word = mode === "road" && plan.mover === "boat" ? "tow" : LEG_WORDS[mode];
-    return `${word} ${distance(plan.metres[mode])}`;
-  });
-  const depth = plan.limit != null && plan.maxDepth > 0.05 ? ` · deepest water ${plan.maxDepth.toFixed(1)} of ${plan.limit} m` : "";
-  return steps.join(" → ") + depth;
-}
-
 type Turn = { speaker: "Caller" | "AI" | null; text: string };
 
 /** Split the saved speaker-prefixed text into turns without inventing turns or dropping lines. */
@@ -1410,23 +1451,6 @@ function TranscriptModal({ incident, onClose }: { incident: Incident; onClose: (
         </div>
       </div>
     </div>
-  );
-}
-
-const TIER_STYLE: Record<PriorityTier, { label: string; cls: string }> = {
-  critical: { label: "CRITICAL", cls: "chip-red" },
-  high: { label: "HIGH", cls: "chip-orange" },
-  standard: { label: "STANDARD", cls: "chip-neutral" },
-};
-
-function TierPill({ priority }: { priority?: Priority }) {
-  if (!priority) return null;
-  const t = TIER_STYLE[priority.tier];
-  return (
-    <span className={`chip ${t.cls}`}>
-      {t.label}
-      {priority.overrideReason != null && " ✎"}
-    </span>
   );
 }
 
