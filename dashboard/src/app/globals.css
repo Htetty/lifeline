@@ -252,6 +252,7 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .team-option { display: block; width: 100%; text-align: left; padding: 9px 11px; border-radius: 10px; font-size: 13px; background: var(--surface-1); border: 1px solid var(--line); }
 .team-option:hover { border-color: var(--line-strong); }
 .team-option[aria-checked="true"] { border-color: #8fc2ff88; background: #8fc2ff12; }
+.area-select { width: 100%; margin: 6px 0 14px; padding: 7px 10px; border-radius: 9px; font-size: 13px; color: var(--text); background: var(--surface-1); border: 1px solid var(--line-strong); }
 /* "Show more" toggles in the incident sheet. */
 .show-more { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 .show-more:hover { color: var(--text); }

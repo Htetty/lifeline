@@ -1,19 +1,8 @@
-// Fictional exercise data for Mission Valley, San Diego (San Diego River floodplain).
+// Fictional teams and sample incidents for the exercise regions (convex/regions.ts).
 // Coordinates sit on real OSM building footprints so the map can highlight them;
 // the people, reports, and teams are invented.
 
 export const EXERCISE_ID = "mission-valley-exercise-1";
-export const EXERCISE_NAME = "Mission Valley, San Diego";
-/** The simulated area: the road graph (public/data/roads.json) and the flood grid cover exactly this. */
-export const EXERCISE_BOUNDS = { west: -117.185, south: 32.752, east: -117.135, north: 32.776 };
-// A reset exercise opens at the first replayed reading of the Feb 27, 2017 storm at the
-// Fashion Valley gauge: 4.4 ft at 07:00 PST, i.e. (16.48 ft datum + 4.4 ft) in metres NAVD88.
-export const DEFAULT_WATER_SURFACE_ELEVATION = 6.36;
-export const DEFAULT_WATER_OBSERVED_AT = 1488207600000;
-// The sample incidents describe the storm partway up: 9.78 ft at 12:00 PST.
-export const SAMPLE_WATER_SURFACE_ELEVATION = 8.0;
-export const SAMPLE_WATER_OBSERVED_AT = 1488225600000;
-
 type Capability = "road_vehicle" | "high_water_vehicle" | "boat" | "air";
 type RiskFactorKind = "limited_mobility" | "on_roof" | "water_rising_fast" | "elderly";
 
@@ -125,4 +114,18 @@ export const SEED_INCIDENTS: SeedIncident[] = [
     status: "awaiting_assignment",
     minutesAgo: 1,
   },
+];
+
+/** Default teams for the San Francisco waterfront, at staging points that stay dry at the replayed peak. */
+export const SF_SEED_TEAMS: SeedTeam[] = [
+  { key: "boat-1", name: "Swift Water Boat 1", latitude: 37.763892, longitude: -122.38872, capabilities: ["boat"] },
+  { key: "boat-2", name: "Swift Water Boat 2", latitude: 37.781247, longitude: -122.389755, capabilities: ["boat"] },
+  {
+    key: "hwv-1",
+    name: "High-Water Truck 7",
+    latitude: 37.772246,
+    longitude: -122.402206,
+    capabilities: ["high_water_vehicle", "road_vehicle"],
+  },
+  { key: "air-1", name: "Helicopter Rescue 1", latitude: 37.779267, longitude: -122.398462, capabilities: ["air"] },
 ];

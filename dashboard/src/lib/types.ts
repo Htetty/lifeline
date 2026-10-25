@@ -1,3 +1,4 @@
+import type { RegionId } from "../../convex/regions";
 import type { Trip } from "../../convex/tripMath";
 import type { StoredWaterReport } from "../../convex/waterReports";
 
@@ -110,7 +111,9 @@ export interface ActivityEntry {
 
 export interface ExerciseState {
   exerciseId: string;
-  /** Water surface at the river gauge in metres NAVD88. */
+  /** Where the exercise runs (convex/regions.ts). */
+  region: RegionId;
+  /** Water surface at the region's gauge (river or tide) in metres NAVD88. */
   waterSurfaceElevation: number;
   /** Time of the replayed gauge reading behind the level; null when set by hand. */
   waterObservedAt: number | null;

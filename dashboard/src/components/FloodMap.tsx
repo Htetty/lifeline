@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { Map as MLMap, Marker, NavigationControl, ScaleControl, setWorkerUrl, type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { DEMO_AREA } from "@/data/fixtures";
+import { REGIONS } from "../../convex/regions";
 import type { FloodResult } from "@/lib/flood";
 import { distanceToPolygon, expandPolygon, interiorPoint, pointInPolygon, polygons } from "@/lib/geo";
 import type { ExerciseState, Incident } from "@/lib/types";
@@ -303,13 +303,14 @@ export default function FloodMap(props: Props) {
 
   useEffect(() => {
     if (!container.current) return;
+    const view = REGIONS[propsRef.current.state.region].view;
     const map = new MLMap({
       container: container.current,
       style: STYLE_URL,
-      center: DEMO_AREA.center,
-      zoom: DEMO_AREA.zoom,
-      pitch: DEMO_AREA.pitch,
-      bearing: DEMO_AREA.bearing,
+      center: view.center,
+      zoom: view.zoom,
+      pitch: view.pitch,
+      bearing: view.bearing,
       maxPitch: 80,
       attributionControl: {
         compact: true,
@@ -571,9 +572,21 @@ export default function FloodMap(props: Props) {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !readyRef.current || !props.flood) return;
-    (map.getSource("flood") as GeoJSONSource).setData(props.flood.geojson);
+    if (!map || !readyRef.current) return;
+    // Cleared while another region's flood is still loading.
+    (map.getSource("flood") as GeoJSONSource).setData(props.flood?.geojson ?? { type: "FeatureCollection", features: [] });
   }, [props.flood]);
+
+  // The exercise moved to another region: fly there.
+  const region = props.state.region;
+  const shownRegion = useRef(region);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || shownRegion.current === region) return;
+    shownRegion.current = region;
+    const { center, zoom, pitch, bearing } = REGIONS[region].view;
+    map.flyTo({ center, zoom, pitch, bearing, duration: 1800 });
+  }, [region]);
 
   useEffect(() => {
     const map = mapRef.current;

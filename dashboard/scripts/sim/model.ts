@@ -1,13 +1,12 @@
 // The dashboard's flood and road models, loaded in Node (the browser loader decodes tiles
-// with OffscreenCanvas). Used by the demo scenario builder. Run scripts with jiti.
+// with OffscreenCanvas). Used by the demo scenario builder. Run with scripts/run.mjs.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
-import { EXERCISE_BOUNDS } from "../../convex/seedData";
+import type { Region } from "../../convex/regions";
 import { DEM_ZOOM, ElevationGrid, type Bounds } from "../../src/lib/elevation";
-import { buildFloodGrid } from "../../src/lib/flood";
-import { GAUGE } from "../../src/lib/gauge";
+import { buildRegionGrid, gridShape } from "../../src/lib/flood";
 import { buildGraph, type RoadFile } from "../../src/lib/router";
 
 const TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
@@ -19,7 +18,7 @@ const latToY = (lat: number, z: number) => {
   return ((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2) * 2 ** z;
 };
 
-async function loadElevation(bounds: Bounds) {
+export async function loadElevation(bounds: Bounds) {
   const x0 = Math.floor(lonToX(bounds.west, DEM_ZOOM));
   const x1 = Math.floor(lonToX(bounds.east, DEM_ZOOM));
   const y0 = Math.floor(latToY(bounds.north, DEM_ZOOM));
@@ -55,9 +54,12 @@ async function loadElevation(bounds: Bounds) {
   return new ElevationGrid(data, x0, y0, cols, rows);
 }
 
-export async function loadModel() {
-  const elevation = await loadElevation(EXERCISE_BOUNDS);
-  const grid = buildFloodGrid(elevation, EXERCISE_BOUNDS, GAUGE.longitude);
-  const roadsFile = JSON.parse(readFileSync(join(__dirname, "../../public/data/roads.json"), "utf8")) as RoadFile;
-  return { elevation, grid, roads: buildGraph(roadsFile) };
+/** A region's flood grid (with its buildings) and road graph, as the dashboard builds them. */
+export async function loadModel(region: Region) {
+  const elevation = await loadElevation(region.bounds);
+  const data = (file: string) => JSON.parse(readFileSync(join(__dirname, `../../public/data/${region.id}/${file}`), "utf8"));
+  const buildings = new Float32Array(gridShape(region.bounds).cols * gridShape(region.bounds).rows);
+  for (const [start, length, dm] of data("buildings.json").runs as number[][]) buildings.fill(dm / 10, start, start + length);
+  const grid = { ...buildRegionGrid(elevation, region), buildings };
+  return { elevation, grid, roads: buildGraph(data("roads.json") as RoadFile) };
 }

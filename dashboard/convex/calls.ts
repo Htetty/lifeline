@@ -5,6 +5,7 @@ import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { getExercise, isCurrentEvent, logActivity, requireBackend } from "./lib";
 import { autoGroup, reevaluateLinks, unlink } from "./linking";
 import { advisoryTags, callerRole, hazard, incidentSource, riskFactor, withdrawal } from "./schema";
+import { regionOf } from "./regions";
 import { EXERCISE_ID } from "./seedData";
 import { describeReport, replacesReport, reportMeters, waterLevel, type StoredWaterReport } from "./waterReports";
 
@@ -353,6 +354,15 @@ export const locationFromPhone = mutation({
     await autoGroup(ctx, incident._id);
     await logActivity(ctx, "Caller shared a phone location. Map candidate updated.", incident._id);
     return { saved: true, reason: "saved" };
+  },
+});
+
+/** The exercise area, so the backend's map search stays inside it. */
+export const exerciseArea = query({
+  args: { secret: v.string() },
+  handler: async (ctx, { secret }) => {
+    requireBackend(secret);
+    return regionOf(await getExercise(ctx)).bounds;
   },
 });
 

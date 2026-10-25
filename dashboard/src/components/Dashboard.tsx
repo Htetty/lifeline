@@ -6,10 +6,9 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { DEMO_AREA } from "@/data/fixtures";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
 import {
-  buildFloodGrid,
+  buildRegionGrid,
   loadBuildings,
   channelDepth,
   computeFlood,
@@ -24,7 +23,8 @@ import {
   type FloodResult,
   type WaterObservation,
 } from "@/lib/flood";
-import { formatGaugeTime, GAUGE, readingAt, readingIndex, REPLAY_LENGTH, surfaceToStage } from "@/lib/gauge";
+import { formatGaugeTime, gaugeFor, readingAt, readingIndex } from "@/lib/gauge";
+import { REGIONS, type Bounds, type RegionId } from "../../convex/regions";
 import {
   deepestAhead,
   loadRoads,
@@ -122,9 +122,6 @@ const STATUS_STYLE: Record<IncidentStatus, string> = {
   resolved: "chip-green",
 };
 
-// Water surface at the gauge, metres NAVD88: normal flow is ~6 m, the 2017 record ~9.3 m.
-const WATER_MIN = 5.5;
-const WATER_MAX = 12;
 const WATER_COMMIT_MS = 150;
 // Each tick replays 30 minutes of the storm (two 15-minute gauge readings).
 const REPLAY_TICK_MS = 3000;
@@ -209,13 +206,19 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [placingFor, setPlacingFor] = useState<string | null>(null);
   const [pendingPick, setPendingPick] = useState<BuildingPick | null>(null);
   const [liveFeed, setLiveFeed] = useState(false);
-  const [elevation, setElevation] = useState<ElevationGrid | null>(null);
-  const [buildings, setBuildings] = useState<Float32Array | null>(null);
+  // Area data, each kept with the region it was loaded for so a region switch never mixes them.
+  const [elevationFor, setElevationFor] = useState<{ region: RegionId; data: ElevationGrid } | null>(null);
+  const [buildingsFor, setBuildingsFor] = useState<{ region: RegionId; data: Float32Array } | null>(null);
+  const [roadsFor, setRoadsFor] = useState<{ region: RegionId; data: RoadGraph } | null>(null);
+  const region = REGIONS[state.region];
+  const gauge = gaugeFor(region.id);
+  const elevation = elevationFor?.region === region.id ? elevationFor.data : null;
+  const buildings = buildingsFor?.region === region.id ? buildingsFor.data : null;
+  const roads = roadsFor?.region === region.id ? roadsFor.data : null;
   const [elevationError, setElevationError] = useState<string | null>(null);
   const [resolved, setResolved] = useState<Record<string, ResolvedBuilding>>({});
   const [toast, setToast] = useState<string | null>(null);
   const [waterDraft, setWaterDraft] = useState<number | null>(null);
-  const [roads, setRoads] = useState<RoadGraph | null>(null);
   /** Team whose route is previewed for an incident. */
   const [preview, setPreview] = useState<{ incidentId: string; teamId: string } | null>(null);
   /** Assignment suggestions panel, and the route of the proposal being looked at. */
@@ -239,7 +242,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
 
   const run: Run = useCallback((action) => {
     dispatch(action).catch((e) => setToast(errorMessage(e)));
-  }, []);
+  }, [setToast]);
 
   useEffect(() => {
     if (!toast) return;
@@ -260,21 +263,22 @@ function DashboardView({ state }: { state: ExerciseState }) {
   }, [waterDraft]);
 
   useEffect(() => {
-    loadElevation(DEMO_AREA.floodBounds)
-      .then(setElevation)
+    const area = REGIONS[region.id];
+    loadElevation(area.bounds)
+      .then((data) => setElevationFor({ region: area.id, data }))
       .catch((e: Error) => setElevationError(e.message));
-    loadRoads()
-      .then(setRoads)
+    loadRoads(area.id)
+      .then((data) => setRoadsFor({ region: area.id, data }))
       .catch((e: Error) => setToast(`Routing unavailable: ${e.message}`));
     // Without it boats still route, just straight across flooded buildings.
-    loadBuildings(DEMO_AREA.floodBounds)
-      .then(setBuildings)
+    loadBuildings(area)
+      .then((data) => setBuildingsFor({ region: area.id, data }))
       .catch((e: Error) => console.warn(`Building footprints unavailable: ${e.message}`));
-  }, []);
+  }, [region.id]);
 
   const grid: FloodGrid | null = useMemo(
-    () => (elevation ? { ...buildFloodGrid(elevation, DEMO_AREA.floodBounds, GAUGE.longitude), buildings: buildings ?? undefined } : null),
-    [elevation, buildings],
+    () => (elevation ? { ...buildRegionGrid(elevation, REGIONS[region.id]), buildings: buildings ?? undefined } : null),
+    [elevation, buildings, region.id],
   );
   // Callers' descriptions of the water, placed where they are.
   const observations: WaterObservation[] = useMemo(() => {
@@ -353,9 +357,10 @@ function DashboardView({ state }: { state: ExerciseState }) {
     const timer = setInterval(() => {
       const s = stateRef.current;
       tick++;
-      const current = readingIndex(s.waterObservedAt);
-      if (current < REPLAY_LENGTH - 1) {
-        const next = readingAt(current < 0 ? 0 : current + READINGS_PER_TICK);
+      const g = gaugeFor(s.region);
+      const current = readingIndex(g, s.waterObservedAt);
+      if (current < g.readings.length - 1) {
+        const next = readingAt(g, current < 0 ? 0 : current + READINGS_PER_TICK);
         run({ type: "setWaterLevel", meters: next.surface, observedAt: next.time });
       }
       const assigned = s.incidents.find((i) => i.status === "assigned" && !i.linkedTo);
@@ -372,7 +377,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const onReportBuilding = useCallback(
     (pick: BuildingPick) => {
       if (placingFor) {
-        if (!inFloodArea(pick.longitude, pick.latitude)) {
+        if (!inFloodArea(region.bounds, pick.longitude, pick.latitude)) {
           setToast("That building is outside the flood model area, so the caller's water report won't show on the map.");
         }
         run({ type: "verifyLocation", incidentId: placingFor, latitude: pick.latitude, longitude: pick.longitude });
@@ -383,7 +388,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
       setPendingPick(pick);
       setSelectedId(null);
     },
-    [placingFor, run],
+    [placingFor, run, region.bounds, setToast],
   );
 
   // Linked reports are about the same people as their main incident: list, map and count it once.
@@ -589,14 +594,14 @@ function DashboardView({ state }: { state: ExerciseState }) {
         <Brand />
         <span className="console-region">
           <PinIcon />
-          {DEMO_AREA.name}
+          {region.name}
         </span>
         <div className="console-metrics">
           <span><i className="live-dot" /> On call <b>{state.incidents.filter((i) => i.callConnected).length}</b></span>
           <span>Needs review <b>{mainIncidents.filter((i) => i.status === "needs_review").length}</b></span>
           <span>Active rescues <b>{mainIncidents.filter((i) => DISPATCHED_STATUSES.includes(i.status)).length}</b></span>
           <span>Teams free <b>{state.teams.filter((t) => t.available).length}</b></span>
-          <span title={`USGS ${GAUGE.site} ${GAUGE.name}`}>River <b>{surfaceToStage(waterLevel).toFixed(1)} ft</b></span>
+          <span title={`${gauge.agency} ${gauge.site} ${gauge.name}`}>{gauge.label} <b>{gauge.display(waterLevel)}</b></span>
         </div>
         <button
           onClick={() => {
@@ -657,33 +662,63 @@ function DashboardView({ state }: { state: ExerciseState }) {
             <div className="fixed inset-0 z-30" onClick={() => setSettingsOpen(false)} aria-hidden />
             <section className="settings-popover" aria-label="Simulation settings">
               <h2>Simulation</h2>
+              <label className="block text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="exercise-area">
+                Area
+              </label>
+              <select
+                id="exercise-area"
+                value={region.id}
+                onChange={(e) => {
+                  const next = e.target.value as RegionId;
+                  if (!confirm(`Move the exercise to ${REGIONS[next].name}? This clears every incident for everyone.`)) return;
+                  setLiveFeed(false);
+                  setSelectedId(null);
+                  setPendingPick(null);
+                  setPlacingFor(null);
+                  setPlannerOpen(false);
+                  run({ type: "reset", region: next });
+                }}
+                className="area-select"
+              >
+                {Object.values(REGIONS).map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
               <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">
-                River level at Fashion Valley gauge
+                {gauge.label} level at the {gauge.name}
               </label>
               <input
                 type="range"
-                min={WATER_MIN}
-                max={WATER_MAX}
+                min={region.water.min}
+                max={region.water.max}
                 step={0.05}
                 value={waterLevel}
                 onChange={(e) => setWaterDraft(Number(e.target.value))}
                 className="w-full accent-sky-400"
               />
               <p className="text-xs text-slate-400">
-                {surfaceToStage(waterLevel).toFixed(2)} ft gauge height ({waterLevel.toFixed(2)} m above sea level)
-                {depthOverChannel != null && <> · {depthOverChannel.toFixed(1)} m above the river channel</>}
+                {region.flood.kind === "river" ? (
+                  <>
+                    {gauge.display(waterLevel, 2)} gauge height ({waterLevel.toFixed(2)} m above sea level)
+                    {depthOverChannel != null && <> · {depthOverChannel.toFixed(1)} m above the river channel</>}
+                  </>
+                ) : (
+                  <>{waterLevel.toFixed(2)} m above sea level (NAVD88)</>
+                )}
               </p>
               <p className="text-[10px] leading-snug text-slate-500">
                 {observedAt != null
-                  ? `Recorded by USGS gauge ${GAUGE.site} at ${formatGaugeTime(observedAt)} during the ${GAUGE.event}.`
-                  : `Set by hand. Replay uses USGS gauge ${GAUGE.site} readings from the ${GAUGE.event}.`}
+                  ? `Recorded by ${gauge.agency} gauge ${gauge.site} at ${formatGaugeTime(observedAt)}: ${gauge.event}.`
+                  : `Set by hand. Replay uses ${gauge.agency} gauge ${gauge.site} readings: ${gauge.event}.`}
               </p>
               <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => setLiveFeed((v) => !v)}
                   className={`soft-button ${liveFeed ? "soft-button-on" : ""}`}
                 >
-                  {liveFeed ? "● Replaying 2017 storm" : "Replay 2017 storm"}
+                  {liveFeed ? `● Replaying ${gauge.replayName}` : `Replay ${gauge.replayName}`}
                 </button>
                 <button
                   onClick={() => {
@@ -906,6 +941,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                 selected && (
                   <IncidentDetail
                     key={selected.id}
+                    area={region.bounds}
                     incident={selected}
                     water={waterReport(selected)}
                     riverDepth={riverDepthAt(grid, riverFlood, selected)}
@@ -1058,6 +1094,7 @@ const TEAMS_SHOWN = 3;
 const HAZARDS_SHOWN = 2;
 
 function IncidentDetail({
+  area,
   incident,
   water,
   riverDepth,
@@ -1076,6 +1113,8 @@ function IncidentDetail({
   onTranscript,
   onClose,
 }: {
+  /** The exercise area, which the flood model covers. */
+  area: Bounds;
   incident: Incident;
   water: ReturnType<typeof waterAtBuilding> | null;
   riverDepth: number | null;
@@ -1250,7 +1289,7 @@ function IncidentDetail({
                 report={incident.waterReport}
                 riverDepth={riverDepth}
                 verified={incident.locationVerified}
-                outsideModel={onMap && !inFloodArea(incident.longitude!, incident.latitude!)}
+                outsideModel={onMap && !inFloodArea(area, incident.longitude!, incident.latitude!)}
               />
             </details>
           )}
@@ -1891,8 +1930,7 @@ function WaterPanel({ water }: { water: ReturnType<typeof waterAtBuilding> | nul
 }
 
 /** Whether a point lies inside the area the flood model covers; callers' reports outside it can't be drawn. */
-function inFloodArea(longitude: number, latitude: number) {
-  const { west, east, south, north } = DEMO_AREA.floodBounds;
+function inFloodArea({ west, east, south, north }: Bounds, longitude: number, latitude: number) {
   return longitude >= west && longitude <= east && latitude >= south && latitude <= north;
 }
 

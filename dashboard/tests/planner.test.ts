@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { checkRouteEvidence, MAX_ROUTE_POINTS } from "../convex/planning";
-import { EXERCISE_BOUNDS } from "../convex/seedData";
+import { REGIONS } from "../convex/regions";
+
+const EXERCISE_BOUNDS = REGIONS["mission-valley"].bounds;
 import { computeFlood, type FloodGrid } from "../src/lib/flood";
 import { evidenceFor, planAssignments, type RouteResult } from "../src/lib/planner";
 import type { Priority } from "../src/lib/priority";
@@ -320,7 +322,7 @@ describe("route evidence checks", () => {
     ["due north", [-117.16, south], [-117.16, north]],
   ];
   test("the exercise area is exactly the checked-in road graph's area", async () => {
-    const roads = (await import("../public/data/roads.json")).default as { bounds: typeof EXERCISE_BOUNDS };
+    const roads = (await import("../public/data/mission-valley/roads.json")).default as { bounds: typeof EXERCISE_BOUNDS };
     expect(roads.bounds).toEqual(EXERCISE_BOUNDS);
   });
 

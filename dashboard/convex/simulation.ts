@@ -5,7 +5,8 @@ import { clearExercise, logActivity, requireBackend, seedExercise, setWater } fr
 import { autoGroup, bump, linkedReports } from "./linking";
 import { queueCallerUpdate } from "./callerUpdates";
 import { onSceneMinutes } from "./rescueTime";
-import { capability } from "./schema";
+import { DEFAULT_REGION } from "./regions";
+import { capability, regionId } from "./schema";
 
 // The demo simulation (backend/scripts/demo_sim.py) drives these with the backend secret:
 // it resets the exercise with its own teams, raises the river along the 2017 gauge record,
@@ -22,13 +23,14 @@ export const start = mutation({
     onSceneSpeedup: v.number(),
     waterSurfaceElevation: v.number(),
     waterObservedAt: v.number(),
+    region: v.optional(regionId),
   },
-  handler: async (ctx, { secret, teams, onSceneSpeedup, waterSurfaceElevation, waterObservedAt }) => {
+  handler: async (ctx, { secret, teams, onSceneSpeedup, waterSurfaceElevation, waterObservedAt, region = DEFAULT_REGION }) => {
     requireBackend(secret);
     if (!teams.length || teams.length > 40) throw new ConvexError("Give the simulation 1 to 40 teams");
     if (!(onSceneSpeedup >= 1 && onSceneSpeedup <= 600)) throw new ConvexError("onSceneSpeedup must be 1 to 600");
     await clearExercise(ctx);
-    await seedExercise(ctx, { simulation: { teams, onSceneSpeedup } });
+    await seedExercise(ctx, { region, simulation: { teams, onSceneSpeedup } });
     await setWater(ctx, waterSurfaceElevation, waterObservedAt);
   },
 });

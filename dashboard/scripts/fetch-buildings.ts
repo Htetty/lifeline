@@ -1,12 +1,17 @@
-// Downloads OpenStreetMap building footprints in the flood area and writes
-// public/data/buildings.json: which flood-grid cells are covered by a building, and how tall
-// it is, so boats in the router go around buildings the water isn't deep enough to clear.
-// Run from dashboard/: `npm run fetch:buildings` (or `-- --from overpass.json` to skip the download).
+// Downloads OpenStreetMap building footprints in a region's area and writes
+// public/data/<region>/buildings.json: which flood-grid cells are covered by a building, and how
+// tall it is, so boats in the router go around buildings the water isn't deep enough to clear.
+// Run from dashboard/: `npm run fetch:buildings -- --region sf-waterfront`
+// (add `--from overpass.json` to skip the download).
 // Building data © OpenStreetMap contributors.
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { EXERCISE_BOUNDS as BOUNDS } from "../convex/seedData";
+import { overpass } from "./overpass";
+import { regionArg } from "./regionArg";
 import { CELL_METERS, gridShape } from "../src/lib/flood";
+
+const region = regionArg();
+const BOUNDS = region.bounds;
 
 /** Height when OSM has none: about one storey plus a roof, or three per storey for flats and hotels. */
 const DEFAULT_HEIGHT_M: Record<string, number> = { apartments: 9, hotel: 12, residential: 9, house: 6, detached: 6 };
@@ -24,19 +29,7 @@ interface Way {
 
 async function download(): Promise<Way[]> {
   const { west, south, east, north } = BOUNDS;
-  const query = `[out:json][timeout:150];way["building"](${south},${west},${north},${east});out geom tags;`;
-  for (const wait of [0, 20, 40, 80]) {
-    await new Promise((r) => setTimeout(r, wait * 1000));
-    const res = await fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "hurricaneai-flood-demo/0.1" },
-      body: new URLSearchParams({ data: query }),
-    });
-    const text = await res.text();
-    if (res.ok && text.startsWith("{")) return JSON.parse(text).elements;
-    console.warn(`Overpass busy (${res.status}), retrying…`);
-  }
-  throw new Error("Overpass unavailable; download the buildings yourself and pass --from <file>");
+  return overpass<Way>(`[out:json][timeout:150];way["building"](${south},${west},${north},${east});out geom tags;`);
 }
 
 function heightOf(tags: Record<string, string>) {
@@ -100,7 +93,7 @@ for (let i = 0; i < height.length; ) {
 }
 const covered = runs.reduce((n, [, len]) => n + len, 0);
 writeFileSync(
-  new URL("../public/data/buildings.json", import.meta.url),
+  new URL(`../public/data/${region.id}/buildings.json`, import.meta.url),
   JSON.stringify({ source: "© OpenStreetMap contributors (ODbL)", bounds: BOUNDS, cellMeters: CELL_METERS, cols, rows, runs }),
 );
 console.log(`${used} buildings → ${covered} of ${cols * rows} cells (${runs.length} runs)`);

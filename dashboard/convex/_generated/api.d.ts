@@ -16,6 +16,7 @@ import type * as lib from "../lib.js";
 import type * as linking from "../linking.js";
 import type * as planner from "../planner.js";
 import type * as planning from "../planning.js";
+import type * as regions from "../regions.js";
 import type * as rescueTime from "../rescueTime.js";
 import type * as seedData from "../seedData.js";
 import type * as simulation from "../simulation.js";
@@ -39,6 +40,7 @@ declare const fullApi: ApiFromModules<{
   linking: typeof linking;
   planner: typeof planner;
   planning: typeof planning;
+  regions: typeof regions;
   rescueTime: typeof rescueTime;
   seedData: typeof seedData;
   simulation: typeof simulation;

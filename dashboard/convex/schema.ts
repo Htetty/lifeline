@@ -6,6 +6,8 @@ import { storedWaterReport } from "./waterReports";
 // Shared data contract for the dashboard (Next.js) and the voice backend (FastAPI).
 // Unknown facts stay null rather than being guessed.
 
+export const regionId = v.union(v.literal("mission-valley"), v.literal("sf-waterfront"));
+
 export const incidentStatus = v.union(
   v.literal("needs_review"),
   v.literal("awaiting_assignment"),
@@ -109,6 +111,8 @@ export default defineSchema({
   exercises: defineTable({
     exerciseId: v.string(),
     name: v.string(),
+    /** Where the exercise runs (convex/regions.ts); absent on older rows, which are Mission Valley. */
+    region: v.optional(regionId),
     /** Water surface at the Fashion Valley river gauge, metres NAVD88. */
     waterSurfaceElevation: v.number(),
     /** Time of the replayed gauge reading behind the level; null when set by hand. */

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { DEFAULT_REGION, type RegionId } from "../../convex/regions";
 import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "../../convex/_generated/api";
@@ -39,7 +40,7 @@ export type Action =
   | { type: "unlinkReport"; reportId: string }
   | { type: "markSeparate"; incidentId: string; otherId: string }
   | { type: "setPriorityOverride"; incidentId: string; tier: PriorityTier | null; reason: string }
-  | { type: "reset" };
+  | { type: "reset"; region?: RegionId };
 
 function toIncident(d: Doc<"incidents">): Incident {
   const { _id, _creationTime, ...rest } = d;
@@ -122,6 +123,7 @@ export function useExercise(token: string): ExerciseState | undefined {
     if (!data) return undefined;
     return {
       exerciseId: data.exercise.exerciseId,
+      region: data.exercise.region ?? DEFAULT_REGION,
       waterSurfaceElevation: data.exercise.waterSurfaceElevation,
       waterObservedAt: data.exercise.waterObservedAt ?? null,
       incidents: data.incidents.map(toIncident),
@@ -204,7 +206,7 @@ export async function dispatch(action: Action): Promise<void> {
       });
       return;
     case "reset":
-      await convex.mutation(api.exercise.reset, { dispatcherToken });
+      await convex.mutation(api.exercise.reset, { dispatcherToken, ...(action.region ? { region: action.region } : {}) });
       return;
   }
 }

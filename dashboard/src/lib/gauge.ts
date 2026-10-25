@@ -1,47 +1,73 @@
 import { GAUGE_READINGS } from "@/data/gaugeReplay";
+import { TIDE_READINGS, TIDE_SEA_LEVEL_RISE_M } from "@/data/tideReplay";
+import type { RegionId } from "../../convex/regions";
 
-// The flood is anchored to a real stream gauge inside the demo area. Gauge height is
-// measured from the gauge datum; adding the datum gives a water surface in NAVD88,
-// the same vertical datum as the USGS ground elevation.
+// Each region's flood is anchored to a real gauge, replayed from a recorded storm. Water
+// surfaces are metres NAVD88, the same vertical datum as the USGS ground elevation.
 
 const FEET = 0.3048;
-
-export const GAUGE = {
-  site: "11023000",
-  name: "San Diego River at Fashion Valley",
-  longitude: -117.1686285,
-  latitude: 32.76504955,
-  datumFt: 16.48, // NAVD88, ±0.16 ft
-  event: "Feb 27–28, 2017 storm (record peak 14.15 ft)",
-};
-
-/** Water surface at the gauge, metres NAVD88, for a gauge height in feet. */
-export function stageToSurface(stageFt: number) {
-  return (GAUGE.datumFt + stageFt) * FEET;
-}
-
-export function surfaceToStage(surface: number) {
-  return surface / FEET - GAUGE.datumFt;
-}
 
 export interface GaugeReading {
   index: number;
   time: number;
-  stageFt: number;
+  /** Water surface at the gauge, metres NAVD88. */
   surface: number;
 }
 
-export const REPLAY_LENGTH = GAUGE_READINGS.length;
+export interface Gauge {
+  /** One word for the header, e.g. "River". */
+  label: string;
+  agency: string;
+  site: string;
+  name: string;
+  /** What the replay is, for "during the …". */
+  event: string;
+  /** Short name of the replay, for its button. */
+  replayName: string;
+  readings: [time: number, surface: number][];
+  /** The level the way it's read at this gauge, e.g. "14.2 ft". */
+  display: (surface: number, digits?: number) => string;
+}
 
-export function readingAt(index: number): GaugeReading {
-  const i = Math.min(Math.max(0, index), GAUGE_READINGS.length - 1);
-  const [time, stageFt] = GAUGE_READINGS[i];
-  return { index: i, time, stageFt, surface: stageToSurface(stageFt) };
+// Mission Valley: USGS gauge height (ft above the gauge datum); + datum = NAVD88.
+const FASHION_VALLEY_DATUM_FT = 16.48; // ±0.16 ft
+
+const GAUGES: Record<RegionId, Gauge> = {
+  "mission-valley": {
+    label: "River",
+    agency: "USGS",
+    site: "11023000",
+    name: "San Diego River at Fashion Valley",
+    event: "Feb 27–28, 2017 storm (record peak 14.15 ft)",
+    replayName: "2017 storm",
+    readings: GAUGE_READINGS.map(([t, ft]) => [t, (FASHION_VALLEY_DATUM_FT + ft) * FEET]),
+    display: (surface, digits = 1) => `${(surface / FEET - FASHION_VALLEY_DATUM_FT).toFixed(digits)} ft`,
+  },
+  "sf-waterfront": {
+    label: "Bay",
+    agency: "NOAA",
+    site: "9414290",
+    name: "San Francisco (Golden Gate) tide gauge",
+    event: `Jan 27, 1983 record storm tide, plus a hypothetical ${TIDE_SEA_LEVEL_RISE_M} m of sea-level rise`,
+    replayName: "1983 storm tide",
+    readings: TIDE_READINGS,
+    display: (surface, digits = 1) => `${surface.toFixed(digits)} m`,
+  },
+};
+
+export function gaugeFor(region: RegionId): Gauge {
+  return GAUGES[region];
+}
+
+export function readingAt(gauge: Gauge, index: number): GaugeReading {
+  const i = Math.min(Math.max(0, index), gauge.readings.length - 1);
+  const [time, surface] = gauge.readings[i];
+  return { index: i, time, surface };
 }
 
 /** Index of the reading recorded at `time`, or -1. */
-export function readingIndex(time: number | null) {
-  return time == null ? -1 : GAUGE_READINGS.findIndex(([t]) => t === time);
+export function readingIndex(gauge: Gauge, time: number | null) {
+  return time == null ? -1 : gauge.readings.findIndex(([t]) => t === time);
 }
 
 export function formatGaugeTime(time: number) {
@@ -49,6 +75,7 @@ export function formatGaugeTime(time: number) {
     timeZone: "America/Los_Angeles",
     month: "short",
     day: "numeric",
+    year: "numeric",
     hour: "numeric",
     minute: "2-digit",
     timeZoneName: "short",

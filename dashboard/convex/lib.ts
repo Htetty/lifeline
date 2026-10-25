@@ -1,17 +1,8 @@
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import {
-  DEFAULT_WATER_OBSERVED_AT,
-  DEFAULT_WATER_SURFACE_ELEVATION,
-  SAMPLE_WATER_OBSERVED_AT,
-  SAMPLE_WATER_SURFACE_ELEVATION,
-  EXERCISE_ID,
-  EXERCISE_NAME,
-  SEED_INCIDENTS,
-  SEED_TEAMS,
-  type SeedTeam,
-} from "./seedData";
+import { REGIONS, type RegionId } from "./regions";
+import { EXERCISE_ID, type SeedTeam } from "./seedData";
 import { LEVEL_METERS } from "./waterReports";
 
 export async function logActivity(
@@ -126,19 +117,28 @@ export interface SimulationSetup {
  */
 export async function seedExercise(
   ctx: MutationCtx,
-  { withSamples = false, simulation }: { withSamples?: boolean; simulation?: SimulationSetup } = {},
+  {
+    region: regionId,
+    withSamples = false,
+    simulation,
+  }: { region: RegionId; withSamples?: boolean; simulation?: SimulationSetup },
 ) {
   const now = Date.now();
+  const region = REGIONS[regionId];
+  // Only regions with sample incidents have a water level they were written for.
+  const samples = withSamples ? region.water.samples : null;
+  const water = samples ?? region.water.start;
   await ctx.db.insert("exercises", {
     exerciseId: EXERCISE_ID,
-    name: EXERCISE_NAME,
-    waterSurfaceElevation: withSamples ? SAMPLE_WATER_SURFACE_ELEVATION : DEFAULT_WATER_SURFACE_ELEVATION,
-    waterObservedAt: withSamples ? SAMPLE_WATER_OBSERVED_AT : DEFAULT_WATER_OBSERVED_AT,
+    name: region.name,
+    region: region.id,
+    waterSurfaceElevation: water.surface,
+    waterObservedAt: water.observedAt,
     ...(simulation ? { autoResolve: true, onSceneSpeedup: simulation.onSceneSpeedup } : {}),
   });
 
   const teamIds = new Map<string, Id<"teams">>();
-  const teams: SeedTeam[] = simulation ? simulation.teams.map((t, n) => ({ ...t, key: `sim-${n}` })) : SEED_TEAMS;
+  const teams: SeedTeam[] = simulation ? simulation.teams.map((t, n) => ({ ...t, key: `sim-${n}` })) : region.teams;
   for (const t of teams) {
     const id = await ctx.db.insert("teams", {
       exerciseId: EXERCISE_ID,
@@ -158,11 +158,11 @@ export async function seedExercise(
     await logActivity(ctx, `Simulation ready: ${teams.length} rescue teams on standby, calls starting.`);
     return;
   }
-  if (!withSamples) {
-    await logActivity(ctx, "Exercise ready: rescue teams on standby, no incidents yet.");
+  if (!samples || !region.incidents.length) {
+    await logActivity(ctx, `Exercise ready in ${region.name}: rescue teams on standby, no incidents yet.`);
     return;
   }
-  for (const s of SEED_INCIDENTS) {
+  for (const s of region.incidents) {
     const assignedTeamId = s.assignedTeam ? (teamIds.get(s.assignedTeam) ?? null) : null;
     const at = now - s.minutesAgo * 60_000;
     const incidentId = await ctx.db.insert("incidents", {
@@ -178,7 +178,7 @@ export async function seedExercise(
       hazards: s.hazards.map((hazard) => ({ hazard, evidence: null })),
       riskFactors: s.riskFactors ?? [],
       waterReport: s.waterReport
-        ? { ...s.waterReport, meters: LEVEL_METERS[s.waterReport.level], at, gaugeSurface: SAMPLE_WATER_SURFACE_ELEVATION }
+        ? { ...s.waterReport, meters: LEVEL_METERS[s.waterReport.level], at, gaugeSurface: samples.surface }
         : null,
       summary: s.summary,
       transcript: null,
@@ -193,5 +193,5 @@ export async function seedExercise(
       await ctx.db.patch(assignedTeamId, { available: false, currentAssignment: incidentId });
     }
   }
-  await logActivity(ctx, `Exercise loaded with ${SEED_INCIDENTS.length} fictional sample incidents.`);
+  await logActivity(ctx, `Exercise loaded in ${region.name} with ${region.incidents.length} fictional sample incidents.`);
 }
