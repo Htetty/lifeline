@@ -49,7 +49,7 @@ import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types"
 import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
 import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
-import { TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
+import { etaMinutes, TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
 import { LEVEL_LABEL } from "../../convex/waterReports";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
@@ -221,10 +221,11 @@ function DashboardView({ state }: { state: ExerciseState }) {
     if (!grid) return [];
     return state.incidents.flatMap((i) => {
       if (!i.waterReport || i.latitude == null || i.longitude == null) return [];
-      const at = observationAt(grid, i.waterReport, i.longitude, i.latitude, FLOOR_HEIGHT_M);
+      const ground = elevation?.sample(i.longitude, i.latitude) ?? null;
+      const at = observationAt(grid, i.waterReport, i.longitude, i.latitude, FLOOR_HEIGHT_M, ground);
       return at ? [{ lon: i.longitude, lat: i.latitude, ...at, weight: i.locationVerified ? 1 : 0.5 }] : [];
     });
-  }, [grid, state.incidents]);
+  }, [grid, elevation, state.incidents]);
   const callerZones = useMemo(
     () =>
       state.incidents.flatMap((i) =>
@@ -694,8 +695,7 @@ function UnitsPanel({
     const where = incident ? ` · ${incident.reportedAddress}` : "";
     if (t.available) return { text: "Available", color: "#2563eb" };
     if (t.trip && now < t.trip.arriveAt) {
-      const eta = Math.max(1, Math.ceil(((t.trip.arriveAt - now) * TRIP_SPEEDUP) / 60_000));
-      return { text: `En route, ETA ${eta} min${where}`, color: "#f59e0b" };
+      return { text: `En route, ETA ${etaMinutes(t.trip, now)} min${where}`, color: "#f59e0b" };
     }
     if (incident?.status === "en_route") return { text: `On scene${where}`, color: "#16a34a" };
     return { text: `Assigned, not yet sent${where}`, color: "#64748b" };
@@ -1404,8 +1404,8 @@ function riverDepthAt(grid: FloodGrid | null, riverFlood: FloodResult | null, in
   return depthAt(grid, riverFlood, incident.longitude, incident.latitude);
 }
 
-/** Flags a gap this big between the caller and the river model. */
-const DISAGREE_M = 0.5;
+/** Flags a gap at least this big between the caller and the river model. */
+const DISAGREE_M = 0.3;
 
 function CallerWater({
   report,
@@ -1432,7 +1432,7 @@ function CallerWater({
         River model alone: <b>{riverDepth == null ? "loading…" : `${riverDepth.toFixed(1)} m`}</b>
       </p>
       {gap != null &&
-        (Math.abs(gap) > DISAGREE_M ? (
+        (Math.abs(gap) >= DISAGREE_M ? (
           <p className="mt-1 text-amber-300">
             They differ by {Math.abs(gap).toFixed(1)} m. The map uses the caller&apos;s report within ~
             {OBSERVATION_RADIUS_M} m{verified ? "" : " (location not yet confirmed)"}.

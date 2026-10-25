@@ -70,6 +70,15 @@ export function tripProgress(trip: Pick<Trip, "path" | "departAt" | "arriveAt">,
   return { position: end, remaining: [end] as number[][], next: path.length, fraction };
 }
 
+/**
+ * Real-world minutes left, from the trip's travel estimate. Short trips are stretched
+ * to MIN_TRIP_MS on screen, so this is not simply the time left on the clock × speed-up.
+ */
+export function etaMinutes(trip: Pick<Trip, "departAt" | "arriveAt" | "realSeconds">, now: number) {
+  const left = 1 - Math.min(1, Math.max(0, (now - trip.departAt) / Math.max(1, trip.arriveAt - trip.departAt)));
+  return Math.max(1, Math.ceil((trip.realSeconds * left) / 60));
+}
+
 /** The path still ahead, split into legs by how each stretch is travelled. */
 export function remainingLegs(trip: Trip, now: number) {
   const { remaining, next } = tripProgress(trip, now);

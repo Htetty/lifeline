@@ -2,6 +2,14 @@ import { convexTest } from "convex-test";
 import { beforeEach, describe, expect, test } from "vitest";
 import { api } from "../convex/_generated/api";
 import schema from "../convex/schema";
+import type { WaterLevel } from "../convex/waterReports";
+
+interface Report {
+  level: WaterLevel;
+  measuredMeters: number | null;
+  floor: number | null;
+  evidence: string | null;
+}
 
 const modules = import.meta.glob("../convex/**/*.ts");
 const secret = "isolated-fixture-only";
@@ -12,7 +20,7 @@ beforeEach(() => {
   process.env.DISPATCHER_TOKEN = dispatcherToken;
 });
 
-const turn = (sequence: number, waterReport?: object) => ({
+const turn = (sequence: number, waterReport?: Report) => ({
   secret, callId: "w", turnId: `turn-${sequence}`, sequence, fingerprint: `fp-${sequence}`,
   source: "live_demo" as const, reportedAddress: "Fictional Mission Valley house",
   peopleCount: 2, reportedPosition: "ground floor", hazards: [], summary: "Two people, water inside",

@@ -83,7 +83,9 @@ simulated flood around them, so record what they conveyed, not a guess:
   it in `measured_meters`, converted to metres.
 - `floor`: which floor they are standing on when they describe it, counted above the
   street: 0 for the ground or street level (in the US "first floor" is 0), 1 for the
-  next floor up, and so on. Null if they didn't say or it isn't clear.
+  next floor up, and so on. An attic is the floor above the top storey (the attic of
+  a one-storey house is 1; if the number of storeys isn't known, treat it as a
+  one-storey house). Null if they didn't say or it isn't clear.
 - `evidence`: the caller's words.
 Leave `water_report` null when they only said water is "coming in", "everywhere" or
 "rising" without a depth, when they are on a roof or in an attic above the water, or

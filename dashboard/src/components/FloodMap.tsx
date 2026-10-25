@@ -10,7 +10,7 @@ import type { ExerciseState, Incident } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES } from "@/lib/types";
 import { ROUTE_COLOR } from "@/lib/router";
 import { OBSERVATION_RADIUS_M } from "@/lib/flood";
-import { remainingLegs, TRIP_SPEEDUP, tripProgress, type LegMode, type TripLeg } from "../../convex/tripMath";
+import { etaMinutes, remainingLegs, tripProgress, type LegMode, type TripLeg } from "../../convex/tripMath";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const BUILDING_SOURCE = { source: "openmaptiles", sourceLayer: "building" } as const;
@@ -101,8 +101,7 @@ function teamPoints(state: ExerciseState, now: number, focusedId: string | null)
     features: state.teams.map((t) => {
       const moving = t.trip != null && now < t.trip.arriveAt;
       const position = teamPosition(t, now);
-      // ETA in real-world minutes; the simulation plays the trip TRIP_SPEEDUP times faster.
-      const eta = moving ? Math.max(1, Math.ceil(((t.trip!.arriveAt - now) * TRIP_SPEEDUP) / 60_000)) : 0;
+      const eta = moving ? etaMinutes(t.trip!, now) : 0;
       return {
         type: "Feature",
         properties: {

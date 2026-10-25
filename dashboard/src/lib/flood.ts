@@ -180,10 +180,12 @@ export function observationAt(
   lon: number,
   lat: number,
   floorHeight: number,
+  /** Ground elevation at the exact point, when known; otherwise the cell's. */
+  groundHere: number | null = null,
 ) {
   const i = cellAt(grid, lon, lat);
   if (i < 0 || Number.isNaN(grid.ground[i])) return null;
-  const surface = grid.ground[i] + (report.floor ?? 0) * floorHeight + report.meters;
+  const surface = (groundHere ?? grid.ground[i]) + (report.floor ?? 0) * floorHeight + report.meters;
   return { surface, offset: surface - columnSurface(grid, report.gaugeSurface, i % grid.cols) };
 }
 
