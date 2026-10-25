@@ -5,7 +5,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import { checkRouteEvidence, incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../convex/planning";
+import { checkRouteEvidence, floodFingerprint, incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../convex/planning";
 import schema from "../convex/schema";
 import { computeFlood, observationAt, type FloodGrid } from "../src/lib/flood";
 import { evidenceFor, planAssignments, type RouteResult } from "../src/lib/planner";
@@ -171,14 +171,18 @@ async function fingerprint(t: T) {
       incidents: (await ctx.db.query("incidents").collect()).map(incidentInput), teams: (await ctx.db.query("teams").collect()).map(teamInput) });
   });
 }
+async function flood(t: T) {
+  return t.run(async (ctx) => floodFingerprint((await ctx.db.query("incidents").collect()).map((i) => ({ ...i, id: i._id }))));
+}
 let serial = 0;
 async function propose(t: T, incidentId: Id<"incidents">, team: Doc<"teams">) {
   const planId = `qa-plan-${++serial}`;
-  await t.mutation(api.planner.recordProposal, { dispatcherToken, planId, fingerprint: await fingerprint(t),
-    proposals: [{ incidentId, teamId: team._id, tier: "high", seconds: 600, reason: "Simulated QA proposal" }], unassigned: [] });
   const mover = moverFor(team.capabilities);
-  return { dispatcherToken, planId, approvalId: `qa-approval-${++serial}`, selected: [{ incidentId, teamId: team._id,
-    evidence: { mover, realSeconds: 600, start: [team.longitude, team.latitude], end: [-117.168, 32.762], points: 6, modes: ["road" as const], maxDepth: 0.1, limit: mover === "air" ? null : PROFILES[mover].limit } }] };
+  const evidence: RouteEvidence = { mover, realSeconds: 600, start: [team.longitude, team.latitude], end: [-117.168, 32.762], points: 6, modes: ["road" as const], maxDepth: 0.1, limit: mover === "air" ? null : PROFILES[mover].limit };
+  // Recorded proposals now require the reviewed route and the client's flood fingerprint.
+  await t.mutation(api.planner.recordProposal, { dispatcherToken, planId, fingerprint: await fingerprint(t), floodFingerprint: await flood(t),
+    proposals: [{ incidentId, teamId: team._id, tier: "high", seconds: 600, reason: "Simulated QA proposal", evidence: { ...evidence } }], unassigned: [] });
+  return { dispatcherToken, planId, approvalId: `qa-approval-${++serial}`, selected: [{ incidentId, teamId: team._id, evidence }] };
 }
 
 test("QA: reused approval ID with different selected pairs must not report success", async () => {

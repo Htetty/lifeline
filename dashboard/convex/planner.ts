@@ -56,8 +56,8 @@ export const recordProposal = mutation({
     dispatcherToken: v.optional(v.string()),
     planId: v.string(),
     fingerprint: v.string(),
-    /** The dashboard's floodFingerprint; when given it must match the server's too. */
-    floodFingerprint: v.optional(v.string()),
+    /** The dashboard's floodFingerprint: the caller water reports it planned with. */
+    floodFingerprint: v.string(),
     proposals: v.array(
       v.object({
         incidentId: v.id("incidents"),
@@ -65,7 +65,8 @@ export const recordProposal = mutation({
         tier: priorityTier,
         seconds: v.number(),
         reason: v.string(),
-        evidence: v.optional(routeEvidence),
+        /** The route the dispatcher is shown; approval must send this same route. */
+        evidence: routeEvidence,
       }),
     ),
     unassigned: v.array(v.object({ incidentId: v.id("incidents"), reason: v.string() })),
@@ -74,7 +75,7 @@ export const recordProposal = mutation({
     requireDispatcher(dispatcherToken);
     const existing = await ctx.db.query("assignmentPlans").withIndex("by_planId", (q) => q.eq("planId", planId)).unique();
     const state = await currentState(ctx);
-    const matched = fingerprint === state.fingerprint && (flood === undefined || flood === state.flood);
+    const matched = fingerprint === state.fingerprint && flood === state.flood;
     if (existing) return { matched: existing.matchedServer };
     await ctx.db.insert("assignmentPlans", {
       exerciseId: EXERCISE_ID,
@@ -82,7 +83,7 @@ export const recordProposal = mutation({
       fingerprint,
       matchedServer: matched,
       inputs: snapshotOf(state.inputs),
-      flood: state.flood,
+      flood, // the client's, never filled in from the server's current state
       proposals,
       unassigned,
       status: "proposed",
@@ -137,12 +138,16 @@ export const approvePlan = mutation({
     if (plan.status === "approved") return refuse("rejected_stale", "this plan was already approved. Suggest assignments again for the rest.");
     if (!selected.length) return refuse("rejected_invalid", "no assignments were selected.");
     const state = await currentState(ctx);
+    // Plans recorded before route and flood bindings were required can't be approved.
+    if (plan.flood === undefined) {
+      return refuse("rejected_stale", "this plan was recorded without the flood data it used. Suggest assignments again.");
+    }
     if (!plan.matchedServer) {
       return refuse("rejected_stale", "the dashboard was behind the latest data when this plan was made. Suggest assignments again.");
     }
-    if (state.fingerprint !== plan.fingerprint || (plan.flood !== undefined && state.flood !== plan.flood)) {
+    if (state.fingerprint !== plan.fingerprint || state.flood !== plan.flood) {
       const what = changesBetween(plan.inputs, state.inputs, state.names);
-      if (plan.flood !== undefined && state.flood !== plan.flood) what.push("a caller's water report changed the simulated flood");
+      if (state.flood !== plan.flood) what.push("a caller's water report changed the simulated flood");
       return refuse("rejected_stale", `things changed since the plan was made (${what.slice(0, 4).join("; ") || "planning inputs"}). Suggest assignments again.`);
     }
 
@@ -168,9 +173,10 @@ export const approvePlan = mutation({
       else {
         const routeProblem = checkRouteEvidence(team, incident, evidence);
         if (routeProblem) fail(routeProblem);
+        else if (!reviewed.evidence) fail("no reviewed route was recorded for it; suggest assignments again");
         else if (Math.round(evidence.realSeconds) !== Math.round(reviewed.seconds)) {
           fail("route time differs from the proposal that was reviewed; suggest assignments again");
-        } else if (reviewed.evidence && fingerprintOf(reviewed.evidence) !== fingerprintOf(evidence)) {
+        } else if (fingerprintOf(reviewed.evidence) !== fingerprintOf(evidence)) {
           fail("route differs from the one that was reviewed; suggest assignments again");
         } else ready.push([incident, team]);
       }

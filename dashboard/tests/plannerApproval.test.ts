@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import { incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../convex/planning";
+import { floodFingerprint, incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../convex/planning";
 import schema from "../convex/schema";
 import { moverFor, PROFILES } from "../convex/vehicles";
 
@@ -56,6 +56,17 @@ async function fingerprint(t: T) {
   });
 }
 
+/** A copy of `o` without the field `k`. */
+function without<O extends object, K extends keyof O>(o: O, k: K): Omit<O, K> {
+  const copy = { ...o };
+  delete copy[k];
+  return copy;
+}
+
+async function flood(t: T) {
+  return await t.run(async (ctx) => floodFingerprint((await ctx.db.query("incidents").collect()).map((i) => ({ ...i, id: i._id }))));
+}
+
 /** Evidence shaped like the dashboard router's output for this team and incident. */
 function evidence(team: Doc<"teams">, incident: Doc<"incidents">): RouteEvidence {
   const mover = moverFor(team.capabilities);
@@ -78,7 +89,7 @@ async function propose(t: T, pairs: [Id<"incidents">, Id<"teams">][], fp?: strin
     Promise.all(pairs.map(async ([incidentId, teamId]) => evidence((await ctx.db.get(teamId))!, (await ctx.db.get(incidentId))!))),
   );
   const matched = await t.mutation(api.planner.recordProposal, {
-    dispatcherToken, planId, fingerprint: fp ?? (await fingerprint(t)),
+    dispatcherToken, planId, fingerprint: fp ?? (await fingerprint(t)), floodFingerprint: await flood(t),
     proposals: pairs.map(([incidentId, teamId], k) => ({
       incidentId, teamId, tier: "critical" as const, seconds: Math.round(planned[k].realSeconds), reason: "test", evidence: planned[k],
     })),
@@ -274,12 +285,55 @@ describe("stale plans are refused, with what changed", () => {
     const { t, boat } = await setup();
     const a = await mapIncident(t, "1 Fictional Way");
     const planId = `plan-${++planCounter}`;
+    const route = evidence(boat, (await t.run((ctx) => ctx.db.get(a)))!);
     const r = await t.mutation(api.planner.recordProposal, {
       dispatcherToken, planId, fingerprint: await fingerprint(t), floodFingerprint: "0000000000000000",
-      proposals: [{ incidentId: a, teamId: boat._id, tier: "high", seconds: 300, reason: "test" }], unassigned: [],
+      proposals: [{ incidentId: a, teamId: boat._id, tier: "high", seconds: Math.round(route.realSeconds), reason: "test", evidence: route }],
+      unassigned: [],
     });
     expect(r).toEqual({ matched: false });
+    // The client's token is what's stored, not the server's current one.
+    expect((await t.run((ctx) => ctx.db.query("assignmentPlans").first()))!.flood).toBe("0000000000000000");
   });
+
+  test("a new proposal must carry its reviewed routes and the client's flood fingerprint", async () => {
+    const { t, boat } = await setup();
+    const a = await mapIncident(t, "1 Fictional Way");
+    const route = evidence(boat, (await t.run((ctx) => ctx.db.get(a)))!);
+    const complete = {
+      dispatcherToken, planId: `plan-${++planCounter}`, fingerprint: await fingerprint(t), floodFingerprint: await flood(t),
+      proposals: [{ incidentId: a, teamId: boat._id, tier: "high" as const, seconds: Math.round(route.realSeconds), reason: "test", evidence: route }],
+      unassigned: [],
+    };
+    const noFlood = without(complete, "floodFingerprint");
+    const noEvidence = { ...complete, proposals: complete.proposals.map((p) => without(p, "evidence")) };
+    await expect(t.mutation(api.planner.recordProposal, noFlood as never)).rejects.toThrow(/floodFingerprint/);
+    await expect(t.mutation(api.planner.recordProposal, noEvidence as never)).rejects.toThrow(/evidence/);
+    expect(await t.run((ctx) => ctx.db.query("assignmentPlans").collect())).toEqual([]);
+    expect(await t.mutation(api.planner.recordProposal, complete)).toEqual({ matched: true });
+  });
+
+  for (const missing of ["evidence", "flood"] as const) {
+    test(`an older record without its ${missing === "evidence" ? "reviewed route" : "flood fingerprint"} can't be approved`, async () => {
+      const { t, boat } = await setup();
+      const a = await mapIncident(t, "1 Fictional Way");
+      const plan = await propose(t, [[a, boat._id]]);
+      // Strip the binding from the stored row, as rows recorded before it was required lack it.
+      await t.run(async (ctx) => {
+        const row = (await ctx.db.query("assignmentPlans").withIndex("by_planId", (q) => q.eq("planId", plan.planId)).unique())!;
+        if (missing === "flood") await ctx.db.replace(row._id, { ...row, flood: undefined });
+        else await ctx.db.patch(row._id, { proposals: row.proposals.map((p) => without(p, "evidence")) });
+      });
+      const before = await snapshot(t);
+      const r = await approve(t, plan);
+      expect(r).toMatchObject(
+        missing === "flood"
+          ? { ok: false, outcome: "rejected_stale", reason: expect.stringMatching(/recorded without the flood data/) }
+          : { ok: false, outcome: "rejected_invalid", reason: expect.stringMatching(/no reviewed route was recorded/) },
+      );
+      expect(await snapshot(t)).toEqual(before);
+    });
+  }
 
   test("a plan made from out-of-date dashboard data can't be approved", async () => {
     const { t, boat } = await setup();

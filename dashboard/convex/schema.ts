@@ -233,7 +233,8 @@ export default defineSchema({
     /** Whether that matched the server's inputs when the plan was recorded. */
     matchedServer: v.boolean(),
     inputs: v.string(),
-    /** Fingerprint of every caller water report shaping the flood when recorded (resolved ones too). */
+    /** The dashboard's fingerprint of every caller water report it planned with (resolved ones too).
+     * Required on new plans; optional only so older rows still load (they can't be approved). */
     flood: v.optional(v.string()),
     proposals: v.array(
       v.object({
@@ -242,7 +243,8 @@ export default defineSchema({
         tier: priorityTier,
         seconds: v.number(),
         reason: v.string(),
-        /** The route the dispatcher was shown; approval must send this same route. */
+        /** The route the dispatcher was shown; approval must send this same route. Required on
+         * new plans; optional only so older rows still load (they can't be approved). */
         evidence: v.optional(routeEvidence),
       }),
     ),
