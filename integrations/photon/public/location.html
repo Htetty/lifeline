@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f3ed">
+  <meta name="referrer" content="no-referrer">
+  <title>Confirm location · Lifeline</title>
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Confirm location">
+  <meta property="og:description" content="Lifeline">
+  <meta property="og:image" content="__PUBLIC_ORIGIN__/preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/preview.png">
+  <link rel="stylesheet" href="/maplibre-gl.css">
+  <link rel="stylesheet" href="/location.css">
+  <script type="module" src="/location.js"></script>
+</head>
+<body>
+  <main>
+    <div id="map" aria-label="Map showing your current location"></div>
+    <header><span class="brand-dot"></span><span>Lifeline</span></header>
+    <button id="recenter" aria-label="Find my location" title="Find my location">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m20 4-6 16-3-7-7-3 16-6Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    </button>
+    <section class="card" aria-label="Confirm your location">
+      <div class="card-top"><span class="location-icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><div><h1 id="title">Your location</h1><p id="status" role="status">Finding you…</p></div></div>
+      <button id="confirm" disabled>Confirm location<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4L19 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </section>
+  </main>
+</body>
+</html>

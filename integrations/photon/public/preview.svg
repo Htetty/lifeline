@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+<rect width="1200" height="630" fill="#f5f3ed"/>
+<path d="M-50 105 230 90 390 210 550 190 725 80 980 100 1270 20M-80 430 170 370 330 410 480 365 710 400 880 320 1270 320M110-40 190 140 120 370 180 680M430-40 390 210 480 365 430 680M830-40 725 80 710 400 780 680M1060-40 980 100 1050 320 980 680" fill="none" stroke="#e1e0d8" stroke-width="40"/>
+<path d="M-50 105 230 90 390 210 550 190 725 80 980 100 1270 20M-80 430 170 370 330 410 480 365 710 400 880 320 1270 320M110-40 190 140 120 370 180 680M430-40 390 210 480 365 430 680M830-40 725 80 710 400 780 680M1060-40 980 100 1050 320 980 680" fill="none" stroke="#fff" stroke-width="24"/>
+<path d="M-50 540Q280 420 430 500T850 560T1260 450" fill="none" stroke="#c8e9f5" stroke-width="74"/>
+<rect x="206" y="174" width="104" height="128" rx="24" fill="#d7e5ca"/>
+<rect x="816" y="160" width="102" height="105" rx="23" fill="#d7e5ca"/>
+<circle cx="600" cy="266" r="133" fill="#1680ff" opacity=".1"/><circle cx="600" cy="266" r="132" fill="none" stroke="#1680ff" opacity=".15" stroke-width="2"/>
+<circle cx="600" cy="266" r="28" fill="#1680ff" stroke="#fff" stroke-width="9"/>
+<rect x="380" y="428" width="440" height="112" rx="28" fill="#fff"/>
+<circle cx="428" cy="484" r="7" fill="#1680ff"/>
+<text x="453" y="496" fill="#18252d" font-family="Arial, sans-serif" font-size="32" font-weight="600">Confirm location</text>
+<path d="m747 483 10 10 20-23" stroke="#1680ff" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,7 +1,8 @@
 /** First increment: prove one enrolled person's iMessage can receive a reply.
  * No outbound initiation, SMS/RCS fallback, attachment fetching or incident writes.
  */
-export function createEchoHandler({ line, allowedSenders, onIgnored = () => {} }) {
+export function createEchoHandler({ line, allowedSenders, onIgnored = () => {},
+  reply = (_space, message) => `echo: ${message.content.text.trim().slice(0, 500)}` }) {
   const completed = new Set();
   const inFlight = new Map();
 
@@ -25,7 +26,7 @@ export function createEchoHandler({ line, allowedSenders, onIgnored = () => {} }
     const sending = (async () => {
       // The provider may echo outgoing traffic back on its stream; direction above
       // prevents a reply loop. Mark only sends that the provider actually accepted.
-      const result = await space.send(`echo: ${message.content.text.trim().slice(0, 500)}`);
+      const result = await space.send(await reply(space, message));
       if (!result) throw new Error("Provider did not return a sent-message record");
       completed.add(key);
       // This is a bounded connection probe, not a durable ingestion receipt store.
