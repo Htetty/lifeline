@@ -64,7 +64,7 @@ The backend pushes every change from Convex; there is nothing to poll.
 
 | Message | What to do |
 | --- | --- |
-| `utterance_result`: `next_question`, `extraction`, `location_match` | Ask `next_question` if not null |
+| `utterance_result`: `next_question`, `extraction`, `location_match`, `location_confirmed` | Ask `next_question` if not null |
 | `status`: `stage`, `sayIfAsked`, `assignedTeamName`, facts | Keep it in the LLM context. Answer "is anyone coming?" only from `sayIfAsked` |
 | `announcement`: `eventId`, `kind`, `text` | Speak `text` word for word at the next pause, then `ack` |
 | `announcement_cancelled`: `eventId` | A newer update replaced it. Don't speak it (stop if queued) |
@@ -75,6 +75,15 @@ Announcement kinds: `details_received`, `location_confirmed`, `location_unclear`
 `assignment_changed`, `team_en_route`, `rescue_resolved`, `dispatcher_message` (typed by the dispatcher on the
 dashboard), `report_linked` (the dispatcher matched this call to another report about the same people). Witnesses
 get witness wording ("the people you reported"); `status.callerRole` says which. Wording lives in `dashboard/convex/callerUpdates.ts`, so the dashboard shows exactly what was said.
+
+**Location read-back.** When the caller gives or changes a location, `next_question` is
+"I have <location>. Is that correct?" (the place plus any unit and city the caller said; a missing
+city or unit is asked for, never assumed). The location becomes caller-confirmed only if the caller's
+next turn is an explicit yes and the read-back was the last thing the agent said, so send each agent
+utterance after it is **fully played**, word for word, and none that were interrupted.
+`location_confirmed` in the result says where things stand. It is separate from
+`status.locationConfirmed`, which is the dispatcher's check of the map pin. Rules:
+`app/location_check.py` and `dashboard/convex/callerLocation.ts`.
 
 A minimal working client is `scripts/simulate_call.py`.
 

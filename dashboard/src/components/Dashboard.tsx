@@ -7,6 +7,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_AREA } from "@/data/fixtures";
+import { callerLocationLabel } from "@/lib/callerLocation";
 import { loadElevation, type ElevationGrid } from "@/lib/elevation";
 import {
   buildFloodGrid,
@@ -568,6 +569,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                           </span>
                         )
                       )}
+                      <CallerLocationBadge incident={i} />
                       {i.callConnected && (
                         <span className="rounded bg-emerald-400 px-1.5 py-0.5 text-[11px] font-semibold text-slate-900">
                           ● On call
@@ -878,6 +880,7 @@ function IncidentDetail({
   const st = STATUS_STYLE[incident.status];
   const onMap = incident.latitude != null && incident.longitude != null;
   const headline = incident.summary.trim().split(/(?<=[.!?])\s+/)[0] || incident.reportedAddress;
+  const callerCheck = callerLocationLabel(incident);
   const medical = (incident.riskFactors ?? []).filter((r) => ["serious_injury", "medical_need"].includes(r.factor));
   const mobility = (incident.riskFactors ?? []).filter((r) => ["limited_mobility", "no_higher_ground"].includes(r.factor));
   const waterFacts = (incident.riskFactors ?? []).filter((r) => ["water_chest_or_higher", "water_rising_fast", "in_moving_water"].includes(r.factor));
@@ -897,7 +900,7 @@ function IncidentDetail({
           <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close incident details">✕</button>
         </div>
         <h2>{headline}</h2>
-        <p>{incident.reportedAddress}{incident.reportedPosition ? ` · ${incident.reportedPosition}` : ""}</p>
+        <p>{incident.reportedAddress}{incident.reportedPosition ? ` · ${incident.reportedPosition}` : ""}{callerCheck && ` · ${callerCheck.label.toLowerCase()}`}</p>
         {incident.callId && <span className="detail-call-status"><i className={incident.callConnected ? "live-dot" : "ended-dot"} />{incident.callConnected ? "Caller on the line" : "Call ended"}</span>}
       </header>
 
@@ -915,6 +918,7 @@ function IncidentDetail({
         <h3>Extracted facts</h3>
         <dl className="fact-table">
           <div><dt>Location</dt><dd>{incident.reportedAddress}</dd><dd className={incident.locationVerified ? "fact-confirmed" : "fact-verify"}>{incident.locationVerified ? "Dispatcher verified" : "Verify"}</dd></div>
+          {callerCheck && <div><dt>Caller check</dt><dd>{callerCheck.detail ?? "Confirmed when read back."}{incident.callerLocation?.mapIssue && <span className="block text-amber-200">Map: {incident.callerLocation.mapIssue}. Not pinned; caller asked to clarify.</span>}</dd><dd className={callerCheck.confirmed ? "fact-confirmed" : "fact-verify"}>{callerCheck.label}</dd></div>}
           <div><dt>People</dt><dd>{incident.peopleCount ?? "Unknown"}</dd><dd className="fact-source">{incident.peopleCount == null ? "Not reported" : "Reported"}</dd></div>
           <div><dt>Position</dt><dd>{incident.reportedPosition ?? "Unknown"}</dd><dd className="fact-source">{incident.reportedPosition ? "Reported" : "Not reported"}</dd></div>
           <div><dt>Medical</dt><dd>{medical.length ? describeFactors(medical) : "Not reported"}</dd><dd className="fact-source">{medical.length ? "Reported" : "Unknown"}</dd></div>
@@ -1554,5 +1558,21 @@ function NewReportForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/** Whether the caller confirmed the location read back to them; calls only. */
+function CallerLocationBadge({ incident }: { incident: Incident }) {
+  const check = callerLocationLabel(incident);
+  if (!check) return null;
+  return (
+    <span
+      title={check.detail ?? undefined}
+      className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${
+        check.confirmed ? "text-emerald-300 ring-emerald-400/50" : "text-amber-300 ring-amber-400/50"
+      }`}
+    >
+      {check.label}
+    </span>
   );
 }

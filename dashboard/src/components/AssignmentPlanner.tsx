@@ -16,6 +16,7 @@ import {
 import type { Priority } from "@/lib/priority";
 import type { RoutePlan } from "@/lib/router";
 import { routeSummary } from "@/lib/routeText";
+import { callerLocationLabel } from "@/lib/callerLocation";
 import { approvePlan, errorMessage, explainPlan, recordProposal } from "@/lib/store";
 import type { ExerciseState, Incident, RescueTeam } from "@/lib/types";
 import { TierPill } from "./TierPill";
@@ -337,6 +338,7 @@ function ProposalCard({
           <div className="flex flex-wrap items-center gap-1.5">
             <TierPill priority={{ tier: p.tier }} />
             <button onClick={onSelect} className="truncate text-left font-medium hover:underline">{p.incident.reportedAddress}</button>
+            {callerLocationLabel(p.incident)?.confirmed === false && <span className="text-amber-300">Caller unconfirmed</span>}
           </div>
           <p>
             → <b>{p.team.name}</b> · ~{minutes(p.seconds)} (simulated) · {routeSummary(p.route)}

@@ -73,6 +73,25 @@ export const withdrawal = v.object({
 });
 
 /**
+ * Whether the caller said yes when their location was read back to them. Separate from
+ * `locationVerified` (the dispatcher's check of the pin) and from map-search results.
+ */
+export const callerLocation = v.object({
+  /** "confirmed": the caller explicitly said yes to a read-back of `reportedAddress`. */
+  status: v.union(v.literal("unconfirmed"), v.literal("confirmed")),
+  /**
+   * A different location from a later extraction while `reportedAddress` is caller-confirmed.
+   * Held here, never applied, until the caller confirms it.
+   */
+  pending: v.union(v.string(), v.null()),
+  /** The caller's words confirming it. */
+  evidence: v.union(v.string(), v.null()),
+  confirmedAt: v.union(v.number(), v.null()),
+  /** Why the map search placed no pin, e.g. two matches or a different city. */
+  mapIssue: v.union(v.string(), v.null()),
+});
+
+/**
  * Optional ModernBERT topic tags. Advisory only: never copied into incident facts
  * or status. `basedOnVersion` is the incident version the tags were computed for.
  */
@@ -123,6 +142,8 @@ export default defineSchema({
     locationVerified: v.boolean(),
     /** How an unverified location was found, e.g. "Map search: Days Inn San Diego Hotel Circle". */
     locationNote: v.optional(v.union(v.string(), v.null())),
+    /** Caller's confirmation of the location (calls only; missing on older rows means unconfirmed). */
+    callerLocation: v.optional(callerLocation),
     peopleCount: v.union(v.number(), v.null()),
     reportedPosition: v.union(v.string(), v.null()),
     hazards: v.array(hazard),

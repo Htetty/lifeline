@@ -7,6 +7,7 @@ import { DEMO_AREA } from "@/data/fixtures";
 import type { FloodResult } from "@/lib/flood";
 import { distanceToPolygon, expandPolygon, interiorPoint, pointInPolygon, polygons } from "@/lib/geo";
 import type { ExerciseState, Incident } from "@/lib/types";
+import { callerLocationLabel } from "@/lib/callerLocation";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES } from "@/lib/types";
 import { ROUTE_COLOR } from "@/lib/router";
 import { OBSERVATION_RADIUS_M } from "@/lib/flood";
@@ -84,7 +85,7 @@ function incidentPoints(state: ExerciseState, selectedId: string | null): GeoJSO
           verified: i.locationVerified,
           label: `${i.priorityTier === "critical" && i.status !== "resolved" ? "CRITICAL · " : ""}${i.peopleCount ?? "?"} ${i.peopleCount === 1 ? "person" : "people"}${
             i.locationVerified ? "" : " · location unverified"
-          }`,
+          }${callerLocationLabel(i)?.confirmed === false ? " · caller unconfirmed" : ""}`,
         },
         geometry: { type: "Point", coordinates: [i.longitude!, i.latitude!] },
       })),

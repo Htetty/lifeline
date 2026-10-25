@@ -24,6 +24,16 @@ export interface Incident {
   locationVerified: boolean;
   /** How an unverified location was found (e.g. a map search match). */
   locationNote?: string | null;
+  /** Whether the caller confirmed the location when it was read back (see convex/callerLocation.ts). */
+  callerLocation?: {
+    status: "unconfirmed" | "confirmed";
+    /** A different location held, unapplied, until the caller confirms it. */
+    pending: string | null;
+    evidence: string | null;
+    confirmedAt: number | null;
+    /** Why the map search placed no pin, e.g. two matches or a different city. */
+    mapIssue: string | null;
+  };
   peopleCount: number | null;
   reportedPosition: string | null;
   hazards: { hazard: string; evidence: string | null }[];

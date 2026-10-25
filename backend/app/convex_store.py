@@ -3,6 +3,7 @@
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from types import EllipsisType
 from typing import Any
 
 from convex import ConvexClient
@@ -35,9 +36,13 @@ async def upsert_from_call(
     risk_factors: list[dict[str, str]] | None = None,
     water_report: dict[str, Any] | None = None,
     withdrawn: list[dict[str, str | None]] | None = None,
+    location_confirmation: dict[str, str] | None = None,
+    map_issue: str | None | EllipsisType = ...,
     turn: dict | None = None,
     response: dict | None = None,
 ) -> dict[str, Any]:
+    """`location_confirmation` claims the caller just confirmed a read-back (Convex re-checks it).
+    `map_issue` is left out (...) when no map search ran; None clears an earlier one."""
     location = (
         {"candidateLatitude": candidate[0], "candidateLongitude": candidate[1], "candidateLabel": candidate[2]}
         if candidate
@@ -55,6 +60,8 @@ async def upsert_from_call(
             **({"waterReport": _water_report(water_report)} if water_report else {}),
             # Sent only when the caller took something back, so ordinary turns keep the old arguments.
             **({"withdrawn": withdrawn} if withdrawn else {}),
+            **({"locationConfirmation": location_confirmation} if location_confirmation else {}),
+            **({"mapIssue": map_issue} if map_issue is not ... else {}),
             "callId": call_id,
             "source": source,
             "transcript": transcript,
@@ -106,6 +113,11 @@ async def recorded_hazards(call_id: str) -> list[str]:
 async def current_announcement(call_id: str, event_id: str | None = None) -> dict[str, Any] | None:
     """A still-true update to replay on request: that event, or the latest status update."""
     return await _query("calls:currentAnnouncement", {"callId": call_id, **({"eventId": event_id} if event_id else {})})
+
+
+async def caller_location(call_id: str) -> dict[str, Any] | None:
+    """Saved location, whether the caller confirmed it, and any different location held for confirmation."""
+    return await _query("calls:callerLocationForCall", {"callId": call_id})
 
 
 async def transcript_for_call(call_id: str) -> str | None:

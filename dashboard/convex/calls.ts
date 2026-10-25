@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
+import { applyCallerLocation, UNCONFIRMED } from "./callerLocation";
 import { queueCallerUpdate, stageText } from "./callerUpdates";
 import { getExercise, isCurrentEvent, logActivity, requireBackend } from "./lib";
 import { autoGroup, reevaluateLinks, unlink } from "./linking";
@@ -76,6 +77,13 @@ export const upsertFromCall = mutation({
     response: v.optional(v.any()),
     /** Explicit caller retractions. Null or missing values are never treated as one. */
     withdrawn: v.optional(v.array(withdrawal)),
+    /**
+     * The backend's claim that the caller just said yes to "I have <location>. Is that
+     * correct?". Accepted only if the saved transcript shows exactly that (callerLocation.ts).
+     */
+    locationConfirmation: v.optional(v.object({ location: v.string(), evidence: v.string() })),
+    /** Why this turn's map search placed no pin (null: no problem). Omitted when no search ran. */
+    mapIssue: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, args) => {
     requireBackend(args.secret);
@@ -130,6 +138,8 @@ export const upsertFromCall = mutation({
         longitude: args.candidateLongitude ?? null,
         locationVerified: false,
         locationNote: args.candidateLabel ?? null,
+        // Nothing has been read back to the caller yet.
+        callerLocation: { ...UNCONFIRMED, mapIssue: args.mapIssue ?? null },
         peopleCount: args.peopleCount,
         reportedPosition: args.reportedPosition,
         hazards: args.hazards,
@@ -229,7 +239,10 @@ export const upsertFromCall = mutation({
     };
     changed("peopleCount", existing.peopleCount, patch.peopleCount);
     changed("reportedPosition", existing.reportedPosition, patch.reportedPosition);
-    if (existing.reportedAddress !== NO_ADDRESS_YET) changed("reportedAddress", existing.reportedAddress, args.reportedAddress);
+    const hadAddress = existing.reportedAddress !== NO_ADDRESS_YET;
+    // A caller-confirmed location is never silently replaced (see callerLocation.ts).
+    const location = applyCallerLocation(existing, hadAddress ? existing.reportedAddress : null, args, now);
+    if (hadAddress) changed("reportedAddress", existing.reportedAddress, location.address);
     if (patch.waterReport && prior) {
       history.push({ at: now, field: "waterReport", previous: LEVEL_LABEL[prior.level], evidence: prior.evidence });
     }
@@ -243,9 +256,11 @@ export const upsertFromCall = mutation({
     }
     if (history.length) patch.factHistory = [...(existing.factHistory ?? []), ...history];
 
-    const hadAddress = existing.reportedAddress !== NO_ADDRESS_YET;
     let tellCallerLocationUnclear = false;
-    if (args.reportedAddress != null) patch.reportedAddress = args.reportedAddress;
+    if (location.address != null) patch.reportedAddress = location.address;
+    if (JSON.stringify(location.state) !== JSON.stringify(existing.callerLocation ?? UNCONFIRMED)) {
+      patch.callerLocation = location.state;
+    }
     // A linked report only mirrors its main incident's team; it isn't dispatched itself.
     const dispatched = !existing.linkedTo && (existing.status === "assigned" || existing.status === "en_route");
 
@@ -253,8 +268,8 @@ export const upsertFromCall = mutation({
     const corrected =
       args.locationChanged === true &&
       hadAddress &&
-      args.reportedAddress != null &&
-      norm(args.reportedAddress) !== norm(existing.reportedAddress);
+      location.address != null &&
+      norm(location.address) !== norm(existing.reportedAddress);
 
     if (corrected) {
       // Anything queued for the caller was decided for the old location.
@@ -263,7 +278,7 @@ export const upsertFromCall = mutation({
         // Don't silently move a team's destination; flag it for the dispatcher.
         await logActivity(
           ctx,
-          `Caller gave a different location after dispatch: "${args.reportedAddress}". Check with the team.`,
+          `Caller gave a different location after dispatch: "${location.address}". Check with the team.`,
           existing._id,
         );
       } else {
@@ -273,17 +288,19 @@ export const upsertFromCall = mutation({
         patch.latitude = args.candidateLatitude ?? null;
         patch.longitude = args.candidateLongitude ?? null;
         patch.locationNote = args.candidateLabel ?? null;
-        await logActivity(ctx, `Caller corrected location to "${args.reportedAddress}". Needs review.`, existing._id);
+        await logActivity(ctx, `Caller corrected location to "${location.address}". Needs review.`, existing._id);
         // Only worth telling the caller if they had already heard the location was confirmed.
         tellCallerLocationUnclear = existing.locationVerified;
       }
-    } else if (!existing.locationVerified && args.candidateLatitude != null && args.candidateLongitude != null) {
+    } else if (!existing.locationVerified && !location.held && args.candidateLatitude != null && args.candidateLongitude != null) {
+      // (A held location's map match never moves the pin for the caller-confirmed one.)
       patch.latitude = args.candidateLatitude;
       patch.longitude = args.candidateLongitude;
       patch.locationNote = args.candidateLabel ?? null;
     }
 
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now, version: existing.version + 1 });
+    for (const note of location.notes) await logActivity(ctx, note, existing._id);
     // Queued after the save, so it carries the new decisionRevision.
     if (tellCallerLocationUnclear) await queueCallerUpdate(ctx, existing, "location_unclear");
     const saved = (await ctx.db.get(existing._id))!;
@@ -359,6 +376,8 @@ export const callState = query({
         stage: incident.status,
         sayIfAsked: stageText(incident, teamName),
         locationConfirmed: incident.locationVerified,
+        /** Separate from locationConfirmed (the dispatcher's check): the caller said yes to a read-back. */
+        callerConfirmedLocation: incident.callerLocation?.status === "confirmed",
         reportedAddress: incident.reportedAddress,
         peopleCount: incident.peopleCount,
         reportedPosition: incident.reportedPosition,
@@ -381,6 +400,25 @@ export const recordedHazards = query({
   handler: async (ctx, { secret, callId }) => {
     requireBackend(secret);
     return (await byCall(ctx, callId))?.hazards.map((h) => h.hazard) ?? [];
+  },
+});
+
+/**
+ * The call's location and whether the caller confirmed it, so the backend knows what to
+ * read back. `pending` is a different location held while the confirmed one stands.
+ */
+export const callerLocationForCall = query({
+  args: { secret: v.string(), callId: v.string() },
+  handler: async (ctx, { secret, callId }) => {
+    requireBackend(secret);
+    const incident = await byCall(ctx, callId);
+    if (!incident) return null;
+    const state = incident.callerLocation ?? UNCONFIRMED;
+    return {
+      address: incident.reportedAddress === NO_ADDRESS_YET ? null : incident.reportedAddress,
+      status: state.status,
+      pending: state.pending,
+    };
   },
 });
 

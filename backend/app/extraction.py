@@ -48,6 +48,20 @@ building they are reporting, not where the witness is standing. "I'm across the
 street from the Days Inn, people are on its roof" means the location is "the roof of
 the Days Inn" and the search is the Days Inn.
 
+The agent reads the location back to the caller to confirm it, so record exactly what
+they said, never a filled-in guess:
+- `location_unit`: the apartment, unit, suite or room number they gave, else null.
+- `location_city`: the city, town or neighbourhood they named for that location, else
+  null. Do not assume San Diego or Mission Valley because of where the exercise is.
+- `location_missing`: details still needed to find the place: "city" when they gave a
+  street address without a city or neighbourhood; "unit" when they said they are in an
+  apartment, condo or other multi-unit building without the unit number. A named
+  landmark (a hotel, mall, school) needs neither. Empty when nothing is missing or they
+  already said they don't know.
+When <caller_confirmed_location> is given, the caller has confirmed that location when it
+was read back. Keep `reported_address`, `location_unit` and `location_city` as given there
+unless the caller's latest message changes or adds to the location.
+
 Record the floor, room or unit in `reported_position` whenever given: several
 families in one hotel or apartment block are separate rescues, and the floor/room
 is how the dispatcher tells them apart. If the caller is in a multi-unit building
@@ -130,7 +144,8 @@ caller states it again later.
 `next_question` is one short, calm question the call-taker can ask to fill the most
 important gap, in this priority: exact location, number of people, where they are in
 the building, injuries or medical needs, other hazards. Don't repeat a question the
-caller has just answered or refused; move on or reassure briefly instead. Set it to
+caller has just answered or refused; move on or reassure briefly instead. Don't read
+the location back or ask the caller to confirm it: the agent does that separately. Set it to
 null when nothing important is missing. Never promise that help is coming or give
 arrival times; only the dispatcher can confirm that.
 """
@@ -174,14 +189,15 @@ class Withdrawal(BaseModel):
     evidence: str = Field(description="The caller's words taking it back")
 
 
-def _require_withdrawn(schema: dict) -> None:
-    # Claude must always answer `withdrawn` (usually []) and `water_report` (often null);
-    # only old saved receipts lack them.
-    schema["required"] = [*schema.get("required", []), "withdrawn", "water_report"]
+def _require_defaulted(schema: dict) -> None:
+    # Claude must always answer these (often [] or null); only old saved receipts lack them.
+    schema["required"] = [
+        *schema.get("required", []), "withdrawn", "water_report", "location_unit", "location_city", "location_missing",
+    ]
 
 
 class Extraction(BaseModel):
-    model_config = ConfigDict(json_schema_extra=_require_withdrawn)
+    model_config = ConfigDict(json_schema_extra=_require_defaulted)
 
     caller_role: Literal["trapped", "witness", "unknown"] = Field(
         description="Is the caller among the people needing rescue, or reporting others?"
@@ -191,6 +207,12 @@ class Extraction(BaseModel):
     )
     people_count: int | None = Field(description="Number of people needing rescue, if stated")
     reported_position: str | None = Field(description="Where they are in the building: floor, roof, attic, vehicle")
+    # Defaults so receipts saved before these fields existed still load.
+    location_unit: str | None = Field(default=None, description="Apartment, unit, suite or room number the caller gave")
+    location_city: str | None = Field(default=None, description="City or neighbourhood the caller named; never assumed")
+    location_missing: list[Literal["city", "unit"]] = Field(
+        default_factory=list, description="Details still needed to find the location"
+    )
     location_queries: list[str] = Field(description="Map-search strings for the current location, most specific first")
     location_changed: bool = Field(description="Caller's latest message changed or took back an earlier location")
     hazards: list[HazardFact]
@@ -215,7 +237,10 @@ class ExtractionUnavailable(Exception):
 
 
 async def extract_incident(
-    transcript: str, recorded_hazards: list[str] | None = None, latest_message: str | None = None
+    transcript: str,
+    recorded_hazards: list[str] | None = None,
+    latest_message: str | None = None,
+    confirmed_location: str | None = None,
 ) -> Extraction:
     content = f"<transcript>\n{transcript}\n</transcript>"
     if latest_message:
@@ -225,6 +250,9 @@ async def extract_incident(
     if recorded_hazards:
         # So a withdrawal can name the stored hazard exactly.
         content += "\n<recorded_hazards>\n" + "\n".join(recorded_hazards) + "\n</recorded_hazards>"
+    if confirmed_location:
+        # So a rewording on a later turn doesn't look like a new location to confirm.
+        content += f"\n<caller_confirmed_location>\n{confirmed_location}\n</caller_confirmed_location>"
     response = await client.messages.parse(
         model=settings.claude_model,
         max_tokens=16000,

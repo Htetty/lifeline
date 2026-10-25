@@ -13,7 +13,7 @@ import anthropic
 from convex import ConvexError
 from pydantic import BaseModel, Field, model_validator
 
-from . import convex_store
+from . import convex_store, location_check
 from .extraction import Extraction, ExtractionUnavailable, extract_incident
 from .geocode import find_candidate
 
@@ -64,6 +64,8 @@ class UtteranceResult(BaseModel):
     next_question: str | None
     location_match: str | None = None
     extraction_error: str | None = None
+    # Whether the caller has confirmed the location read back to them (None: not checked this turn).
+    location_confirmed: bool | None = None
 
 
 class SaveFailed(Exception):
@@ -150,6 +152,7 @@ async def process_utterance(
 
         extraction: Extraction | None = None
         error: str | None = None
+        stored_location: dict | None = None
         if utterance.speaker == "caller" and extract:
             try:
                 recorded = await convex_store.recorded_hazards(call_id)
@@ -157,8 +160,15 @@ async def process_utterance(
                 log.warning("call %s: couldn't read recorded hazards", call_id)
                 recorded = None
             try:
+                stored_location = await convex_store.caller_location(call_id)
+            except Exception:  # without it nothing can be confirmed this turn; the call goes on
+                log.warning("call %s: couldn't read the caller location state", call_id)
+            confirmed_location = (
+                stored_location["address"] if stored_location and stored_location["status"] == "confirmed" else None
+            )
+            try:
                 t = time.monotonic()
-                extraction = await extract_incident(transcript, recorded, latest_message)
+                extraction = await extract_incident(transcript, recorded, latest_message, confirmed_location)
                 extract_s = time.monotonic() - t
             except ExtractionUnavailable as e:
                 error = f"Extraction unavailable ({e}); the dispatcher will read the transcript."
@@ -171,15 +181,34 @@ async def process_utterance(
                 log.warning("call %s: %s", call_id, error)
 
         # Place the incident on the map when the caller named a findable place (never raises).
-        # Convex ignores candidates once the dispatcher has confirmed a location.
+        # Convex ignores candidates once the dispatcher has confirmed a location. A match
+        # that is ambiguous or contradicts what the caller said is never pinned.
         t = time.monotonic()
-        candidate = await find_candidate(extraction.location_queries) if extraction else None
+        candidate = (
+            await find_candidate(
+                extraction.location_queries,
+                extraction.location_city,
+                location_check.compose(extraction.reported_address, extraction.location_unit, extraction.location_city),
+            )
+            if extraction
+            else None
+        )
         map_s = time.monotonic() - t
+        pinned = candidate if candidate and not candidate.issue else None
         if candidate:
-            log.info("call %s: location candidate %r from %r", call_id, candidate.label, candidate.query)
+            log.info("call %s: location candidate %r from %r (issue: %s)", call_id, candidate.label, candidate.query, candidate.issue)
+
+        # Read the location back until the caller explicitly confirms it (location_check.py).
+        location = (
+            location_check.plan(stored_location, extraction, lines, candidate)
+            if utterance.speaker == "caller" and extract
+            else None
+        )
+        if location and location.confirmation:
+            log.info("call %s: caller confirmed the location read back to them", call_id)
 
         # "Is anyone coming?": answer with the confirmed status (approved wording) first.
-        next_question = extraction.next_question if extraction else None
+        next_question = (location and location.question) or (extraction.next_question if extraction else None)
         if extraction and extraction.caller_asked_status:
             next_question = " ".join(filter(None, [await _confirmed_status_text(call_id), next_question]))
 
@@ -189,8 +218,9 @@ async def process_utterance(
             incident=None,
             extraction=extraction.model_dump() if extraction else None,
             next_question=next_question,
-            location_match=candidate.label if candidate else None,
+            location_match=pinned.label if pinned else None,
             extraction_error=error,
+            location_confirmed=location.confirmed if location else None,
         )
         try:
             # In turn mode Convex stores `response` as the turn's receipt, atomically with the write.
@@ -200,9 +230,11 @@ async def process_utterance(
                 transcript,
                 turn=turn,
                 response=response,
+                # A "yes" counts even if this turn's extraction failed: the read-back didn't change.
+                location_confirmation=location.confirmation if location else None,
                 **(
                     dict(
-                        reported_address=extraction.reported_address,
+                        reported_address=location.location if location else extraction.reported_address,
                         people_count=extraction.people_count,
                         reported_position=extraction.reported_position,
                         hazards=[h.model_dump() for h in extraction.hazards],
@@ -213,10 +245,9 @@ async def process_utterance(
                         water_report=extraction.water_report.model_dump() if extraction.water_report else None,
                         withdrawn=[w.model_dump() for w in extraction.withdrawn],
                         candidate=(
-                            (candidate.latitude, candidate.longitude, f"Map search: {candidate.label}")
-                            if candidate
-                            else None
+                            (pinned.latitude, pinned.longitude, f"Map search: {pinned.label}") if pinned else None
                         ),
+                        map_issue=candidate.note if candidate and candidate.issue else None,
                     )
                     if extraction
                     else {}
@@ -251,6 +282,7 @@ async def process_utterance(
             next_question=response["next_question"],
             location_match=response["location_match"],
             extraction_error=error,
+            location_confirmed=response["location_confirmed"],
         )
 
 
