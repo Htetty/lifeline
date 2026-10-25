@@ -3,7 +3,7 @@
 from typing import Literal
 
 import anthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import settings
 
@@ -111,6 +111,22 @@ progress: whether anyone is coming, when, whether the dispatcher got their call,
 "what's happening?", "are you sending someone?". The agent will then tell them the
 confirmed status before asking anything else.
 
+When <latest_caller_message> is given, it is the caller's most recent message (it may
+span several short turns at the end of the transcript); use it wherever these
+instructions say "most recent message" or "latest message".
+
+`withdrawn` lists facts the caller's most recent message explicitly takes back without
+giving a replacement, each with the caller's words as `evidence`:
+- people_count: "I was wrong, I don't know how many of us there are". A new number
+  ("not three, two") is a correction: put it in `people_count`, don't withdraw.
+- hazard: "actually nobody is injured", "there's no water on the stairs after all".
+  Use the hazard's exact name from <recorded_hazards> when it is there.
+- risk_factor: the factor id, e.g. serious_injury or medical_need for "nobody is hurt".
+Withdraw only what the caller denied; other facts stay. Something the caller simply
+doesn't mention again is NOT withdrawn: leave `withdrawn` empty. Once a fact is
+withdrawn, leave it out (people_count null, hazard or factor not listed) unless the
+caller states it again later.
+
 `next_question` is one short, calm question the call-taker can ask to fill the most
 important gap, in this priority: exact location, number of people, where they are in
 the building, injuries or medical needs, other hazards. Don't repeat a question the
@@ -150,7 +166,23 @@ class WaterReport(BaseModel):
     evidence: str = Field(description="The caller's words describing the water depth")
 
 
+class Withdrawal(BaseModel):
+    fact: Literal["people_count", "hazard", "risk_factor"]
+    name: str | None = Field(
+        description="Hazard name (as recorded) or risk factor id; null for people_count"
+    )
+    evidence: str = Field(description="The caller's words taking it back")
+
+
+def _require_withdrawn(schema: dict) -> None:
+    # Claude must always answer `withdrawn` (usually []) and `water_report` (often null);
+    # only old saved receipts lack them.
+    schema["required"] = [*schema.get("required", []), "withdrawn", "water_report"]
+
+
 class Extraction(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_require_withdrawn)
+
     caller_role: Literal["trapped", "witness", "unknown"] = Field(
         description="Is the caller among the people needing rescue, or reporting others?"
     )
@@ -163,10 +195,18 @@ class Extraction(BaseModel):
     location_changed: bool = Field(description="Caller's latest message changed or took back an earlier location")
     hazards: list[HazardFact]
     risk_factors: list[RiskFact]
-    water_report: WaterReport | None = Field(description="How deep the water is where they are, if the caller said")
+    # Defaults to null so receipts saved before this field existed still load.
+    water_report: WaterReport | None = Field(
+        default=None, description="How deep the water is where they are, if the caller said"
+    )
     summary: str = Field(description="One sentence summarising only the stated facts")
     missing: list[str] = Field(description="Important facts still unknown")
     caller_asked_status: bool = Field(description="Caller's latest message asks whether help is coming / what's happening")
+    # Explicit retractions only. Omitted facts are not withdrawn. Defaults to empty so
+    # receipts saved before this field existed still load.
+    withdrawn: list[Withdrawal] = Field(
+        default_factory=list, description="Facts the caller's latest message explicitly takes back"
+    )
     next_question: str | None
 
 
@@ -174,13 +214,23 @@ class ExtractionUnavailable(Exception):
     """Claude could not produce an extraction (refusal or invalid output)."""
 
 
-async def extract_incident(transcript: str) -> Extraction:
+async def extract_incident(
+    transcript: str, recorded_hazards: list[str] | None = None, latest_message: str | None = None
+) -> Extraction:
+    content = f"<transcript>\n{transcript}\n</transcript>"
+    if latest_message:
+        # Several short caller turns saved since the last extraction: together they are the
+        # "most recent message" (so a correction or withdrawal in any of them still counts).
+        content += f"\n<latest_caller_message>\n{latest_message}\n</latest_caller_message>"
+    if recorded_hazards:
+        # So a withdrawal can name the stored hazard exactly.
+        content += "\n<recorded_hazards>\n" + "\n".join(recorded_hazards) + "\n</recorded_hazards>"
     response = await client.messages.parse(
         model=settings.claude_model,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
         output_config={"effort": settings.extraction_effort},
-        messages=[{"role": "user", "content": f"<transcript>\n{transcript}\n</transcript>"}],
+        messages=[{"role": "user", "content": content}],
         output_format=Extraction,
         # If a safety classifier declines, re-run on Anthropic's recommended fallback model.
         extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},

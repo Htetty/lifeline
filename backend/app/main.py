@@ -53,10 +53,10 @@ async def stream(ws: WebSocket, call_id: str):
     await call_stream(ws, call_id)
 
 
-async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
+async def process_utterance(call_id: str, utterance: Utterance, **options) -> UtteranceResult:
     """HTTP-facing processing (also used by the browser bridge): a failed save is an HTTP error."""
     try:
-        return await calls.process_utterance(call_id, utterance)
+        return await calls.process_utterance(call_id, utterance, **options)
     except SaveFailed as e:
         # Never 2xx: the caller must not be told the report was saved.
         raise HTTPException(status_code=e.status_code, detail=str(e), headers={"X-Say-To-Caller": SAVE_FAILED_TEXT}) from e
@@ -123,3 +123,6 @@ async def ack_announcement(call_id: str, event_id: str):
 from .voice import router as voice_router  # noqa: E402  (voice.py imports names from this module)
 
 app.include_router(voice_router)
+
+from .twilio_media import router as twilio_router
+app.include_router(twilio_router)

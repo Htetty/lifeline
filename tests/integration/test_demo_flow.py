@@ -327,19 +327,38 @@ class DemoIntegration(unittest.TestCase):
         self.say("Correction: I am at 81 Lantern Lane, not 18.")
         self.assertEqual(self.announcements(), [])
 
-    @unittest.expectedFailure
-    def test_gap_withdrawn_known_count_must_become_unknown(self):
+    def test_fixed_withdrawn_known_count_must_become_unknown(self):
         self.say("Three people.")
-        self.result(facts(people_count=None, summary="Caller retracts the earlier count; count is unknown."))
+        self.result(facts(people_count=None, summary="Caller retracts the earlier count; count is unknown.",
+                          withdrawn=[{"fact": "people_count", "name": None,
+                                      "evidence": "I don't know how many people there are."}]))
         self.say("I was wrong about three. I don't know how many people there are.")
         self.assertIsNone(self.incident()["peopleCount"])
+        # A later turn that simply doesn't mention a count keeps it unknown, and history keeps the 3.
+        self.result(facts(people_count=None))
+        self.say("We're still upstairs.")
+        incident = self.incident()
+        self.assertIsNone(incident["peopleCount"])
+        self.assertIn(("peopleCount", "3"), [(h["field"], h["previous"]) for h in incident["factHistory"]])
 
-    @unittest.expectedFailure
-    def test_gap_withdrawn_hazard_must_not_remain_current(self):
+    def test_fixed_withdrawn_hazard_must_not_remain_current(self):
         self.say()
-        self.result(facts(hazards=[], summary="Caller retracts the water-on-stairs report."))
+        self.result(facts(hazards=[], summary="Caller retracts the water-on-stairs report.",
+                          withdrawn=[{"fact": "hazard", "name": "Water on stairs",
+                                      "evidence": "there is no water on the stairs"}]))
         self.say("Correction: I was mistaken; there is no water on the stairs.")
         self.assertEqual(self.incident()["hazards"], [])
+        retracted = [h for h in self.incident()["factHistory"] if h.get("withdrawnBy")]
+        self.assertEqual([(h["previous"], h["evidence"]) for h in retracted],
+                         [("Water on stairs", "Water is on the stairs.")])
+
+    def test_omitted_count_and_hazards_are_not_withdrawals(self):
+        self.say()
+        self.result(facts(people_count=None, hazards=[], summary="Caller adds nothing new."))
+        self.say("I'm not sure what else to tell you.")
+        incident = self.incident()
+        self.assertEqual(incident["peopleCount"], 3)
+        self.assertEqual([h["hazard"] for h in incident["hazards"]], ["Water on stairs"])
 
     def test_fixed_failed_storage_must_not_log_transcript_saved(self):
         self.parse.side_effect = extraction.ExtractionUnavailable("mock refusal")

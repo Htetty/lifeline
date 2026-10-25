@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from collections import defaultdict
 from typing import Literal
 
@@ -108,8 +109,18 @@ async def _classify(call_id: str, version: int, transcript: str) -> None:
         log.warning("call %s: advisory classification skipped (%s)", call_id, type(e).__name__)
 
 
-async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResult:
+async def process_utterance(
+    call_id: str, utterance: Utterance, *, extract: bool = True, latest_message: str | None = None
+) -> UtteranceResult:
+    """Save a turn and (by default) extract facts from the whole transcript.
+
+    extract=False saves a caller turn without extraction, for a voice session that already
+    has a newer caller turn queued: that turn's extraction reads the whole transcript, with
+    `latest_message` covering every caller turn saved since the last extraction.
+    """
     async with _locks[call_id]:
+        started = time.monotonic()
+        extract_s = map_s = 0.0
         turn = None
         if utterance.turn_id:
             turn = {
@@ -139,9 +150,16 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
 
         extraction: Extraction | None = None
         error: str | None = None
-        if utterance.speaker == "caller":
+        if utterance.speaker == "caller" and extract:
             try:
-                extraction = await extract_incident(transcript)
+                recorded = await convex_store.recorded_hazards(call_id)
+            except Exception:  # only a naming hint for withdrawals; extraction works without it
+                log.warning("call %s: couldn't read recorded hazards", call_id)
+                recorded = None
+            try:
+                t = time.monotonic()
+                extraction = await extract_incident(transcript, recorded, latest_message)
+                extract_s = time.monotonic() - t
             except ExtractionUnavailable as e:
                 error = f"Extraction unavailable ({e}); the dispatcher will read the transcript."
             except anthropic.APIError as e:
@@ -154,7 +172,9 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
 
         # Place the incident on the map when the caller named a findable place (never raises).
         # Convex ignores candidates once the dispatcher has confirmed a location.
+        t = time.monotonic()
         candidate = await find_candidate(extraction.location_queries) if extraction else None
+        map_s = time.monotonic() - t
         if candidate:
             log.info("call %s: location candidate %r from %r", call_id, candidate.label, candidate.query)
 
@@ -191,6 +211,7 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
                         caller_role=extraction.caller_role,
                         risk_factors=[r.model_dump() for r in extraction.risk_factors],
                         water_report=extraction.water_report.model_dump() if extraction.water_report else None,
+                        withdrawn=[w.model_dump() for w in extraction.withdrawn],
                         candidate=(
                             (candidate.latitude, candidate.longitude, f"Map search: {candidate.label}")
                             if candidate
@@ -212,11 +233,15 @@ async def process_utterance(call_id: str, utterance: Utterance) -> UtteranceResu
 
         # Turn mode returns the stored receipt, which wraps the incident status.
         version = (incident.get("incident") if turn else incident or {}).get("version")
-        if classify_text_async and os.environ.get("CLASSIFIER_MODEL_PATH") and utterance.speaker == "caller" and version:
+        if classify_text_async and os.environ.get("CLASSIFIER_MODEL_PATH") and utterance.speaker == "caller" and extract and version:
             task = asyncio.create_task(_classify(call_id, int(version), transcript))
             _background.add(task)
             task.add_done_callback(_background.discard)
 
+        if utterance.speaker == "caller":
+            # Timing only, never caller words: where a reply's delay comes from.
+            log.info("call %s: caller turn saved in %d ms (extraction %d ms, map %d ms, coalesced=%s)", call_id,
+                     (time.monotonic() - started) * 1000, extract_s * 1000, map_s * 1000, not extract)
         if turn:
             return UtteranceResult.model_validate(incident)
         return UtteranceResult(

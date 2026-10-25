@@ -2,7 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
-import { autoGroup, bump, linkedReports, linkInto } from "./linking";
+import { autoGroup, bump, linkedReports, linkInto, reevaluateLinks } from "./linking";
 import { queueCallerUpdate } from "./callerUpdates";
 import { isCurrentEvent, logActivity, requireDispatcher } from "./lib";
 import { incidentStatus, priorityTier } from "./schema";
@@ -118,6 +118,7 @@ export const verifyLocation = mutation({
     );
     await logActivity(ctx, `Location confirmed for ${incident.reportedAddress}.`, incident._id);
     if (!incident.locationVerified) await queueCallerUpdate(ctx, incident, "location_confirmed");
+    if (moving) await reevaluateLinks(ctx, incident._id, "the dispatcher moved the pin");
     await autoGroup(ctx, incident._id);
   },
 });

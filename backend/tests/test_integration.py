@@ -9,6 +9,7 @@ Real: HTTP routes and auth, the Convex client, and every Convex query/mutation a
 Set LIFELINE_TRACE=1 to print the end-to-end walkthrough.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -179,6 +180,164 @@ class Corrections(Base):
         self.say("I'm not sure about anything else.")
         inc = self.incident()
         self.assertEqual((inc["peopleCount"], inc["reportedPosition"], len(inc["hazards"])), (3, "upstairs", 1))
+
+
+INJURY = {"hazard": "Person injured", "evidence": "my friend cut her leg"}
+WATER = {"hazard": "Water on stairs", "evidence": "water is on the stairs"}
+
+
+def withdraw(fact, name=None, evidence="I was wrong about that"):
+    return {"fact": fact, "name": name, "evidence": evidence}
+
+
+class Withdrawals(Base):
+    """Explicit caller retractions versus information a later turn simply leaves out."""
+
+    def withdrawals(self):
+        return [h for h in self.incident().get("factHistory", []) if h.get("withdrawnBy")]
+
+    def test_explicit_count_withdrawal_makes_count_unknown_and_keeps_history(self):
+        self.say()
+        self.extract(facts(people_count=None, withdrawn=[withdraw("people_count", evidence="I don't know how many")]))
+        self.say("I was wrong; I don't know how many of us there are.")
+        inc = self.incident()
+        self.assertIsNone(inc["peopleCount"])
+        self.assertEqual([(h["field"], h["previous"], h["withdrawnBy"]) for h in self.withdrawals()],
+                         [("peopleCount", "3", "I don't know how many")])
+        self.assertEqual(inc["hazards"], [WATER])  # nothing else was withdrawn
+
+    def test_omitted_facts_are_retained(self):
+        self.extract(facts(hazards=[WATER, INJURY], risk_factors=[{"factor": "serious_injury", "evidence": "cut her leg"}]))
+        self.say()
+        self.extract(facts(people_count=None, reported_position=None, hazards=[], risk_factors=[]))
+        self.say("I don't know what else to say.")
+        inc = self.incident()
+        self.assertEqual(inc["peopleCount"], 3)
+        self.assertEqual(inc["hazards"], [WATER, INJURY])
+        self.assertEqual([r["factor"] for r in inc["riskFactors"]], ["serious_injury"])
+        self.assertEqual(self.withdrawals(), [])
+
+    def test_withdrawing_one_hazard_keeps_the_others(self):
+        self.extract(facts(hazards=[WATER, INJURY]))
+        self.say()
+        # Empty list (nothing new) plus an explicit withdrawal of one hazard.
+        self.extract(facts(hazards=[], withdrawn=[withdraw("hazard", "person injured", "actually nobody is injured")]))
+        self.say("Actually, nobody is injured.")
+        self.assertEqual(self.incident()["hazards"], [WATER])
+        self.assertEqual([(h["previous"], h["evidence"], h["withdrawnBy"]) for h in self.withdrawals()],
+                         [("Person injured", "my friend cut her leg", "actually nobody is injured")])
+
+    def test_withdrawal_wins_over_a_relisted_hazard(self):
+        self.extract(facts(hazards=[WATER, INJURY]))
+        self.say()
+        # A complete list that still (wrongly) includes the withdrawn hazard.
+        self.extract(facts(hazards=[WATER, INJURY], withdrawn=[withdraw("hazard", "Person injured", "nobody is hurt")]))
+        self.say("Nobody is hurt.")
+        self.assertEqual(self.incident()["hazards"], [WATER])
+
+    def test_withdrawn_risk_factor_is_removed_with_history(self):
+        self.extract(facts(risk_factors=[{"factor": "serious_injury", "evidence": "cut her leg"},
+                                         {"factor": "on_roof", "evidence": "we're on the roof"}]))
+        self.say()
+        self.extract(facts(risk_factors=[], withdrawn=[withdraw("risk_factor", "serious_injury", "nobody is injured")]))
+        self.say("Actually, nobody is injured.")
+        self.assertEqual([r["factor"] for r in self.incident()["riskFactors"]], ["on_roof"])
+        self.assertEqual([(h["field"], h["previous"]) for h in self.withdrawals()], [("riskFactor", "serious_injury")])
+
+    def test_old_words_do_not_resurrect_a_withdrawn_hazard_but_new_ones_do(self):
+        self.extract(facts(hazards=[WATER, INJURY]))
+        self.say()
+        self.extract(facts(hazards=[], withdrawn=[withdraw("hazard", "Person injured", "nobody is injured")]))
+        self.say("Nobody is injured.")
+        # A later re-read of the whole transcript lists it again from the original words.
+        self.extract(facts(hazards=[WATER, INJURY]))
+        self.say("We're still upstairs.")
+        self.assertEqual(self.incident()["hazards"], [WATER])
+        # The caller states it again: it is current again.
+        again = {"hazard": "Person injured", "evidence": "wait, my son just fell and hurt his arm"}
+        self.extract(facts(hazards=[WATER, again]))
+        self.say("Wait, my son just fell and hurt his arm.")
+        self.assertEqual(self.incident()["hazards"], [WATER, again])
+
+    def test_new_count_is_a_correction_not_a_withdrawal(self):
+        self.say()
+        self.extract(facts(people_count=2, withdrawn=[withdraw("people_count", evidence="not three")]))
+        self.say("Not three, two.")
+        inc = self.incident()
+        self.assertEqual(inc["peopleCount"], 2)
+        self.assertEqual(self.withdrawals(), [])
+        self.assertIn(("peopleCount", "3"), [(h["field"], h["previous"]) for h in inc["factHistory"]])
+
+    def test_duplicate_turn_delivery_applies_the_withdrawal_once(self):
+        convex.mutation("calls:startVoiceCall", {"secret": SECRET, "callId": self.call})
+        turn = lambda text, n: self.http.post(f"/calls/{self.call}/utterances",
+                                              json={"speaker": "caller", "text": text, "turn_id": f"t{n}", "sequence": n})
+        self.extract(facts(hazards=[WATER, INJURY]))
+        self.assertEqual(turn("Three upstairs, water on the stairs, my friend cut her leg.", 1).status_code, 200)
+        self.extract(facts(people_count=None, hazards=[],
+                           withdrawn=[withdraw("people_count", evidence="I don't know how many"),
+                                      withdraw("hazard", "Person injured", "nobody is injured")]))
+        first = turn("I don't know how many we are, and nobody is injured.", 2)
+        version = self.incident()["version"]
+        calls_before = self.parse.await_count
+        again = turn("I don't know how many we are, and nobody is injured.", 2)  # provider redelivery
+        self.assertEqual(again.json(), first.json())
+        self.assertEqual(self.parse.await_count, calls_before)  # served from the receipt
+        inc = self.incident()
+        self.assertEqual(inc["version"], version)
+        self.assertEqual((inc["peopleCount"], inc["hazards"]), (None, [WATER]))
+        self.assertEqual(len(self.withdrawals()), 2)
+
+    def test_repeated_withdrawal_without_turn_ids_records_one_retraction(self):
+        self.say()
+        self.extract(facts(people_count=None, hazards=[],
+                           withdrawn=[withdraw("people_count", evidence="no idea how many"),
+                                      withdraw("hazard", "Water on stairs", "no water on the stairs")]))
+        for _ in range(2):
+            self.say("No idea how many, and there's no water on the stairs.")
+        self.assertEqual(len(self.withdrawals()), 2)
+        self.assertEqual((self.incident()["peopleCount"], self.incident()["hazards"]), (None, []))
+
+    def test_extractor_gets_recorded_hazard_names(self):
+        self.extract(facts(hazards=[WATER, INJURY]))
+        self.say()
+        self.say("Anything else?")
+        content = self.parse.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("<recorded_hazards>\nWater on stairs\nPerson injured\n</recorded_hazards>", content)
+
+    def test_withdrawal_after_dispatch_keeps_assignment_and_its_announcement(self):
+        self.say()
+        team = self.dispatch()
+        self.extract(facts(people_count=None, withdrawn=[withdraw("people_count", evidence="not sure how many")]))
+        self.say("I'm not sure how many of us there are now.")
+        inc = self.incident()
+        self.assertEqual((inc["status"], inc["peopleCount"]), ("assigned", None))
+        self.assertIn(team["name"], self.announcements()[0]["text"])
+
+
+class CoalescedTurns(Base):
+    """A turn saved without extraction (newer caller turn queued) loses nothing."""
+
+    def test_correction_in_a_coalesced_turn_still_resets_the_location(self):
+        self.say("Three of us at 18 Lantern Lane.")
+        inc = self.incident()
+        convex.mutation("incidents:verifyLocation", {**DISPATCHER, "incidentId": inc["_id"], "latitude": 32.76, "longitude": -117.17})
+        calls_before = self.parse.await_count
+        utter = lambda text: calls.Utterance(speaker="caller", text=text)
+        saved = asyncio.run(calls.process_utterance(self.call, utter("Sorry, it's 81 Lantern Lane, not 18."), extract=False))
+        self.assertTrue(saved.saved)
+        self.assertEqual(self.parse.await_count, calls_before)  # no extraction for the superseded turn
+        mid = self.incident()
+        self.assertTrue(mid["locationVerified"])  # nothing decided from a turn that wasn't extracted
+        self.assertIn("81 Lantern Lane, not 18", mid["transcript"])
+        self.extract(facts(reported_address="81 Lantern Lane (fictional)", location_changed=True))
+        latest = "Sorry, it's 81 Lantern Lane, not 18.\nThere are two of us upstairs."
+        asyncio.run(calls.process_utterance(self.call, utter("There are two of us upstairs."), latest_message=latest))
+        sent = self.parse.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("<latest_caller_message>\n" + latest + "\n</latest_caller_message>", sent)
+        now = self.incident()
+        self.assertEqual((now["status"], now["locationVerified"]), ("needs_review", False))
+        self.assertEqual(now["transcript"].count("Caller:"), 3)
 
 
 class NoFalseSuccess(Base):

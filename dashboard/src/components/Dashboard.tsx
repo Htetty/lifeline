@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -408,31 +409,34 @@ function DashboardView({ state }: { state: ExerciseState }) {
 
 
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
-      <header className="flex items-center gap-4 border-b border-slate-800 px-4 py-2.5">
-        <h1 className="text-base font-semibold tracking-tight">Flood Rescue Dispatcher</h1>
-        <span className="rounded bg-amber-400 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-slate-950">
-          Simulated exercise
-        </span>
-        <span className="text-sm text-slate-400">{DEMO_AREA.name}</span>
-        <div className="ml-auto flex items-center gap-4 text-sm">
-          {criticalWaiting > 0 && (
-            <span className="rounded bg-red-600 px-2 py-0.5 font-semibold">{criticalWaiting} critical waiting</span>
-          )}
-          <span>
-            <b className="text-red-400">{stuckPeople}</b> people awaiting rescue
-          </span>
-          <span className="text-slate-400" title={`USGS ${GAUGE.site} ${GAUGE.name}`}>
-            River gauge <b className="text-sky-300">{surfaceToStage(waterLevel).toFixed(1)} ft</b>
+    <div className="dispatcher flex h-screen flex-col bg-slate-950 text-slate-100">
+      <header className="console-header">
+        <Link href="/" className="brand">Lifeline</Link>
+        <span className="console-region">{DEMO_AREA.name} · Flood ops</span>
+        <span className="exercise-label">Simulated exercise</span>
+        <div className="console-metrics">
+          <span><i className="live-dot" /> On call <b>{state.incidents.filter((i) => i.callConnected).length}</b></span>
+          <span>Needs review <b>{mainIncidents.filter((i) => i.status === "needs_review").length}</b></span>
+          <span>Active rescues <b>{mainIncidents.filter((i) => DISPATCHED_STATUSES.includes(i.status)).length}</b></span>
+          <span>Teams free <b className="text-emerald-300">{state.teams.filter((t) => t.available).length}</b></span>
+          <span title={`USGS ${GAUGE.site} ${GAUGE.name}`}>
+            River <b className="text-sky-300">{surfaceToStage(waterLevel).toFixed(1)} ft</b>
             {observedAt != null ? ` · ${formatGaugeTime(observedAt)}` : " · set by hand"}
           </span>
         </div>
       </header>
+      <div className="operations-bar">
+        <span><i className="live-dot" /> Dispatcher console <span className="text-slate-500">/</span> Live operations</span>
+        <span>{criticalWaiting > 0 && <strong className="text-red-300">{criticalWaiting} critical waiting · </strong>}{stuckPeople} people awaiting rescue · River {surfaceToStage(waterLevel).toFixed(1)} ft</span>
+      </div>
 
       <div className="flex min-h-0 flex-1">
         {/* Left: controls, queue, activity */}
-        <aside className="flex w-80 shrink-0 flex-col border-r border-slate-800">
-          <section className="space-y-3 border-b border-slate-800 p-4">
+        <aside className="incident-sidebar flex shrink-0 flex-col border-r border-slate-800">
+          <div className="queue-heading"><h2>Incidents</h2><span>Sorted by priority</span></div>
+          <details className="simulation-controls border-b border-slate-800 p-4">
+            <summary>Simulation controls <span>{surfaceToStage(waterLevel).toFixed(1)} ft</span></summary>
+            <div className="mt-4 space-y-3">
             <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">
               River level at Fashion Valley gauge
             </label>
@@ -489,9 +493,10 @@ function DashboardView({ state }: { state: ExerciseState }) {
                 Reset
               </button>
             </div>
-          </section>
+            </div>
+          </details>
 
-          <section className="flex gap-1 border-b border-slate-800 px-4 py-2">
+          <section className="queue-filters flex gap-1 border-b border-slate-800 px-4 py-2">
             {(Object.keys(FILTERS) as Filter[]).map((f) => (
               <button
                 key={f}
@@ -500,12 +505,12 @@ function DashboardView({ state }: { state: ExerciseState }) {
                   filter === f ? "bg-slate-200 text-slate-900" : "text-slate-400 hover:bg-slate-800"
                 }`}
               >
-                {f}
+                {f === "stuck" ? "Waiting" : f} <span className="ml-1 opacity-60">{mainIncidents.filter((i) => FILTERS[f](i.status)).length}</span>
               </button>
             ))}
           </section>
 
-          <ul className="min-h-0 flex-1 overflow-y-auto">
+          <ul className="incident-queue min-h-0 flex-1 overflow-y-auto">
             {incidents.map((i) => {
               const w = waterReport(i);
               const st = STATUS_STYLE[i.status];
@@ -516,6 +521,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                       setSelectedId(i.id);
                       setPendingPick(null);
                     }}
+                    aria-pressed={i.id === selectedId}
                     className={`block w-full border-b border-slate-900 px-4 py-3 text-left hover:bg-slate-900 ${
                       i.id === selectedId ? "bg-slate-800" : ""
                     }`}
@@ -575,7 +581,8 @@ function DashboardView({ state }: { state: ExerciseState }) {
         </aside>
 
         {/* Map */}
-        <main className="relative min-w-0 flex-1">
+        <main className="map-workspace relative min-w-0 flex-1" aria-label="Flood response map">
+          <div className="map-canvas">
           <FloodMap
             state={mapState}
             flood={flood}
@@ -619,8 +626,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
           )}
           <Legend />
 
+          </div>
           {(selected || pendingPick) && (
-            <div className="absolute right-14 top-3 max-h-[calc(100%-1.5rem)] w-80 overflow-y-auto rounded-lg bg-slate-900/95 p-4 shadow-xl ring-1 ring-slate-700">
+            <section aria-label="Incident details" className="incident-detail overflow-y-auto">
               {pendingPick ? (
                 <NewReportForm
                   pick={pendingPick}
@@ -659,7 +667,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
                   />
                 )
               )}
-            </div>
+            </section>
           )}
         </main>
       </div>
@@ -810,68 +818,65 @@ function IncidentDetail({
   const assignedPlan = options.find((o) => o.team.id === incident.assignedTeamId)?.plan ?? null;
   const st = STATUS_STYLE[incident.status];
   const onMap = incident.latitude != null && incident.longitude != null;
+  const headline = incident.summary.trim().split(/(?<=[.!?])\s+/)[0] || incident.reportedAddress;
+  const medical = (incident.riskFactors ?? []).filter((r) => ["serious_injury", "medical_need"].includes(r.factor));
+  const mobility = (incident.riskFactors ?? []).filter((r) => ["limited_mobility", "no_higher_ground"].includes(r.factor));
+  const waterFacts = (incident.riskFactors ?? []).filter((r) => ["water_chest_or_higher", "water_rising_fast", "in_moving_water"].includes(r.factor));
+  const describeFactors = (factors: NonNullable<Incident["riskFactors"]>) => factors.map((r) => r.evidence || FACTOR_LABEL[r.factor]).join(" · ");
+  const chosenTeam = available.find((o) => o.team.id === teamId)?.team;
+
 
   return (
-    <div className="space-y-3 text-sm">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="flex flex-wrap gap-1.5">
-            <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${st.cls}`}>
-              {st.icon} {STATUS_LABEL[incident.status]}
-            </span>
-            {incident.callId && (
-              <span
-                className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
-                  incident.callConnected ? "bg-emerald-400 text-slate-900" : "bg-slate-700 text-slate-300"
-                }`}
-              >
-                {incident.callConnected ? "● Caller on the line" : "Call ended"}
-              </span>
-            )}
-          </div>
-          <h2 className="mt-1.5 font-semibold">{incident.reportedAddress}</h2>
+    <div className="incident-content text-sm">
+      <header className="detail-heading">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`detail-priority detail-priority-${priority?.tier ?? "standard"}`}>{priority ? TIER_STYLE[priority.tier].label.toLowerCase() : "Standard"}</span>
+          <span className="detail-id" title={incident.id}>{incident.id.slice(-8).toUpperCase()}</span>
+          <span className={`detail-status detail-status-${incident.status} ml-auto rounded-full px-2.5 py-1 text-[11px] font-semibold ${st.cls}`}>
+            {STATUS_LABEL[incident.status]}
+          </span>
+          <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close incident details">✕</button>
         </div>
-        <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close">
-          ✕
-        </button>
-      </div>
+        <h2>{headline}</h2>
+        <p>{incident.reportedAddress}{incident.reportedPosition ? ` · ${incident.reportedPosition}` : ""}</p>
+        {incident.callId && <span className="detail-call-status"><i className={incident.callConnected ? "live-dot" : "ended-dot"} />{incident.callConnected ? "Caller on the line" : "Call ended"}</span>}
+      </header>
+
+      <dl className="detail-stats">
+        <div><dt>People</dt><dd>{incident.peopleCount == null ? "Unknown" : `${incident.peopleCount} ${incident.peopleCount === 1 ? "person" : "people"}`}</dd></div>
+        <div><dt>Modeled water depth</dt><dd>{water?.depth == null ? "Unknown" : `${water.depth.toFixed(1)} m`}</dd></div>
+      </dl>
+
+      <section className="detail-section">
+        <h3>AI summary</h3>
+        <p className="detail-summary">{incident.summary || "Waiting for a caller report. No summary available yet."}</p>
+      </section>
+
+      <section className="detail-section">
+        <h3>Extracted facts</h3>
+        <dl className="fact-table">
+          <div><dt>Location</dt><dd>{incident.reportedAddress}</dd><dd className={incident.locationVerified ? "fact-confirmed" : "fact-verify"}>{incident.locationVerified ? "Dispatcher verified" : "Verify"}</dd></div>
+          <div><dt>People</dt><dd>{incident.peopleCount ?? "Unknown"}</dd><dd className="fact-source">{incident.peopleCount == null ? "Not reported" : "Reported"}</dd></div>
+          <div><dt>Position</dt><dd>{incident.reportedPosition ?? "Unknown"}</dd><dd className="fact-source">{incident.reportedPosition ? "Reported" : "Not reported"}</dd></div>
+          <div><dt>Medical</dt><dd>{medical.length ? describeFactors(medical) : "Not reported"}</dd><dd className="fact-source">{medical.length ? "Reported" : "Unknown"}</dd></div>
+          <div><dt>Mobility</dt><dd>{mobility.length ? describeFactors(mobility) : "Not reported"}</dd><dd className={mobility.length ? "fact-verify" : "fact-source"}>{mobility.length ? "Verify" : "Unknown"}</dd></div>
+          <div><dt>Water</dt><dd>{waterFacts.length ? describeFactors(waterFacts) : "Not reported"}</dd><dd className={waterFacts.length ? "fact-verify" : "fact-source"}>{waterFacts.length ? "Verify" : "Unknown"}</dd></div>
+          <div><dt>Hazards</dt><dd>{incident.hazards.length ? <ul>{incident.hazards.map((h) => <li key={h.hazard}>{h.hazard}{h.evidence && <q className="fact-evidence">{h.evidence}</q>}</li>)}</ul> : "None reported"}</dd><dd className="fact-source">{incident.hazards.length ? "Reported" : "—"}</dd></div>
+        </dl>
+        {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && <p className="mt-3 text-xs text-slate-400">Advisory topic tags: {incident.advisoryTags.tags.join(", ")} (not verified facts)</p>}
+      </section>
+
+      <section className="detail-section transcript-section">
+        <h3>Transcript</h3>
+        <IncidentTranscript transcript={incident.transcript} />
+      </section>
 
       {priority && incident.status !== "resolved" && !main && (
-        <PriorityPanel incident={incident} linked={allIncidents.filter((i) => i.linkedTo === incident.id)} priority={priority} run={run} />
+        <details className="detail-disclosure">
+          <summary>Priority assessment & override</summary>
+          <PriorityPanel incident={incident} linked={allIncidents.filter((i) => i.linkedTo === incident.id)} priority={priority} run={run} />
+        </details>
       )}
-
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-        <dt className="text-slate-400">People</dt>
-        <dd>{incident.peopleCount ?? "Unknown"}</dd>
-        <dt className="text-slate-400">Position</dt>
-        <dd>{incident.reportedPosition ?? "Unknown"}</dd>
-        <dt className="text-slate-400">Hazards</dt>
-        <dd>
-          {incident.hazards.length ? (
-            <ul className="space-y-0.5">
-              {incident.hazards.map((h) => (
-                <li key={h.hazard}>
-                  {h.hazard}
-                  {h.evidence && <span className="text-slate-500"> — “{h.evidence}”</span>}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            "None reported"
-          )}
-        </dd>
-        <dt className="text-slate-400">Summary</dt>
-        <dd>{incident.summary || "—"}</dd>
-        {incident.advisoryTags?.status === "ok" && incident.advisoryTags.tags.length > 0 && (
-          <>
-            <dt className="text-slate-400">Topic tags</dt>
-            <dd>
-              {incident.advisoryTags.tags.join(", ")}
-              <span className="text-slate-500"> (advisory, ModernBERT; not verified facts)</span>
-            </dd>
-          </>
-        )}
-      </dl>
 
       {incident.factHistory && incident.factHistory.length > 0 && (
         <details className="rounded bg-slate-800/70 p-2 text-xs">
@@ -879,7 +884,9 @@ function IncidentDetail({
           <ul className="mt-1.5 space-y-0.5 text-slate-300">
             {incident.factHistory.map((c, n) => (
               <li key={n}>
-                {c.field}: was “{c.previous}”{c.evidence && <span className="text-slate-500"> — “{c.evidence}”</span>}
+                {c.field}: {c.withdrawnBy != null ? <span className="text-amber-300">withdrawn</span> : "was"} “
+                {c.previous}”{c.evidence && <span className="text-slate-500"> — “{c.evidence}”</span>}
+                {c.withdrawnBy != null && <span className="text-slate-400"> · caller: “{c.withdrawnBy}”</span>}
               </li>
             ))}
           </ul>
@@ -905,21 +912,17 @@ function IncidentDetail({
         <SameLocation incident={incident} all={allIncidents} run={run} onSelect={onSelect} />
       )}
 
-      {incident.callId && <CallerUpdates incident={incident} run={run} />}
+      {incident.callId && <details className="detail-disclosure"><summary>Caller updates & messages</summary><CallerUpdates incident={incident} run={run} /></details>}
 
-      {incident.transcript && (
-        <details className="rounded bg-slate-800/70 p-2 text-xs" open={incident.callConnected}>
-          <summary className="cursor-pointer text-slate-400">Call transcript</summary>
-          <pre className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap font-sans text-slate-300">
-            {incident.transcript}
-          </pre>
-        </details>
-      )}
 
-      {onMap && <WaterPanel water={water} />}
       {incident.waterReport && (
         <CallerWater report={incident.waterReport} riverDepth={riverDepth} verified={incident.locationVerified} />
       )}
+      {onMap && <details className="detail-disclosure"><summary>Flood model details</summary><WaterPanel water={water} /></details>}
+
+      <section className="assignment-section"><h3>{assigned ? "Assigned team" : "Team assignment"}</h3>
+      {(assigned || chosenTeam) && <div className="assignment-team"><strong>{(assigned || chosenTeam)!.name}</strong><p>{(assigned || chosenTeam)!.capabilities.join(" · ").replaceAll("_", " ")}</p></div>}
+
 
       {main ? null : !onMap ? (
         <div className="rounded bg-yellow-300/10 p-2.5 ring-1 ring-yellow-400/50">
@@ -984,7 +987,7 @@ function IncidentDetail({
           <button
             disabled={!teamId}
             onClick={() => run({ type: "assignTeam", incidentId: incident.id, teamId })}
-            className="w-full rounded bg-red-600 px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40"
+            className="approve-assignment w-full rounded px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40"
           >
             Approve assignment
           </button>
@@ -1052,6 +1055,7 @@ function IncidentDetail({
           </div>
         </div>
       )}
+      </section>
     </div>
   );
 }
@@ -1070,6 +1074,26 @@ function routeSummary(plan: RoutePlan) {
   });
   const depth = plan.limit != null && plan.maxDepth > 0.05 ? ` · deepest water ${plan.maxDepth.toFixed(1)} of ${plan.limit} m` : "";
   return steps.join(" → ") + depth;
+}
+
+/** Render the saved speaker-prefixed text without inventing turns or dropping lines. */
+function IncidentTranscript({ transcript }: { transcript: string | null }) {
+  if (!transcript?.trim()) return <p className="transcript-empty">No transcript available for this report.</p>;
+  const turns: { speaker: string | null; text: string }[] = [];
+  for (const line of transcript.split("\n")) {
+    const match = /^(caller|agent|ai):\s*(.*)$/i.exec(line);
+    if (match) {
+      turns.push({ speaker: match[1].toLowerCase() === "caller" ? "Caller" : "AI", text: match[2] });
+    } else if (turns.length) {
+      turns[turns.length - 1].text += `\n${line}`;
+    } else {
+      turns.push({ speaker: null, text: line });
+    }
+  }
+  return <div className="transcript-card">{turns.map((turn, index) => <div className={`transcript-turn ${turn.speaker === "AI" ? "transcript-agent" : ""}`} key={index}>
+    {turn.speaker && <span className="transcript-speaker">{turn.speaker}</span>}
+    <p className={turn.speaker ? undefined : "transcript-unattributed"}>{turn.text}</p>
+  </div>)}</div>;
 }
 
 const TIER_STYLE: Record<PriorityTier, { label: string; cls: string }> = {

@@ -52,7 +52,14 @@ export interface Incident {
   version: number;
   decisionRevision?: number;
   /** Earlier values of facts the caller changed, with the words that supported them. */
-  factHistory?: { at: number; field: string; previous: string; evidence: string | null }[];
+  factHistory?: {
+    at: number;
+    field: string;
+    previous: string;
+    evidence: string | null;
+    /** Caller's words taking the fact back; absent for an ordinary correction. */
+    withdrawnBy?: string;
+  }[];
   /** Optional ModernBERT topic tags. Advisory only; never incident facts. */
   advisoryTags?: {
     status: "ok" | "disabled" | "unavailable";

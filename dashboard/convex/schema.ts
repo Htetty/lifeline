@@ -60,6 +60,16 @@ export const factChange = v.object({
   previous: v.string(),
   /** Caller's words that supported the previous value, when known. */
   evidence: v.union(v.string(), v.null()),
+  /** Set when the caller explicitly took the fact back: their words doing so. */
+  withdrawnBy: v.optional(v.string()),
+});
+
+/** A fact the caller explicitly took back in their latest message (never inferred from silence). */
+export const withdrawal = v.object({
+  fact: v.union(v.literal("people_count"), v.literal("hazard"), v.literal("risk_factor")),
+  /** Hazard name or risk factor id; null for people_count. */
+  name: v.union(v.string(), v.null()),
+  evidence: v.string(),
 });
 
 /**

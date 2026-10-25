@@ -34,6 +34,7 @@ async def upsert_from_call(
     caller_role: str | None = None,
     risk_factors: list[dict[str, str]] | None = None,
     water_report: dict[str, Any] | None = None,
+    withdrawn: list[dict[str, str | None]] | None = None,
     turn: dict | None = None,
     response: dict | None = None,
 ) -> dict[str, Any]:
@@ -52,6 +53,8 @@ async def upsert_from_call(
             **({"callerRole": caller_role} if caller_role else {}),
             **({"riskFactors": risk_factors} if risk_factors else {}),
             **({"waterReport": _water_report(water_report)} if water_report else {}),
+            # Sent only when the caller took something back, so ordinary turns keep the old arguments.
+            **({"withdrawn": withdrawn} if withdrawn else {}),
             "callId": call_id,
             "source": source,
             "transcript": transcript,
@@ -94,6 +97,15 @@ async def status_for_call(call_id: str) -> dict[str, Any] | None:
 async def pending_events(call_id: str) -> list[dict[str, Any]]:
     """Current, unspoken updates (empty after hang-up). Used by the browser voice bridge."""
     return await _query("calls:pendingEvents", {"callId": call_id})
+
+
+async def recorded_hazards(call_id: str) -> list[str]:
+    return await _query("calls:recordedHazards", {"callId": call_id})
+
+
+async def current_announcement(call_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+    """A still-true update to replay on request: that event, or the latest status update."""
+    return await _query("calls:currentAnnouncement", {"callId": call_id, **({"eventId": event_id} if event_id else {})})
 
 
 async def transcript_for_call(call_id: str) -> str | None:

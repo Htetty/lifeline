@@ -19,7 +19,7 @@ def voice_environment():
 
 
 class CartesiaSpeech:
-    def __init__(self):
+    def __init__(self, *, input_encoding="pcm_f32le", output_format=None, turn=None):
         env = voice_environment()
         if not env.get("CARTESIA_API_KEY"):
             raise RuntimeError("Set CARTESIA_API_KEY in backend/.env")
@@ -30,6 +30,9 @@ class CartesiaSpeech:
         self.agent_id = env.get("CARTESIA_AGENT_ID")
         self.voice = env.get("CARTESIA_VOICE_ID")
         self.model = env.get("CARTESIA_TTS_MODEL")
+        self.input_encoding = input_encoding
+        self.output_format = output_format
+        self.turn = turn or {}  # Cartesia turn-detection overrides, e.g. {"turn_end_threshold": 0.15}
 
     async def configure(self):
         if not self.voice or not self.model:
@@ -47,8 +50,8 @@ class CartesiaSpeech:
     @asynccontextmanager
     async def listen(self, sample_rate):
         async with self.client.stt.auto_finalize.websocket(
-            model="ink-2", encoding="pcm_f32le", sample_rate=sample_rate,
-            extra_query={"cartesia_version": VERSION}, max_retries=0,
+            model="ink-2", encoding=self.input_encoding, sample_rate=sample_rate,
+            extra_query={"cartesia_version": VERSION}, max_retries=0, **self.turn,
         ) as connection:
             yield connection
 
@@ -56,7 +59,7 @@ class CartesiaSpeech:
         await self.configure()
         response = await self.client.tts.generate(
             model_id=self.model, voice=self.voice, transcript=text, language="en",
-            output_format={"container": "raw" if raw else "wav", "encoding": "pcm_s16le", "sample_rate": 16000},
+            output_format=self.output_format or {"container": "raw" if raw else "wav", "encoding": "pcm_s16le", "sample_rate": 16000},
         )
         return await response.read()
 
