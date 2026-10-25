@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  describePlan,
   planAssignments,
   priorityFingerprint,
   stateFingerprint,
@@ -15,10 +14,11 @@ import {
 } from "@/lib/planner";
 import type { Priority } from "@/lib/priority";
 import type { RoutePlan } from "@/lib/router";
-import { routeSummary } from "@/lib/routeText";
+import { routeSteps } from "@/lib/routeText";
 import { callerLocationLabel } from "@/lib/callerLocation";
-import { approvePlan, errorMessage, explainPlan, recordProposal } from "@/lib/store";
+import { approvePlan, errorMessage, recordProposal } from "@/lib/store";
 import type { ExerciseState, Incident, RescueTeam } from "@/lib/types";
+import { capitalize } from "@/lib/text";
 import { TierPill } from "./TierPill";
 
 // Review panel for assignment suggestions. The plan is frozen when computed; if anything it
@@ -43,8 +43,6 @@ interface Suggestion {
   routeContext: string;
   /** Whether the server's data matched the dashboard's when recorded; null while recording. */
   matched: boolean | null;
-  /** Claude's summary of this plan, once it arrives (never one for an earlier plan). */
-  summary: { text: string | null; note: string } | null;
   /** Why this plan couldn't be recorded, if it couldn't. */
   recordError: string | null;
 }
@@ -61,6 +59,7 @@ export function AssignmentPlanner({
   onPreview,
   onSelectIncident,
   onDone,
+  onApproved,
   onClose,
 }: {
   state: ExerciseState;
@@ -73,6 +72,8 @@ export function AssignmentPlanner({
   onPreview: (route: RoutePlan | null) => void;
   onSelectIncident: (id: string) => void;
   onDone: (message: string) => void;
+  /** Called with the approved proposals, so the console can send those teams straight away. */
+  onApproved?: (approved: Proposal[]) => void;
   onClose: () => void;
 }) {
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
@@ -106,7 +107,6 @@ export function AssignmentPlanner({
       priorities: currentPriorities,
       routeContext,
       matched: null,
-      summary: null,
       recordError: null,
     };
     setSuggestion(next);
@@ -126,10 +126,6 @@ export function AssignmentPlanner({
     })
       .then((r) => forPlan(next.planId, (s) => ({ ...s, matched: r.matched })))
       .catch((e) => forPlan(next.planId, (s) => ({ ...s, recordError: errorMessage(e) })));
-    // Optional and non-blocking: the deterministic summary is shown until (unless) this returns.
-    explainPlan(describePlan(plan))
-      .then((r) => forPlan(next.planId, (s) => ({ ...s, summary: r })))
-      .catch(() => forPlan(next.planId, (s) => ({ ...s, summary: { text: null, note: "Claude summary unavailable" } })));
   };
 
   const exclude = (p: Proposal) => {
@@ -152,7 +148,8 @@ export function AssignmentPlanner({
       });
       if (result.ok) {
         onPreview(null);
-        onDone(`Approved: ${result.assigned} team${result.assigned === 1 ? "" : "s"} assigned. Callers hear the approved update.`);
+        onApproved?.(chosen);
+        onDone(`Approved: ${result.assigned} team${result.assigned === 1 ? "" : "s"} assigned and sent. Callers hear the update.`);
         onClose();
       } else {
         setRefusal(`Not applied: ${result.reason}`);
@@ -164,72 +161,81 @@ export function AssignmentPlanner({
     }
   };
 
+  // Suggest as soon as the panel opens (or becomes ready), and again whenever the plan goes stale,
+  // e.g. a suggested team or incident was assigned elsewhere, so there is always a plan to approve.
+  const autoSuggest = (suggestion == null || stale) && notReady == null && !busy;
+  useEffect(() => {
+    if (!autoSuggest) return;
+    const t = setTimeout(() => suggest(), 0);
+    return () => clearTimeout(t);
+    // Only when the panel opens, becomes ready or the plan goes stale, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSuggest]);
+
   const plan = suggestion?.plan;
   const chosen = plan?.proposals.filter((p) => selected.has(p.incident.id)) ?? [];
-  const summary = suggestion?.summary ?? null;
   const canApprove = !!plan && chosen.length > 0 && !stale && notReady == null && suggestion?.matched === true && !busy;
 
   return (
-    <div className="space-y-3 text-sm">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <h2 className="font-semibold">Suggested assignments</h2>
-          <p className="text-xs text-slate-400">Simulation. Nothing changes until you approve.</p>
-        </div>
-        <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close suggestions">
+    <div className="planner">
+      <header className="planner-header">
+        <h2>Suggested assignments</h2>
+        <button onClick={onClose} className="close-button" aria-label="Close suggestions">
           ✕
         </button>
-      </div>
+      </header>
 
       {!plan && (
-        <div className="space-y-2">
-          <p className="text-xs text-slate-300">
-            Proposes one available team per waiting incident for the whole queue: as many critical incidents covered as possible,
-            then high, then standard; then the least simulated travel time for critical incidents, then high, then standard. Only
-            routes the flood-aware router finds count.
-          </p>
-          <button
-            disabled={notReady != null}
-            onClick={() => suggest()}
-            className="w-full rounded bg-sky-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 disabled:opacity-40"
-          >
+        <div className="planner-intro">
+          {notReady == null && <p>Finding a team for each waiting incident…</p>}
+          <button disabled={notReady != null} onClick={() => suggest()} className="primary-button w-full">
             Suggest assignments
           </button>
-          {notReady && <p className="text-xs text-amber-300">{notReady}</p>}
+          {notReady && <p className="planner-notice planner-notice-amber">{notReady}</p>}
         </div>
       )}
 
       {plan && (
         <>
           {plan.status === "ok" && (
-            <p className="text-xs text-slate-300">
-              Covers {(["critical", "high", "standard"] as const)
+            <dl className="planner-stats">
+              {(["critical", "high", "standard"] as const)
                 .filter((t) => plan.coverage[t].waiting)
-                .map((t) => `${plan.coverage[t].covered}/${plan.coverage[t].waiting} ${t}`)
-                .join(" · ")}{" "}
-              · total {minutes(plan.totalSeconds)} simulated travel
-            </p>
+                .map((t) => (
+                  <div key={t}>
+                    <dt>{capitalize(t)}</dt>
+                    <dd>
+                      {plan.coverage[t].covered}
+                      <span>/{plan.coverage[t].waiting} covered</span>
+                    </dd>
+                  </div>
+                ))}
+              <div>
+                <dt>Total travel</dt>
+                <dd>{minutes(plan.totalSeconds)}</dd>
+              </div>
+            </dl>
           )}
-          {plan.message && <p className="rounded bg-slate-800 p-2 text-xs text-amber-200">{plan.message}</p>}
+          {plan.message && <p className="planner-notice planner-notice-amber">{plan.message}</p>}
           {stale && (
-            <p role="alert" className="rounded bg-amber-400/15 p-2 text-xs text-amber-200 ring-1 ring-amber-400/50">
+            <p role="alert" className="planner-notice planner-notice-amber">
               Something this plan depends on has changed (a team, an incident, a caller&apos;s water report, the river, or a computed
               priority). Suggest again before approving.
             </p>
           )}
           {suggestion?.matched === false && !stale && (
-            <p role="alert" className="rounded bg-amber-400/15 p-2 text-xs text-amber-200">
+            <p role="alert" className="planner-notice planner-notice-amber">
               This screen was behind the latest data. Suggest again.
             </p>
           )}
-          {notReady && <p className="rounded bg-slate-800 p-2 text-xs text-amber-200">{notReady}</p>}
+          {notReady && <p className="planner-notice planner-notice-amber">{notReady}</p>}
           {(refusal ?? suggestion?.recordError) && (
-            <p role="alert" className="rounded bg-red-500/15 p-2 text-xs text-red-200 ring-1 ring-red-400/50">
+            <p role="alert" className="planner-notice planner-notice-red">
               {refusal ?? suggestion?.recordError}
             </p>
           )}
 
-          <ul className="space-y-2">
+          <ul className="planner-list">
             {plan.proposals.map((p) => (
               <ProposalCard
                 key={p.incident.id}
@@ -256,8 +262,8 @@ export function AssignmentPlanner({
 
           {plan.unassigned.length > 0 && (
             <section>
-              <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">Not assigned</h3>
-              <ul className="space-y-1.5">
+              <h3 className="planner-label">Not assigned</h3>
+              <ul className="planner-list">
                 {plan.unassigned.map((u) => (
                   <UnassignedRow key={u.incident.id} item={u} onSelect={() => onSelectIncident(u.incident.id)} />
                 ))}
@@ -265,48 +271,25 @@ export function AssignmentPlanner({
             </section>
           )}
 
-          {plan.status === "ok" && (
-            <details className="rounded bg-slate-800/70 p-2 text-xs">
-              <summary className="cursor-pointer text-slate-400">Why this plan</summary>
-              {summary?.text && (
-                <p className="mt-1.5 text-slate-200">
-                  {summary.text} <span className="text-slate-500">({summary.note})</span>
-                </p>
-              )}
-              <pre className="mt-1.5 whitespace-pre-wrap font-sans text-slate-300">{describePlan(plan)}</pre>
-              {summary && !summary.text && <p className="mt-1 text-slate-500">{summary.note}</p>}
-            </details>
-          )}
 
-          <div className="flex gap-2">
-            <button
-              disabled={!canApprove}
-              onClick={approve}
-              className="flex-1 rounded bg-red-600 px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40"
-            >
-              {busy ? "Approving…" : `Approve ${chosen.length} selected`}
-            </button>
-            <button
-              disabled={notReady != null || busy}
-              onClick={() => suggest()}
-              className="rounded bg-slate-700 px-2.5 py-1.5 text-xs hover:bg-slate-600 disabled:opacity-40"
-            >
-              Suggest again
-            </button>
+          <div className="planner-footer">
+            <div className="flex gap-2">
+              <button disabled={!canApprove} onClick={approve} className="primary-button flex-1">
+                {busy ? "Sending…" : `Approve ${chosen.length} selected`}
+              </button>
+              <button disabled={notReady != null || busy} onClick={() => suggest()} className="soft-button">
+                Suggest again
+              </button>
+            </div>
+            {excluded.size > 0 && (
+              <button onClick={() => { setExcluded(new Set()); suggest(new Set()); }} className="planner-link">
+                Clear {excluded.size} exclusion{excluded.size === 1 ? "" : "s"}
+              </button>
+            )}
           </div>
-          {excluded.size > 0 && (
-            <button onClick={() => { setExcluded(new Set()); suggest(new Set()); }} className="text-xs text-sky-300 underline">
-              Clear {excluded.size} exclusion{excluded.size === 1 ? "" : "s"}
-            </button>
-          )}
         </>
       )}
 
-      <p className="text-[10px] leading-snug text-slate-500">
-        Travel times and water depths come from the simulation (OpenStreetMap roads, a simplified flood model); a route isn&apos;t
-        verified as passable. Team capacity, staffing and medical capability aren&apos;t modeled. Approving assigns teams; sending
-        them is still your call.
-      </p>
     </div>
   );
 }
@@ -331,30 +314,31 @@ function ProposalCard({
   onExclude: () => void;
 }) {
   return (
-    <li className="rounded bg-slate-800/70 p-2.5 text-xs">
-      <div className="flex items-start gap-2">
-        <input type="checkbox" checked={checked} onChange={onToggle} aria-label={`Include ${p.incident.reportedAddress}`} className="mt-0.5" />
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <TierPill priority={{ tier: p.tier }} />
-            <button onClick={onSelect} className="truncate text-left font-medium hover:underline">{p.incident.reportedAddress}</button>
-            {callerLocationLabel(p.incident)?.confirmed === false && <span className="text-amber-300">Caller unconfirmed</span>}
-          </div>
-          <p>
-            → <b>{p.team.name}</b> · ~{minutes(p.seconds)} (simulated) · {routeSummary(p.route)}
-          </p>
-          <p className="text-slate-300">{p.reason}</p>
-          {p.unknowns.length > 0 && <p className="text-amber-200/90">Check: {p.unknowns.join(" · ")}</p>}
-          <div className="flex flex-wrap gap-2 pt-0.5">
-            <button onClick={onPreview} className="text-sky-300 underline">Show route</button>
-            <button onClick={onExpand} className="text-sky-300 underline">
-              {expanded ? "Hide" : "Alternatives"} ({p.alternatives.length - 1})
-            </button>
-            <button onClick={onExclude} className="text-slate-400 underline">Exclude this team</button>
-          </div>
-          {expanded && <Options options={p.alternatives} />}
-        </div>
+    <li className={`plan-card ${checked ? "" : "is-unchecked"}`}>
+      <div className="plan-card-top">
+        <input type="checkbox" checked={checked} onChange={onToggle} aria-label={`Include ${p.incident.reportedAddress}`} />
+        <button onClick={onSelect} className="plan-card-title" title="Open incident">
+          {capitalize(p.incident.reportedAddress)}
+        </button>
+        <TierPill priority={{ tier: p.tier }} />
       </div>
+      {callerLocationLabel(p.incident)?.confirmed === false && (
+        <div><span className="chip chip-amber">Caller unconfirmed</span></div>
+      )}
+      <div className="plan-team">
+        <span className="plan-team-name">→ {p.team.name}</span>
+        <span className="plan-team-eta">~{minutes(p.seconds)}</span>
+      </div>
+      <RouteSteps route={p.route} />
+      {addsInformation(p.reason) && <p className="plan-reason">{capitalize(p.reason)}</p>}
+      <div className="plan-actions">
+        <button onClick={onPreview}>Show route</button>
+        <button onClick={onExpand}>
+          {expanded ? "Hide" : "Alternatives"} ({p.alternatives.length - 1})
+        </button>
+        <button onClick={onExclude}>Exclude this team</button>
+      </div>
+      {expanded && <Options options={p.alternatives} />}
     </li>
   );
 }
@@ -362,17 +346,19 @@ function ProposalCard({
 function UnassignedRow({ item, onSelect }: { item: Unassigned; onSelect: () => void }) {
   const [open, setOpen] = useState(false);
   return (
-    <li className="rounded bg-slate-900 p-2 text-xs">
-      <div className="flex flex-wrap items-center gap-1.5">
+    <li className="plan-card is-unassigned">
+      <div className="plan-card-top">
+        <button onClick={onSelect} className="plan-card-title" title="Open incident">
+          {capitalize(item.incident.reportedAddress)}
+        </button>
         {item.tier && <TierPill priority={{ tier: item.tier }} />}
-        <button onClick={onSelect} className="font-medium hover:underline">{item.incident.reportedAddress}</button>
       </div>
-      <p className="mt-0.5 text-slate-300">{item.reason}</p>
+      <p className="plan-reason">{capitalize(item.reason)}</p>
       {item.alternatives.length > 0 && (
         <>
-          <button onClick={() => setOpen((o) => !o)} className="mt-0.5 text-sky-300 underline">
-            {open ? "Hide teams" : `Teams (${item.alternatives.length})`}
-          </button>
+          <div className="plan-actions">
+            <button onClick={() => setOpen((o) => !o)}>{open ? "Hide teams" : `Teams (${item.alternatives.length})`}</button>
+          </div>
           {open && <Options options={item.alternatives} />}
         </>
       )}
@@ -380,14 +366,48 @@ function UnassignedRow({ item, onSelect }: { item: Unassigned; onSelect: () => v
   );
 }
 
+/** Reasons that only restate the travel time already shown on the card. */
+const addsInformation = (reason: string) => !/^(Fastest eligible team|Best option in the overall plan) \(/.test(reason);
+
+function RouteSteps({ route }: { route: RoutePlan }) {
+  const { steps, deepest } = routeSteps(route);
+  return (
+    <div className="plan-route">
+      <ol>
+        {steps.map((step, n) => (
+          <li key={step.mode}>
+            {n > 0 && <span aria-hidden className="plan-route-arrow">→</span>}
+            <span className="plan-route-step">
+              <span>{step.label}</span> {step.distance}
+            </span>
+          </li>
+        ))}
+      </ol>
+      {deepest && <p>{deepest}</p>}
+    </div>
+  );
+}
+
+const OPTION_CHIP: Record<TeamOption["state"], string> = {
+  proposed: "chip-green",
+  eligible: "chip-blue",
+  used_elsewhere: "chip-neutral",
+  excluded: "chip-neutral",
+  no_route: "chip-red",
+  cannot_evaluate: "chip-amber",
+};
+
 function Options({ options }: { options: TeamOption[] }) {
   return (
-    <ul className="mt-1 space-y-0.5 border-l border-slate-700 pl-2">
+    <ul className="plan-options">
       {options.map((o) => (
         <li key={o.team.id}>
-          <b>{o.team.name}</b>: {OPTION_LABEL[o.state]}
-          {o.seconds != null && ` · ~${minutes(o.seconds)} (simulated)`}
-          {o.state !== "proposed" && <span className="text-slate-400"> · {o.note}</span>}
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-slate-100">{o.team.name}</span>
+            <span className={`chip ${OPTION_CHIP[o.state]}`}>{OPTION_LABEL[o.state]}</span>
+            {o.seconds != null && <span className="ml-auto font-mono text-[11px] text-slate-400">~{minutes(o.seconds)}</span>}
+          </div>
+          {o.state !== "proposed" && <p>{capitalize(o.note)}</p>}
         </li>
       ))}
     </ul>

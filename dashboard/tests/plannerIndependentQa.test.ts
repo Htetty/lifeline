@@ -269,16 +269,3 @@ test("QA trust boundary: a fabricated but well-shaped route passes; this is not 
   // No road graph or elevation/router was consulted anywhere in this fixture.
   expect(await t.mutation(api.planner.approvePlan, p)).toMatchObject({ ok: true });
 });
-
-test("QA: SDK timeout falls back and does not prevent approval", async () => {
-  const { t, boat } = await setup();
-  const p = await propose(t, await confirmed(t, "timeout"), boat);
-  vi.stubEnv("ANTHROPIC_API_KEY", "qa-not-a-provider-key");
-  vi.stubGlobal("fetch", vi.fn((_url: unknown, options: RequestInit) => new Promise((_resolve, reject) => {
-    options.signal!.addEventListener("abort", () => reject(new DOMException("QA simulated transport timeout", "AbortError")), { once: true });
-  })));
-  const result = await t.action(api.planner.explainPlan, { dispatcherToken, facts: "Fictional QA plan" });
-  expect(result).toMatchObject({ text: null, note: expect.stringContaining("unavailable") });
-  vi.unstubAllGlobals();
-  expect(await t.mutation(api.planner.approvePlan, p)).toMatchObject({ ok: true });
-}, 15_000);

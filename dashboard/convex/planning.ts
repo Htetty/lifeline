@@ -177,20 +177,31 @@ const SAME_POINT_M = 2;
 /** More points than the road graph has nodes (about 11,500), so no real route exceeds it. */
 export const MAX_ROUTE_POINTS = 50_000;
 
+/**
+ * Route ends may lie a little outside the road graph's area: an incident just past its edge
+ * is reached on foot from the nearest road, or by air. About 1 km either way.
+ */
+const AREA_MARGIN_DEG = 0.01;
+const PLAN_AREA = {
+  west: EXERCISE_BOUNDS.west - AREA_MARGIN_DEG,
+  east: EXERCISE_BOUNDS.east + AREA_MARGIN_DEG,
+  south: EXERCISE_BOUNDS.south - AREA_MARGIN_DEG,
+  north: EXERCISE_BOUNDS.north + AREA_MARGIN_DEG,
+};
 const inArea = (p: number[]) =>
   p.length === 2 &&
   p.every(Number.isFinite) &&
-  p[0] >= EXERCISE_BOUNDS.west &&
-  p[0] <= EXERCISE_BOUNDS.east &&
-  p[1] >= EXERCISE_BOUNDS.south &&
-  p[1] <= EXERCISE_BOUNDS.north;
+  p[0] >= PLAN_AREA.west &&
+  p[0] <= PLAN_AREA.east &&
+  p[1] >= PLAN_AREA.south &&
+  p[1] <= PLAN_AREA.north;
 
 /**
  * Planar distance with the east-west scale at the area's north edge. The router scales by
  * the cosine of its graph's middle latitude; within the area this cosine is never larger,
  * so the result is never longer than the router's own distance (a safe speed lower bound).
  */
-const COS_NORTH = Math.cos((EXERCISE_BOUNDS.north * Math.PI) / 180);
+const COS_NORTH = Math.cos((PLAN_AREA.north * Math.PI) / 180);
 function metresAtMost(a: number[], b: number[]) {
   return Math.hypot((b[0] - a[0]) * 111_320 * COS_NORTH, (b[1] - a[1]) * 111_320);
 }
@@ -231,23 +242,6 @@ export function checkRouteEvidence(
   // A relative epsilon only absorbs floating-point rounding between the two calculations.
   if (r.realSeconds * (1 + 1e-9) < metresAtMost(r.start, r.end) / MAX_SPEED[mover]) return "travel time is faster than the team can move";
   return null;
-}
-
-// ---- Explanation checks ---------------------------------------------------------------
-
-/**
- * Whether model-written text sticks to the supplied facts: every team it names is one of
- * `teamNames` that is in the facts, and every number it uses appears in the facts.
- */
-export function explanationProblems(text: string, facts: string, allTeamNames: string[]): string[] {
-  const problems: string[] = [];
-  for (const name of allTeamNames) {
-    if (text.includes(name) && !facts.includes(name)) problems.push(`names ${name}, which isn't in the plan`);
-  }
-  const known = new Set(facts.match(/\d+(?:\.\d+)?/g) ?? []);
-  for (const n of text.match(/\d+(?:\.\d+)?/g) ?? []) if (!known.has(n)) problems.push(`uses the number ${n}, which isn't in the facts`);
-  if (/\b(safe|guarantee[sd]?|certain|\d+\s*%)\b/i.test(text)) problems.push("claims safety or certainty");
-  return problems;
 }
 
 // ---- What changed -----------------------------------------------------------------------

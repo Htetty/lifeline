@@ -1,14 +1,11 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { ConvexError, v } from "convex/values";
-import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { action, internalQuery, mutation, query, type QueryCtx } from "./_generated/server";
+import { mutation, query, type QueryCtx } from "./_generated/server";
 import { assignTeamTo } from "./incidents";
 import { logActivity, requireDispatcher } from "./lib";
 import {
   changesBetween,
   checkRouteEvidence,
-  explanationProblems,
   fingerprintOf,
   floodFingerprint,
   incidentInput,
@@ -200,52 +197,5 @@ export const recentDecisions = query({
   handler: async (ctx, { dispatcherToken }) => {
     requireDispatcher(dispatcherToken);
     return await ctx.db.query("planDecisions").withIndex("by_exercise", (q) => q.eq("exerciseId", EXERCISE_ID)).order("desc").take(20);
-  },
-});
-
-export const teamNames = internalQuery({
-  args: {},
-  handler: async (ctx) =>
-    (await ctx.db.query("teams").withIndex("by_exercise", (q) => q.eq("exerciseId", EXERCISE_ID)).collect()).map((t) => t.name),
-});
-
-const EXPLAIN_SYSTEM = `You summarise a proposed rescue-team assignment plan for a dispatcher in a fictional flood exercise.
-Use only the facts provided. Do not add teams, times, numbers, capabilities, staffing or medical details, and do not
-call any route safe or give confidence levels. Travel times are simulation results. In two to four short sentences,
-say what the plan prioritises and the main tradeoff. Plain text, no lists.`;
-
-/**
- * A short model-written summary of a plan, from the dashboard's deterministic description.
- * Optional: without ANTHROPIC_API_KEY, on any error, timeout or refusal, or when the text
- * strays from the facts, it returns { text: null } and the dashboard keeps its own summary.
- */
-export const explainPlan = action({
-  args: { dispatcherToken: v.optional(v.string()), facts: v.string() },
-  handler: async (ctx, { dispatcherToken, facts }): Promise<{ text: string | null; note: string }> => {
-    requireDispatcher(dispatcherToken);
-    if (!process.env.ANTHROPIC_API_KEY) return { text: null, note: "Claude summary not configured" };
-    try {
-      const client = new Anthropic({ timeout: 8_000, maxRetries: 0 });
-      const response = await client.beta.messages.create({
-        model: process.env.CLAUDE_MODEL || "claude-sonnet-5-5",
-        max_tokens: 1024,
-        output_config: { effort: "low" },
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        system: EXPLAIN_SYSTEM,
-        messages: [{ role: "user", content: `<plan_facts>\n${facts}\n</plan_facts>` }],
-      });
-      if (response.stop_reason === "refusal") return { text: null, note: "Claude declined; showing the plan's own summary" };
-      const text = response.content
-        .flatMap((b) => (b.type === "text" ? [b.text] : []))
-        .join(" ")
-        .trim();
-      if (!text) return { text: null, note: "Claude returned no summary" };
-      const problems = explanationProblems(text, facts, await ctx.runQuery(internal.planner.teamNames, {}));
-      if (problems.length) return { text: null, note: `Claude summary discarded (${problems[0]})` };
-      return { text, note: "Summary by Claude from the plan facts above" };
-    } catch (e) {
-      return { text: null, note: `Claude summary unavailable (${e instanceof Error ? e.name : "error"})` };
-    }
   },
 });

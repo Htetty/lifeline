@@ -216,7 +216,6 @@ export const recordProposal = (args: PlannerArgs<"recordProposal">) =>
   convex.mutation(api.planner.recordProposal, { dispatcherToken: currentToken(), ...args });
 export const approvePlan = (args: PlannerArgs<"approvePlan">) =>
   convex.mutation(api.planner.approvePlan, { dispatcherToken: currentToken(), ...args });
-export const explainPlan = (facts: string) => convex.action(api.planner.explainPlan, { dispatcherToken: currentToken(), facts });
 
 /** A readable message for a failed mutation (ConvexError data or a generic note). */
 export function errorMessage(e: unknown): string {

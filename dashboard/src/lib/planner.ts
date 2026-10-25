@@ -270,10 +270,11 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
     const j = pick[k];
     if (j < 0) {
       const usable = alternatives.filter((o) => o.state === "used_elsewhere" || o.state === "eligible");
+      // One short line; the per-team detail is in `alternatives`.
       const reason = !free.length
-        ? "No team is available."
+        ? "All teams are assigned."
         : usable.length
-          ? `Every team that can reach it is proposed for another incident (${usable.map((o) => `${o.team.name}: ${o.note.replace(/^Proposed for /, "")}`).join("; ")}); sending one here would leave that incident without a team, and the plan covers the most incidents of each priority, most urgent first.`
+          ? "All teams that can reach it are proposed for other incidents."
           : alternatives.some((o) => o.state === "excluded")
             ? "The teams that can reach it were excluded by the dispatcher."
             : alternatives.some((o) => o.state === "cannot_evaluate")
@@ -304,18 +305,6 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
     totalSeconds: proposals.reduce((n, p) => n + p.seconds, 0),
     coverage,
   };
-}
-
-/** Deterministic, fact-only summary; shown first and whenever the model is unavailable. */
-export function describePlan(plan: Plan): string {
-  if (plan.status !== "ok") return plan.message ?? "";
-  const covered = TIERS.filter((t) => plan.coverage[t].waiting)
-    .map((t) => `${plan.coverage[t].covered} of ${plan.coverage[t].waiting} ${t}`)
-    .join(", ");
-  const lines = [`Covers ${covered}; total simulated travel ${minutes(plan.totalSeconds)}.`];
-  for (const p of plan.proposals) lines.push(`${p.team.name} → ${p.incident.reportedAddress} (${p.tier}): ${p.reason}`);
-  for (const u of plan.unassigned) lines.push(`Unassigned: ${u.incident.reportedAddress}: ${u.reason}`);
-  return lines.join("\n");
 }
 
 /** The same fingerprint the server computes, from what the dashboard sees. */

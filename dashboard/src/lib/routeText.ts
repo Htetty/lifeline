@@ -16,3 +16,17 @@ export function routeSummary(plan: RoutePlan) {
   return steps.join(" → ") + depth;
 }
 
+
+const STEP_LABEL = { road: "Drive", water: "By boat", foot: "On foot", air: "Fly" } as const;
+
+/** The route as labelled steps, e.g. [Towed by road 6.2 km, On foot 42 m], plus the deepest water on it. */
+export function routeSteps(plan: RoutePlan) {
+  const steps = [...new Set(plan.legs.map((l) => l.mode))].map((mode) => ({
+    mode,
+    label: mode === "road" && plan.mover === "boat" ? "Towed by road" : STEP_LABEL[mode],
+    distance: distance(plan.metres[mode]),
+  }));
+  const deepest =
+    plan.limit != null && plan.maxDepth > 0.05 ? `Deepest water ${plan.maxDepth.toFixed(1)} m (limit ${plan.limit} m)` : null;
+  return { steps, deepest };
+}

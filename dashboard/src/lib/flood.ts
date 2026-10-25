@@ -101,6 +101,8 @@ export interface WaterObservation {
   offset: number;
   /** How much a report of shallower water lowers the model: 1 for a confirmed location, less otherwise. */
   weight: number;
+  /** A minimum ("there's water here"): it can add water but never lowers the river model. */
+  raiseOnly?: boolean;
 }
 
 /** A report sets the water within this distance and fades out by twice it. */
@@ -204,7 +206,7 @@ export interface FloodResult {
 export function computeFlood(grid: FloodGrid, waterSurface: number, observations: WaterObservation[] = []): FloodResult {
   const { cols, rows, ground, bounds, dLon, dLat } = grid;
   const column = Float32Array.from({ length: cols }, (_, c) => columnSurface(grid, waterSurface, c));
-  const lower = observations.filter((o) => o.offset < 0);
+  const lower = observations.filter((o) => o.offset < 0 && !o.raiseOnly);
   const delta = lower.length ? loweringField(grid, lower) : null;
   const surface = (i: number) => column[i % cols] + (delta ? delta[i] : 0);
   const wet = new Uint8Array(cols * rows);

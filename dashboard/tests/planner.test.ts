@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { checkRouteEvidence, MAX_ROUTE_POINTS } from "../convex/planning";
 import { EXERCISE_BOUNDS } from "../convex/seedData";
 import { computeFlood, type FloodGrid } from "../src/lib/flood";
-import { describePlan, evidenceFor, planAssignments, type RouteResult } from "../src/lib/planner";
+import { evidenceFor, planAssignments, type RouteResult } from "../src/lib/planner";
 import type { Priority } from "../src/lib/priority";
 import { buildGraph, planRoute, type NoRoute, type RoutePlan } from "../src/lib/router";
 import type { Incident, PriorityTier, RescueTeam } from "../src/lib/types";
@@ -113,7 +113,7 @@ describe("whole-queue objective", () => {
     };
     expect(pairs(make(false))).toEqual({ A: "t-a", B: "t-b" }); // older incident gets the team first by name
     expect(pairs(make(true))).toEqual(pairs(make(false)));
-    expect(describePlan(make(true))).toBe(describePlan(make(false)));
+    expect(make(true).proposals.map((p) => p.reason)).toEqual(make(false).proposals.map((p) => p.reason));
   });
 });
 
@@ -346,10 +346,20 @@ describe("route evidence checks", () => {
     expect(checkRouteEvidence(outside, target, { ...good, start: [-117.2, 32.76] })).toMatch(/start isn't a point in the exercise area/);
     expect(checkRouteEvidence(heli, target, { ...good, end: [-117.15, 32.8] })).toMatch(/end isn't a point in the exercise area/);
     expect(checkRouteEvidence(heli, target, { ...good, points: MAX_ROUTE_POINTS + 1 })).toMatch(/invalid number of points/);
+
     expect(checkRouteEvidence(heli, target, { ...good, points: 3 })).toMatch(/single direct flight/);
     expect(checkRouteEvidence(heli, target, { ...good, maxDepth: 0.1 })).toMatch(/single direct flight/);
     expect(checkRouteEvidence(heli, target, { ...good, modes: ["air", "air"] })).toMatch(/travel this team can't do/);
     expect(checkRouteEvidence(heli, target, { ...good, realSeconds: Number.MAX_VALUE * 2 })).toMatch(/no usable travel time/);
+  });
+
+  test("an incident just past the road graph's edge can still be reached", () => {
+    const heli = team("heli", "Heli 1", { capabilities: ["air"], longitude: -117.16, latitude: 32.77 });
+    // About 20 m north of the area's edge, like a caller on the far side of a boundary street.
+    const target = incident("edge", { longitude: -117.1425, latitude: EXERCISE_BOUNDS.north + 0.0002 });
+    const route = planRoute(graph, grid, computeFlood(grid, 9), heli, { longitude: target.longitude!, latitude: target.latitude! });
+    if (!route.ok) throw new Error("expected an aircraft route");
+    expect(checkRouteEvidence(heli, target, evidenceFor(route))).toBeNull();
   });
 });
 
@@ -374,8 +384,9 @@ describe("plan reasons describe the objective", () => {
       priorities: priorities({ crit: "critical", std: "standard" }),
       route: routes({ crit: { t1: 600 }, std: { t1: 60 } }),
     });
-    expect(plan.unassigned.find((u) => u.incident.id === "std")!.reason).toBe(
-      "Every team that can reach it is proposed for another incident (Truck 1: crit St (fictional) (critical)); sending one here would leave that incident without a team, and the plan covers the most incidents of each priority, most urgent first.",
-    );
+    const std = plan.unassigned.find((u) => u.incident.id === "std")!;
+    expect(std.reason).toBe("All teams that can reach it are proposed for other incidents.");
+    // Which incident took each team stays available as detail.
+    expect(std.alternatives.find((o) => o.team.name === "Truck 1")!.note).toMatch(/crit St/);
   });
 });
