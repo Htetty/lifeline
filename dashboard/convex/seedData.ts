@@ -4,7 +4,13 @@
 
 export const EXERCISE_ID = "mission-valley-exercise-1";
 export const EXERCISE_NAME = "Mission Valley, San Diego";
-export const DEFAULT_WATER_SURFACE_ELEVATION = 14.2;
+// A reset exercise opens at the first replayed reading of the Feb 27, 2017 storm at the
+// Fashion Valley gauge: 4.4 ft at 07:00 PST, i.e. (16.48 ft datum + 4.4 ft) in metres NAVD88.
+export const DEFAULT_WATER_SURFACE_ELEVATION = 6.36;
+export const DEFAULT_WATER_OBSERVED_AT = 1488207600000;
+// The sample incidents describe the storm partway up: 9.78 ft at 12:00 PST.
+export const SAMPLE_WATER_SURFACE_ELEVATION = 8.0;
+export const SAMPLE_WATER_OBSERVED_AT = 1488225600000;
 
 type Capability = "road_vehicle" | "high_water_vehicle" | "boat" | "air";
 type RiskFactorKind = "limited_mobility" | "on_roof" | "water_rising_fast" | "elderly";
@@ -26,6 +32,8 @@ export interface SeedIncident {
   reportedPosition: string | null;
   hazards: string[];
   riskFactors?: { factor: RiskFactorKind; evidence: string }[];
+  /** What the caller said about the water depth; see waterReports.ts. */
+  waterReport?: { level: "ankle" | "knee" | "waist" | "chest"; floor: number; evidence: string };
   summary: string;
   status: "needs_review" | "awaiting_assignment" | "assigned";
   /** Seed team key, when the incident starts already assigned. */
@@ -110,6 +118,7 @@ export const SEED_INCIDENTS: SeedIncident[] = [
     reportedPosition: "Ground floor, standing on furniture",
     hazards: ["Elderly caller", "Water at waist height"],
     riskFactors: [{ factor: "elderly", evidence: "elderly resident" }],
+    waterReport: { level: "waist", floor: 0, evidence: "the water's up to my waist" },
     summary: "Elderly resident trapped on the ground floor.",
     status: "awaiting_assignment",
     minutesAgo: 1,

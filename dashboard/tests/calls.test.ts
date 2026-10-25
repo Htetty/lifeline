@@ -155,7 +155,7 @@ describe("open demo mode", () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.exercise.ensureSeeded, {});
     const state = await t.query(api.exercise.get, {});
-    expect(state?.incidents.length).toBeGreaterThan(0);
+    expect(state?.teams.length).toBeGreaterThan(0);
     process.env.DISPATCHER_TOKEN = dispatcherToken;
     await expect(t.query(api.exercise.get, {})).rejects.toThrow("passcode");
   });

@@ -2,12 +2,16 @@ import { ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
+  DEFAULT_WATER_OBSERVED_AT,
   DEFAULT_WATER_SURFACE_ELEVATION,
+  SAMPLE_WATER_OBSERVED_AT,
+  SAMPLE_WATER_SURFACE_ELEVATION,
   EXERCISE_ID,
   EXERCISE_NAME,
   SEED_INCIDENTS,
   SEED_TEAMS,
 } from "./seedData";
+import { LEVEL_METERS } from "./waterReports";
 
 export async function logActivity(
   ctx: MutationCtx,
@@ -98,12 +102,18 @@ export async function clearExercise(ctx: MutationCtx, exerciseId = EXERCISE_ID) 
   if (exercise) await ctx.db.delete(exercise._id);
 }
 
-export async function seedExercise(ctx: MutationCtx) {
+/**
+ * A fresh exercise: the rescue teams and the river at the start of the replayed storm,
+ * with no incidents, so everything on the map comes from calls. `withSamples` also
+ * loads the fictional sample incidents, for a quick demo without calls.
+ */
+export async function seedExercise(ctx: MutationCtx, { withSamples = false } = {}) {
   const now = Date.now();
   await ctx.db.insert("exercises", {
     exerciseId: EXERCISE_ID,
     name: EXERCISE_NAME,
-    waterSurfaceElevation: DEFAULT_WATER_SURFACE_ELEVATION,
+    waterSurfaceElevation: withSamples ? SAMPLE_WATER_SURFACE_ELEVATION : DEFAULT_WATER_SURFACE_ELEVATION,
+    waterObservedAt: withSamples ? SAMPLE_WATER_OBSERVED_AT : DEFAULT_WATER_OBSERVED_AT,
   });
 
   const teamIds = new Map<string, Id<"teams">>();
@@ -122,6 +132,10 @@ export async function seedExercise(ctx: MutationCtx) {
     teamIds.set(t.key, id);
   }
 
+  if (!withSamples) {
+    await logActivity(ctx, "Exercise ready: rescue teams on standby, no incidents yet.");
+    return;
+  }
   for (const s of SEED_INCIDENTS) {
     const assignedTeamId = s.assignedTeam ? (teamIds.get(s.assignedTeam) ?? null) : null;
     const at = now - s.minutesAgo * 60_000;
@@ -137,6 +151,9 @@ export async function seedExercise(ctx: MutationCtx) {
       reportedPosition: s.reportedPosition,
       hazards: s.hazards.map((hazard) => ({ hazard, evidence: null })),
       riskFactors: s.riskFactors ?? [],
+      waterReport: s.waterReport
+        ? { ...s.waterReport, meters: LEVEL_METERS[s.waterReport.level], at, gaugeSurface: SAMPLE_WATER_SURFACE_ELEVATION }
+        : null,
       summary: s.summary,
       transcript: null,
       status: s.status,
@@ -150,5 +167,5 @@ export async function seedExercise(ctx: MutationCtx) {
       await ctx.db.patch(assignedTeamId, { available: false, currentAssignment: incidentId });
     }
   }
-  await logActivity(ctx, `Exercise loaded with ${SEED_INCIDENTS.length} fictional incidents.`);
+  await logActivity(ctx, `Exercise loaded with ${SEED_INCIDENTS.length} fictional sample incidents.`);
 }

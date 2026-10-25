@@ -15,6 +15,9 @@ import type * as incidents from "../incidents.js";
 import type * as lib from "../lib.js";
 import type * as linking from "../linking.js";
 import type * as seedData from "../seedData.js";
+import type * as tripMath from "../tripMath.js";
+import type * as trips from "../trips.js";
+import type * as waterReports from "../waterReports.js";
 
 import type {
   ApiFromModules,
@@ -30,6 +33,9 @@ declare const fullApi: ApiFromModules<{
   lib: typeof lib;
   linking: typeof linking;
   seedData: typeof seedData;
+  tripMath: typeof tripMath;
+  trips: typeof trips;
+  waterReports: typeof waterReports;
 }>;
 
 /**

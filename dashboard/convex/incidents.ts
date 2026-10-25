@@ -1,4 +1,5 @@
 import { ConvexError, v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
 import { autoGroup, bump, linkedReports, linkInto, reevaluateLinks } from "./linking";
@@ -6,6 +7,7 @@ import { queueCallerUpdate } from "./callerUpdates";
 import { isCurrentEvent, logActivity, requireDispatcher } from "./lib";
 import { incidentStatus, priorityTier } from "./schema";
 import { EXERCISE_ID } from "./seedData";
+import { beginTrip, routePlan, stopTrip } from "./trips";
 
 const STATUS_LABEL: Record<Doc<"incidents">["status"], string> = {
   needs_review: "Needs review",
@@ -152,8 +154,14 @@ const TRANSITIONS: Record<Doc<"incidents">["status"], Doc<"incidents">["status"]
 };
 
 export const setStatus = mutation({
-  args: { dispatcherToken: v.optional(v.string()), incidentId: v.id("incidents"), status: incidentStatus },
-  handler: async (ctx, { dispatcherToken, incidentId, status }) => {
+  args: {
+    dispatcherToken: v.optional(v.string()),
+    incidentId: v.id("incidents"),
+    status: incidentStatus,
+    /** Flood-aware route for the team when going en route; without one, Convex plans a fallback. */
+    plan: v.optional(routePlan),
+  },
+  handler: async (ctx, { dispatcherToken, incidentId, status, plan }) => {
     requireDispatcher(dispatcherToken);
     const incident = await load(ctx, incidentId);
     rejectIfLinked(incident);
@@ -166,9 +174,15 @@ export const setStatus = mutation({
     const unassigning = status === "awaiting_assignment";
     // Leaving dispatch (unassigned or resolved) frees the team.
     if (team && (unassigning || status === "resolved") && team.currentAssignment === incident._id) {
+      await stopTrip(ctx, team);
       await ctx.db.patch(team._id, { available: true, currentAssignment: null, updatedAt: Date.now() });
     }
     await bump(ctx, incident, unassigning ? { status, assignedTeamId: null } : { status }, true);
+    // After the status is saved, so the trip sees the incident as en route.
+    if (team && status === "en_route") {
+      if (plan) await beginTrip(ctx, team._id, incident._id, { ...plan, route: "planned" });
+      else await ctx.scheduler.runAfter(0, internal.trips.planTrip, { teamId: team._id, incidentId: incident._id });
+    }
 
     await logActivity(
       ctx,

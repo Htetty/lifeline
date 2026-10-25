@@ -7,13 +7,21 @@ import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { convex } from "./convex";
 import type { ExerciseState, Incident, IncidentStatus, PriorityTier, RescueTeam } from "./types";
+import type { TripLeg } from "../../convex/tripMath";
+
+/** A route for a team, as sent to Convex. */
+export interface TripPlan {
+  path: number[][];
+  legs: TripLeg[];
+  realSeconds: number;
+}
 
 // Data adapter for the exercise, backed by Convex. Components read with
 // useExercise() and write with dispatch(); both stay the same shape as the
 // earlier local store.
 
 export type Action =
-  | { type: "setWaterLevel"; meters: number }
+  | { type: "setWaterLevel"; meters: number; observedAt?: number | null }
   | {
       type: "reportFromMap";
       latitude: number;
@@ -24,7 +32,8 @@ export type Action =
     }
   | { type: "verifyLocation"; incidentId: string; latitude?: number; longitude?: number }
   | { type: "assignTeam"; incidentId: string; teamId: string }
-  | { type: "setStatus"; incidentId: string; status: IncidentStatus }
+  | { type: "setStatus"; incidentId: string; status: IncidentStatus; plan?: TripPlan }
+  | { type: "reroute"; teamId: string; plan: TripPlan }
   | { type: "sendCallerMessage"; incidentId: string; message: string }
   | { type: "linkReports"; mainId: string; reportIds: string[] }
   | { type: "unlinkReport"; reportId: string }
@@ -42,7 +51,7 @@ function toTeam(d: Doc<"teams">): RescueTeam {
   const { _id, _creationTime, exerciseId, ...rest } = d;
   void _creationTime;
   void exerciseId;
-  return { ...rest, id: _id };
+  return { ...rest, id: _id, trip: rest.trip ?? null };
 }
 
 // The dispatcher passcode is typed in at runtime and kept for this browser tab only,
@@ -114,6 +123,7 @@ export function useExercise(token: string): ExerciseState | undefined {
     return {
       exerciseId: data.exercise.exerciseId,
       waterSurfaceElevation: data.exercise.waterSurfaceElevation,
+      waterObservedAt: data.exercise.waterObservedAt ?? null,
       incidents: data.incidents.map(toIncident),
       teams: data.teams.map(toTeam),
       activity: data.activity.map((a) => ({ id: a._id, at: a.at, message: a.message, incidentId: a.incidentId })),
@@ -127,7 +137,11 @@ export async function dispatch(action: Action): Promise<void> {
   const dispatcherToken = currentToken();
   switch (action.type) {
     case "setWaterLevel":
-      await convex.mutation(api.exercise.setWaterLevel, { dispatcherToken, meters: action.meters });
+      await convex.mutation(api.exercise.setWaterLevel, {
+        dispatcherToken,
+        meters: action.meters,
+        observedAt: action.observedAt ?? null,
+      });
       return;
     case "reportFromMap": {
       const { type, ...args } = action;
@@ -155,7 +169,11 @@ export async function dispatch(action: Action): Promise<void> {
         dispatcherToken,
         incidentId: asIncident(action.incidentId),
         status: action.status,
+        plan: action.plan,
       });
+      return;
+    case "reroute":
+      await convex.mutation(api.trips.reroute, { dispatcherToken, teamId: action.teamId as Id<"teams">, plan: action.plan });
       return;
     case "sendCallerMessage":
       await convex.mutation(api.incidents.sendCallerMessage, { dispatcherToken,

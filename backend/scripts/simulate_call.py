@@ -47,6 +47,7 @@ SCENARIOS = {
     "critical": [
         "Please hurry, we're in the attic of our house on Camino del Rio North, the water is up to my chest.",
         "My husband hit his head and he's bleeding a lot. We can't get any higher, there's no way onto the roof.",
+        "It's 2150 Camino del Rio North. Just me and my husband.",
     ],
     "dry": [
         "Hi, we're on the second floor of the Courtyard hotel in Mission Valley, two of us, we're okay for now.",

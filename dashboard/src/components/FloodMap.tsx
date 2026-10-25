@@ -8,12 +8,16 @@ import type { FloodResult } from "@/lib/flood";
 import { distanceToPolygon, expandPolygon, interiorPoint, pointInPolygon, polygons } from "@/lib/geo";
 import type { ExerciseState, Incident } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES } from "@/lib/types";
+import { ROUTE_COLOR } from "@/lib/router";
+import { OBSERVATION_RADIUS_M } from "@/lib/flood";
+import { etaMinutes, remainingLegs, tripProgress, type LegMode, type TripLeg } from "../../convex/tripMath";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const BUILDING_SOURCE = { source: "openmaptiles", sourceLayer: "building" } as const;
 const BUILDING_LAYER = "building-3d";
 const INCIDENT_BUILDING_LAYER = "incident-buildings";
 const SNAP_DISTANCE_M = 25;
+const TEAM_FRAME_MS = 200;
 
 // The bundler can't serve MapLibre's worker next to its chunk, so it is copied
 // to public/ by the postinstall script.
@@ -33,9 +37,23 @@ export interface BuildingPick {
   height: number | null;
 }
 
+const ROUTE_COLOR_EXPRESSION = [
+  "match", ["get", "mode"],
+  "water", ROUTE_COLOR.water,
+  "foot", ROUTE_COLOR.foot,
+  ROUTE_COLOR.road,
+] as unknown as string;
+
 interface Props {
   state: ExerciseState;
   flood: FloodResult | null;
+  /** Proposed route for the selected incident, before a team sets off. */
+  preview: { path: number[][]; legs: TripLeg[] } | null;
+  /** Callers' water reports and the area each one corrects. */
+  callerZones: { lon: number; lat: number; label: string }[];
+  /** Team to show and follow; `key` changes on every click so the same team can be re-centred. */
+  focusTeam: { id: string; key: number } | null;
+  onFocusTeam: (teamId: string | null) => void;
   selectedId: string | null;
   reportMode: boolean;
   onSelect: (incidentId: string | null) => void;
@@ -73,14 +91,84 @@ function incidentPoints(state: ExerciseState, selectedId: string | null): GeoJSO
   };
 }
 
-function teamPoints(state: ExerciseState): GeoJSON.FeatureCollection {
+function teamPosition(team: ExerciseState["teams"][number], now: number) {
+  return team.trip ? tripProgress(team.trip, now).position : [team.longitude, team.latitude];
+}
+
+function teamPoints(state: ExerciseState, now: number, focusedId: string | null): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
-    features: state.teams.map((t) => ({
-      type: "Feature",
-      properties: { name: `${t.name}${t.available ? "" : " (busy)"}`, available: t.available },
-      geometry: { type: "Point", coordinates: [t.longitude, t.latitude] },
-    })),
+    features: state.teams.map((t) => {
+      const moving = t.trip != null && now < t.trip.arriveAt;
+      const position = teamPosition(t, now);
+      const eta = moving ? etaMinutes(t.trip!, now) : 0;
+      return {
+        type: "Feature",
+        properties: {
+          name: moving ? `${t.name} · ETA ${eta} min` : `${t.name}${t.available ? "" : " (busy)"}`,
+          id: t.id,
+          available: t.available,
+          moving,
+          focused: t.id === focusedId,
+        },
+        geometry: { type: "Point", coordinates: position },
+      };
+    }),
+  };
+}
+
+function legLines(legs: { mode: LegMode; coords: number[][] }[]): GeoJSON.Feature[] {
+  return legs.map((l) => ({
+    type: "Feature",
+    properties: { mode: l.mode },
+    geometry: { type: "LineString", coordinates: l.coords },
+  }));
+}
+
+function teamRoutes(state: ExerciseState, now: number): GeoJSON.FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: state.teams.filter((t) => t.trip && now < t.trip.arriveAt).flatMap((t) => legLines(remainingLegs(t.trip!, now))),
+  };
+}
+
+function previewRoute(preview: Props["preview"]): GeoJSON.FeatureCollection {
+  if (!preview) return { type: "FeatureCollection", features: [] };
+  let start = 0;
+  const legs = preview.legs.map((l) => {
+    const coords = preview.path.slice(start, l.end + 1);
+    start = l.end;
+    return { mode: l.mode, coords };
+  });
+  return { type: "FeatureCollection", features: legLines(legs) };
+}
+
+function drawTeams(map: MLMap, props: Props, follow: string | null) {
+  const now = Date.now();
+  (map.getSource("teams") as GeoJSONSource).setData(teamPoints(props.state, now, props.focusTeam?.id ?? null));
+  (map.getSource("team-routes") as GeoJSONSource).setData(teamRoutes(props.state, now));
+  // Keep a followed team in view, without fighting a camera move already under way.
+  const team = follow ? props.state.teams.find((t) => t.id === follow) : null;
+  if (team?.trip && !map.isMoving()) map.jumpTo({ center: teamPosition(team, now) as [number, number] });
+}
+
+/** A ring around each caller's water report, with a label at its northern edge. */
+function callerZoneShapes(zones: Props["callerZones"]): GeoJSON.FeatureCollection {
+  const metresPerDegLat = 111_320;
+  return {
+    type: "FeatureCollection",
+    features: zones.flatMap((z) => {
+      const dLat = OBSERVATION_RADIUS_M / metresPerDegLat;
+      const dLon = OBSERVATION_RADIUS_M / (metresPerDegLat * Math.cos((z.lat * Math.PI) / 180));
+      const ring = Array.from({ length: 65 }, (_, k) => {
+        const a = (k / 64) * 2 * Math.PI;
+        return [z.lon + dLon * Math.cos(a), z.lat + dLat * Math.sin(a)];
+      });
+      return [
+        { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: ring } },
+        { type: "Feature", properties: { label: z.label }, geometry: { type: "Point", coordinates: [z.lon, z.lat + dLat] } },
+      ] as GeoJSON.Feature[];
+    }),
   };
 }
 
@@ -90,6 +178,8 @@ export default function FloodMap(props: Props) {
   const readyRef = useRef(false);
   const propsRef = useRef(props);
   const lastResolved = useRef("");
+  /** Team the camera follows while it moves. */
+  const followRef = useRef<string | null>(null);
 
   useEffect(() => {
     propsRef.current = props;
@@ -249,16 +339,61 @@ export default function FloodMap(props: Props) {
         },
       });
 
-      map.addSource("teams", { type: "geojson", data: teamPoints(propsRef.current.state) });
+      map.addSource("caller-zones", { type: "geojson", data: callerZoneShapes(propsRef.current.callerZones) });
+      map.addLayer({
+        id: "caller-zones-ring",
+        type: "line",
+        source: "caller-zones",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: { "line-color": "#0f172a", "line-width": 1.5, "line-opacity": 0.7, "line-dasharray": [2, 2] },
+      });
+      map.addLayer({
+        id: "caller-zones-label",
+        type: "symbol",
+        source: "caller-zones",
+        filter: ["==", ["geometry-type"], "Point"],
+        layout: { "text-field": ["get", "label"], "text-font": ["Noto Sans Bold"], "text-size": 11, "text-anchor": "bottom" },
+        paint: { "text-color": "#0f172a", "text-halo-color": "#fff", "text-halo-width": 1.5 },
+      });
+      map.addSource("route-preview", { type: "geojson", data: previewRoute(propsRef.current.preview) });
+      map.addLayer({
+        id: "route-preview-line",
+        type: "line",
+        source: "route-preview",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": ROUTE_COLOR_EXPRESSION, "line-width": 5, "line-opacity": 0.75, "line-dasharray": [1.2, 1] },
+      });
+      map.addSource("team-routes", { type: "geojson", data: teamRoutes(propsRef.current.state, Date.now()) });
+      // Road and water legs are solid; walking and flying are dashed.
+      map.addLayer({
+        id: "team-routes-solid",
+        type: "line",
+        source: "team-routes",
+        filter: ["in", ["get", "mode"], ["literal", ["road", "water"]]],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": ROUTE_COLOR_EXPRESSION, "line-width": 4, "line-opacity": 0.9 },
+      });
+      map.addLayer({
+        id: "team-routes-dashed",
+        type: "line",
+        source: "team-routes",
+        filter: ["in", ["get", "mode"], ["literal", ["foot", "air"]]],
+        layout: { "line-join": "round" },
+        paint: { "line-color": ROUTE_COLOR_EXPRESSION, "line-width": 3, "line-opacity": 0.9, "line-dasharray": [1, 1.5] },
+      });
+      map.addSource("teams", {
+        type: "geojson",
+        data: teamPoints(propsRef.current.state, Date.now(), propsRef.current.focusTeam?.id ?? null),
+      });
       map.addLayer({
         id: "teams-dot",
         type: "circle",
         source: "teams",
         paint: {
-          "circle-radius": 7,
-          "circle-color": ["case", ["get", "available"], "#2563eb", "#64748b"],
-          "circle-stroke-color": "#fff",
-          "circle-stroke-width": 2,
+          "circle-radius": ["case", ["get", "focused"], 12, ["get", "moving"], 9, 7],
+          "circle-color": ["case", ["get", "moving"], "#f59e0b", ["get", "available"], "#2563eb", "#64748b"],
+          "circle-stroke-color": ["case", ["get", "focused"], "#0f172a", "#fff"],
+          "circle-stroke-width": ["case", ["get", "focused"], 4, 2],
         },
       });
       map.addLayer({
@@ -351,13 +486,22 @@ export default function FloodMap(props: Props) {
         onReportBuilding({ longitude, latitude, height: Number.isFinite(h) ? h : null });
         return;
       }
+      const team = map.queryRenderedFeatures(e.point, { layers: ["teams-dot", "teams-label"] })[0];
+      if (team) {
+        propsRef.current.onFocusTeam(String(team.properties.id));
+        return;
+      }
       const hit = map.queryRenderedFeatures(e.point, {
         layers: ["incidents-dot", "incidents-label", INCIDENT_BUILDING_LAYER],
       })[0];
       if (hit) onSelect(String(hit.properties.id ?? hit.properties.incidentId));
     });
+    // Dragging the map stops following a team.
+    map.on("dragstart", () => {
+      if (followRef.current) propsRef.current.onFocusTeam(null);
+    });
 
-    for (const layer of [BUILDING_LAYER, INCIDENT_BUILDING_LAYER, "incidents-dot"]) {
+    for (const layer of [BUILDING_LAYER, INCIDENT_BUILDING_LAYER, "incidents-dot", "teams-dot"]) {
       map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", layer, () => {
         map.getCanvas().style.cursor = propsRef.current.reportMode ? "crosshair" : "";
@@ -386,9 +530,48 @@ export default function FloodMap(props: Props) {
     const map = mapRef.current;
     if (!map || !readyRef.current) return;
     (map.getSource("incidents") as GeoJSONSource).setData(incidentPoints(props.state, props.selectedId));
-    (map.getSource("teams") as GeoJSONSource).setData(teamPoints(props.state));
+    drawTeams(map, propsRef.current, followRef.current);
     syncBuildings.current();
   }, [props.state, props.selectedId]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) return;
+    (map.getSource("route-preview") as GeoJSONSource).setData(previewRoute(props.preview));
+  }, [props.preview]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) return;
+    (map.getSource("caller-zones") as GeoJSONSource).setData(callerZoneShapes(props.callerZones));
+  }, [props.callerZones]);
+
+  // Fly to a team when it is picked, then keep it in view while it moves.
+  const focus = props.focusTeam;
+  useEffect(() => {
+    const map = mapRef.current;
+    followRef.current = focus?.id ?? null;
+    if (!map || !focus) return;
+    const team = propsRef.current.state.teams.find((t) => t.id === focus.id);
+    if (!team) return;
+    map.flyTo({
+      center: teamPosition(team, Date.now()) as [number, number],
+      zoom: Math.max(map.getZoom(), 16),
+      duration: 900,
+    });
+    if (readyRef.current) drawTeams(map, propsRef.current, followRef.current);
+  }, [focus]);
+
+  // Moving teams are redrawn from the clock while any trip is under way.
+  const anyTrip = props.state.teams.some((t) => t.trip);
+  useEffect(() => {
+    if (!anyTrip) return;
+    const timer = setInterval(() => {
+      const map = mapRef.current;
+      if (map && readyRef.current) drawTeams(map, propsRef.current, followRef.current);
+    }, TEAM_FRAME_MS);
+    return () => clearInterval(timer);
+  }, [anyTrip]);
 
   // Centre on the selected incident.
   useEffect(() => {

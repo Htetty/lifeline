@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { callerUpdateType } from "./callerUpdates";
+import { storedWaterReport } from "./waterReports";
 
 // Shared data contract for the dashboard (Next.js) and the voice backend (FastAPI).
 // Unknown facts stay null rather than being guessed.
@@ -94,8 +95,10 @@ export default defineSchema({
   exercises: defineTable({
     exerciseId: v.string(),
     name: v.string(),
-    /** Simulated water surface elevation, metres above sea level. */
+    /** Water surface at the Fashion Valley river gauge, metres NAVD88. */
     waterSurfaceElevation: v.number(),
+    /** Time of the replayed gauge reading behind the level; null when set by hand. */
+    waterObservedAt: v.optional(v.union(v.number(), v.null())),
   }).index("by_exerciseId", ["exerciseId"]),
 
   incidents: defineTable({
@@ -117,6 +120,8 @@ export default defineSchema({
     assignedTeamId: v.union(v.id("teams"), v.null()),
     callerRole: v.optional(callerRole),
     riskFactors: v.optional(v.array(riskFactor)),
+    /** Latest water depth the caller described; corrects the simulated flood around them. */
+    waterReport: v.optional(v.union(storedWaterReport, v.null())),
     /** Dispatcher's override of the computed priority, with their reason. */
     priorityOverride: v.optional(v.union(v.object({ tier: priorityTier, reason: v.string() }), v.null())),
     /**
@@ -150,6 +155,28 @@ export default defineSchema({
     available: v.boolean(),
     capabilities: v.array(capability),
     currentAssignment: v.union(v.id("incidents"), v.null()),
+    /** Simulated trip to an incident (see tripMath.ts); null when the team is stationary. */
+    trip: v.optional(
+      v.union(
+        v.object({
+          incidentId: v.id("incidents"),
+          path: v.array(v.array(v.number())),
+          departAt: v.number(),
+          arriveAt: v.number(),
+          route: v.union(v.literal("planned"), v.literal("road"), v.literal("direct")),
+          legs: v.optional(
+            v.array(
+              v.object({
+                mode: v.union(v.literal("road"), v.literal("water"), v.literal("foot"), v.literal("air")),
+                end: v.number(),
+              }),
+            ),
+          ),
+          realSeconds: v.number(),
+        }),
+        v.null(),
+      ),
+    ),
     simulated: v.literal(true),
     updatedAt: v.number(),
   }).index("by_exercise", ["exerciseId"]),

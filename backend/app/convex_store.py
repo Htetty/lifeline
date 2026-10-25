@@ -33,6 +33,7 @@ async def upsert_from_call(
     location_changed: bool = False,
     caller_role: str | None = None,
     risk_factors: list[dict[str, str]] | None = None,
+    water_report: dict[str, Any] | None = None,
     withdrawn: list[dict[str, str | None]] | None = None,
     turn: dict | None = None,
     response: dict | None = None,
@@ -51,6 +52,7 @@ async def upsert_from_call(
             "locationChanged": location_changed,
             **({"callerRole": caller_role} if caller_role else {}),
             **({"riskFactors": risk_factors} if risk_factors else {}),
+            **({"waterReport": _water_report(water_report)} if water_report else {}),
             # Sent only when the caller took something back, so ordinary turns keep the old arguments.
             **({"withdrawn": withdrawn} if withdrawn else {}),
             "callId": call_id,
@@ -64,6 +66,19 @@ async def upsert_from_call(
             "summary": summary,
         },
     )
+
+
+def _water_report(report: dict[str, Any]) -> dict[str, Any]:
+    # Convex numbers are floats on the wire.
+    def num(value: float | int | None) -> float | None:
+        return float(value) if value is not None else None
+
+    return {
+        "level": report["level"],
+        "measuredMeters": num(report.get("measured_meters")),
+        "floor": num(report.get("floor")),
+        "evidence": report.get("evidence"),
+    }
 
 
 async def call_ended(call_id: str) -> None:

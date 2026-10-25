@@ -31,33 +31,38 @@ export const get = query({
 
 /** Seeds the exercise the first time anyone opens the dashboard. */
 export const ensureSeeded = mutation({
-  args: { dispatcherToken: v.optional(v.string()) },
-  handler: async (ctx, { dispatcherToken }) => {
+  args: { dispatcherToken: v.optional(v.string()), withSamples: v.optional(v.boolean()) },
+  handler: async (ctx, { dispatcherToken, withSamples }) => {
     requireDispatcher(dispatcherToken);
     if (await getExercise(ctx)) return false;
-    await seedExercise(ctx);
+    await seedExercise(ctx, { withSamples });
     return true;
   },
 });
 
+/** Clears all incidents for everyone. `withSamples` loads the fictional sample incidents. */
 export const reset = mutation({
-  args: { dispatcherToken: v.optional(v.string()) },
-  handler: async (ctx, { dispatcherToken }) => {
+  args: { dispatcherToken: v.optional(v.string()), withSamples: v.optional(v.boolean()) },
+  handler: async (ctx, { dispatcherToken, withSamples }) => {
     requireDispatcher(dispatcherToken);
     await clearExercise(ctx);
-    await seedExercise(ctx);
+    await seedExercise(ctx, { withSamples });
   },
 });
 
 export const setWaterLevel = mutation({
-  args: { dispatcherToken: v.optional(v.string()), meters: v.number() },
-  handler: async (ctx, { dispatcherToken, meters }) => {
+  args: {
+    dispatcherToken: v.optional(v.string()),
+    meters: v.number(),
+    observedAt: v.optional(v.union(v.number(), v.null())),
+  },
+  handler: async (ctx, { dispatcherToken, meters, observedAt = null }) => {
     requireDispatcher(dispatcherToken);
     const exercise = await getExercise(ctx);
     if (!exercise) return;
-    const clamped = Math.min(40, Math.max(0, Math.round(meters * 10) / 10));
-    if (clamped === exercise.waterSurfaceElevation) return;
-    await ctx.db.patch(exercise._id, { waterSurfaceElevation: clamped });
+    const clamped = Math.min(40, Math.max(0, Math.round(meters * 100) / 100));
+    if (clamped === exercise.waterSurfaceElevation && observedAt === (exercise.waterObservedAt ?? null)) return;
+    await ctx.db.patch(exercise._id, { waterSurfaceElevation: clamped, waterObservedAt: observedAt });
   },
 });
 

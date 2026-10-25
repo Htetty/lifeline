@@ -74,6 +74,23 @@ means a child:
 - on_roof: they are on a roof
 - child / elderly / limited_mobility / pregnant: such a person is among them
 
+`water_report` is how deep the water is where the people needing rescue are, if the
+caller described it, using their latest description. The map uses it to correct the
+simulated flood around them, so record what they conveyed, not a guess:
+- `level`: the body reference they gave or clearly meant: ankle, knee, thigh, waist,
+  chest, neck, or over_head ("I can't touch the floor", "it's over my head"). Use
+  "measured" only when they gave a measurement ("about three feet of water") and put
+  it in `measured_meters`, converted to metres.
+- `floor`: which floor they are standing on when they describe it, counted above the
+  street: 0 for the ground or street level (in the US "first floor" is 0), 1 for the
+  next floor up, and so on. An attic is the floor above the top storey (the attic of
+  a one-storey house is 1; if the number of storeys isn't known, treat it as a
+  one-storey house). Null if they didn't say or it isn't clear.
+- `evidence`: the caller's words.
+Leave `water_report` null when they only said water is "coming in", "everywhere" or
+"rising" without a depth, when they are on a roof or in an attic above the water, or
+when a witness describes a building from outside without a depth.
+
 `location_queries` are up to three map-search strings for where the people needing
 rescue are, most specific first, each ending with ", San Diego, CA". The exercise
 takes place in Mission Valley, San Diego. Prefer named places (a hotel, business,
@@ -142,6 +159,13 @@ class RiskFact(BaseModel):
     evidence: str = Field(description="The caller's words supporting this factor")
 
 
+class WaterReport(BaseModel):
+    level: Literal["ankle", "knee", "thigh", "waist", "chest", "neck", "over_head", "measured"]
+    measured_meters: float | None = Field(description="Only for level 'measured': the depth they gave, in metres")
+    floor: int | None = Field(description="Floor they stand on, counted above the street (0 = ground/street level)")
+    evidence: str = Field(description="The caller's words describing the water depth")
+
+
 class Withdrawal(BaseModel):
     fact: Literal["people_count", "hazard", "risk_factor"]
     name: str | None = Field(
@@ -151,8 +175,9 @@ class Withdrawal(BaseModel):
 
 
 def _require_withdrawn(schema: dict) -> None:
-    # Claude must always answer `withdrawn` (usually []); only old saved receipts lack it.
-    schema["required"] = [*schema.get("required", []), "withdrawn"]
+    # Claude must always answer `withdrawn` (usually []) and `water_report` (often null);
+    # only old saved receipts lack them.
+    schema["required"] = [*schema.get("required", []), "withdrawn", "water_report"]
 
 
 class Extraction(BaseModel):
@@ -170,6 +195,10 @@ class Extraction(BaseModel):
     location_changed: bool = Field(description="Caller's latest message changed or took back an earlier location")
     hazards: list[HazardFact]
     risk_factors: list[RiskFact]
+    # Defaults to null so receipts saved before this field existed still load.
+    water_report: WaterReport | None = Field(
+        default=None, description="How deep the water is where they are, if the caller said"
+    )
     summary: str = Field(description="One sentence summarising only the stated facts")
     missing: list[str] = Field(description="Important facts still unknown")
     caller_asked_status: bool = Field(description="Caller's latest message asks whether help is coming / what's happening")
