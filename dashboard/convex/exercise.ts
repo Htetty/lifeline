@@ -31,21 +31,22 @@ export const get = query({
 
 /** Seeds the exercise the first time anyone opens the dashboard. */
 export const ensureSeeded = mutation({
-  args: { dispatcherToken: v.optional(v.string()) },
-  handler: async (ctx, { dispatcherToken }) => {
+  args: { dispatcherToken: v.optional(v.string()), withSamples: v.optional(v.boolean()) },
+  handler: async (ctx, { dispatcherToken, withSamples }) => {
     requireDispatcher(dispatcherToken);
     if (await getExercise(ctx)) return false;
-    await seedExercise(ctx);
+    await seedExercise(ctx, { withSamples });
     return true;
   },
 });
 
+/** Clears all incidents for everyone. `withSamples` loads the fictional sample incidents. */
 export const reset = mutation({
-  args: { dispatcherToken: v.optional(v.string()) },
-  handler: async (ctx, { dispatcherToken }) => {
+  args: { dispatcherToken: v.optional(v.string()), withSamples: v.optional(v.boolean()) },
+  handler: async (ctx, { dispatcherToken, withSamples }) => {
     requireDispatcher(dispatcherToken);
     await clearExercise(ctx);
-    await seedExercise(ctx);
+    await seedExercise(ctx, { withSamples });
   },
 });
 

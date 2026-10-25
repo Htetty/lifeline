@@ -17,7 +17,7 @@ afterEach(() => vi.useRealTimers());
 /** A seeded exercise with one verified incident assigned to a team of the given kind. */
 async function assigned(kind: Doc<"teams">["capabilities"][number]) {
   const t = convexTest(schema, modules);
-  await t.mutation(api.exercise.ensureSeeded, { dispatcherToken });
+  await t.mutation(api.exercise.ensureSeeded, { dispatcherToken, withSamples: true });
   const { incident, team } = await t.run(async (ctx) => {
     const incidents = await ctx.db.query("incidents").collect();
     const teams = await ctx.db.query("teams").collect();
@@ -99,5 +99,17 @@ describe("simulated team trips", () => {
     const trip = (await getTeam())!.trip!;
     expect(trip).toMatchObject({ route: "direct", legs: [{ mode: "water", end: 1 }] });
     expect(trip.path).toHaveLength(2);
+  });
+});
+
+describe("reset", () => {
+  test("starts with teams and no incidents unless samples are asked for", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.exercise.reset, { dispatcherToken });
+    const empty = await t.query(api.exercise.get, { dispatcherToken });
+    expect(empty!.incidents).toHaveLength(0);
+    expect(empty!.teams.every((team) => team.available)).toBe(true);
+    await t.mutation(api.exercise.reset, { dispatcherToken, withSamples: true });
+    expect((await t.query(api.exercise.get, { dispatcherToken }))!.incidents.length).toBeGreaterThan(0);
   });
 });

@@ -477,7 +477,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
               </button>
               <button
                 onClick={() => {
-                  if (!confirm("Restore the initial exercise data for everyone?")) return;
+                  if (!confirm("Clear every incident for everyone and send all teams back to base?")) return;
                   setLiveFeed(false);
                   setSelectedId(null);
                   setPendingPick(null);

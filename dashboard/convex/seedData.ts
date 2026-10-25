@@ -4,10 +4,13 @@
 
 export const EXERCISE_ID = "mission-valley-exercise-1";
 export const EXERCISE_NAME = "Mission Valley, San Diego";
-// The exercise opens partway up the Feb 27, 2017 rise recorded at the Fashion Valley
-// gauge: 9.78 ft at 12:00 PST, i.e. (16.48 ft datum + 9.78 ft) in metres NAVD88.
-export const DEFAULT_WATER_SURFACE_ELEVATION = 8.0;
-export const DEFAULT_WATER_OBSERVED_AT = 1488225600000;
+// A reset exercise opens at the first replayed reading of the Feb 27, 2017 storm at the
+// Fashion Valley gauge: 4.4 ft at 07:00 PST, i.e. (16.48 ft datum + 4.4 ft) in metres NAVD88.
+export const DEFAULT_WATER_SURFACE_ELEVATION = 6.36;
+export const DEFAULT_WATER_OBSERVED_AT = 1488207600000;
+// The sample incidents describe the storm partway up: 9.78 ft at 12:00 PST.
+export const SAMPLE_WATER_SURFACE_ELEVATION = 8.0;
+export const SAMPLE_WATER_OBSERVED_AT = 1488225600000;
 
 type Capability = "road_vehicle" | "high_water_vehicle" | "boat" | "air";
 type RiskFactorKind = "limited_mobility" | "on_roof" | "water_rising_fast" | "elderly";
