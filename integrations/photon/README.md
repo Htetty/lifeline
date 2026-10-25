@@ -79,7 +79,8 @@ The card's metadata and map artwork preview the location page. Native preview
 rendering depends on the receiving Messages client. Opening it requests location
 permission and shows the current position with a blue dot and accuracy circle.
 The dark page asks **Is this your current location?**, centered above **Confirm**.
-The button turns green after a successful confirmation; an arrow recenters/retries GPS.
+The button turns green and says **Confirmed** after a successful confirmation;
+an arrow recenters/retries GPS.
 
 The server prints `location.confirmed` with latitude, longitude, accuracy in metres,
 capture/confirmation times, a request ID, and an Apple Maps link. It does not write

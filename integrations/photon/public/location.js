@@ -89,6 +89,7 @@ confirm.addEventListener("click", async () => {
     const result = await response.json();
     if (!response.ok || !result.confirmed) throw new Error(result.error ?? "Could not confirm. Try again.");
     status.textContent = "";
+    confirm.textContent = "Confirmed";
     confirm.setAttribute("aria-label", "Location confirmed");
     confirm.classList.add("done");
     recenter.hidden = true;
