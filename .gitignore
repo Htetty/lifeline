@@ -52,3 +52,5 @@ ml/data/processed/
 
 # local Python environment for the backend
 backend/.venv/
+
+docs
