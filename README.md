@@ -6,6 +6,8 @@ Lifeline is a flood-response prototype that turns a caller's spoken report into 
 
 Built for **Cal Hacks 13.0**. Demonstrate with fictional incidents.
 
+![Lifeline's simulated flood-response console, showing caller transcripts, a flood map, incident details, and suggested rescue assignments.](assets/readme/showcase.jpg)
+
 ## How we use Convex
 Convex stores incidents, transcripts, rescue teams, and dispatcher decisions.
 Realtime queries update the console's queue, map, details, and activity without refreshing.
@@ -21,6 +23,12 @@ See [the Convex hackathon log](hackathon.md) for source evidence and dated miles
 5. **Keep the caller informed.** Cartesia speaks approved updates. Our conversation controller handles interruptions and checks that queued announcements still match dispatcher decisions.
 
 The MapLibre map combines terrain elevation, OpenStreetMap roads and buildings, historical river-gauge or tide replay, and caller-reported water conditions. Flood-aware routes and animated team trips support simulated exercises in Mission Valley and the Golden Gate shore area.
+
+## Architecture
+
+![Lifeline architecture: caller voice intake through Twilio and Cartesia, Claude fact extraction, FastAPI orchestration, Convex live state, the dispatcher dashboard, and optional Photon location sharing.](assets/readme/architecture.png)
+
+FastAPI connects Twilio audio to Cartesia, exchanges structured incident information with Claude, and persists state in Convex. The dispatcher dashboard subscribes directly to Convex updates; Photon provides consent-based location sharing.
 
 ## What Cartesia contributes
 
