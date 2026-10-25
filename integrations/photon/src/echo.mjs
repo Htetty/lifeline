@@ -1,15 +1,22 @@
 /** First increment: prove one enrolled person's iMessage can receive a reply.
  * No outbound initiation, SMS/RCS fallback, attachment fetching or incident writes.
  */
-export function createEchoHandler({ line, allowedSenders }) {
+export function createEchoHandler({ line, allowedSenders, onIgnored = () => {} }) {
   const completed = new Set();
   const inFlight = new Map();
 
   return async function handle(space, message) {
-    if (message.platform !== "imessage" || message.direction !== "inbound") return false;
-    if (space.type !== "dm" || space.phone !== line || !space.id?.startsWith("iMessage;-;")) return false;
-    if (message.sender?.service !== "iMessage" || !allowedSenders.has(message.sender?.address)) return false;
-    if (!message.id || message.content?.type !== "text" || !message.content.text?.trim()) return false;
+    const ignore = reason => { onIgnored(reason); return false; };
+    if (message.platform !== "imessage" || message.direction !== "inbound") return ignore("not-inbound-imessage");
+    // Stable Free/Pro authenticates the project to a shared proxy. Its documented
+    // SDK representation uses phone="shared", not the recipient's assigned line.
+    // Project authentication + enrolled sender + direct iMessage chat bind that
+    // route. Dedicated lines must still match the configured phone exactly.
+    if (space.type !== "dm" || !space.id?.startsWith("iMessage;-;")) return ignore("not-direct-imessage");
+    if (space.phone !== "shared" && space.phone !== line) return ignore("different-line");
+    if (message.sender?.service !== "iMessage") return ignore("not-imessage-service");
+    if (!allowedSenders.has(message.sender?.address)) return ignore("sender-not-allowed");
+    if (!message.id || message.content?.type !== "text" || !message.content.text?.trim()) return ignore("not-text");
     const key = JSON.stringify([space.phone, space.id, message.sender.address, message.id]);
     if (completed.has(key)) return false;
     if (inFlight.has(key)) return inFlight.get(key);

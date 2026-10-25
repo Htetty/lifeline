@@ -40,6 +40,11 @@ Successful message IDs are deduplicated in memory (last 1000 per process); a res
 can reply again to replayed traffic. Durable intake/outbox receipts belong in the
 next increment before incident creation, location links or dispatcher updates.
 
+Free/Pro shared proxy events use the SDK's `phone="shared"` sentinel. Dedicated
+events must match the configured line. Both require an allowed sender and an
+inbound direct iMessage conversation. Logs include stream heartbeats and rejection
+reason codes, without message text, sender addresses, or credentials.
+
 Dependency check: the pinned SDK currently brings a moderate OpenTelemetry baggage
 allocation advisory through `@photon-ai/otel` (`@opentelemetry/core <2.8.0`). Telemetry
 is disabled here. Do not force npm's proposed SDK downgrade; recheck the upstream

@@ -41,6 +41,19 @@ test("duplicate and simultaneous deliveries send one reply in a running process"
   assert.equal(sends, 1);
 });
 
+test("Free/Pro shared-line sentinel permits only enrolled inbound iMessage DMs", async () => {
+  const sends = [];
+  const space = { ...chat(async text => { sends.push(text); return { id: "reply" }; }), phone: "shared" };
+  const ignored = [];
+  const handle = createEchoHandler({ ...config, onIgnored: reason => ignored.push(reason) });
+  assert.equal(await handle(space, { ...incoming(), sender: { address: "+15555550102", service: "iMessage" } }), false);
+  assert.equal(await handle(space, { ...incoming(), sender: { address: caller, service: "SMS" } }), false);
+  assert.equal(await handle({ ...space, type: "group" }, incoming()), false);
+  assert.equal(await handle(space, incoming()), true);
+  assert.deepEqual(sends, ["echo: hi"]);
+  assert.deepEqual(ignored, ["sender-not-allowed", "not-imessage-service", "not-direct-imessage"]);
+});
+
 test("failed sends remain retryable", async () => {
   let attempts = 0;
   const space = chat(async () => { if (++attempts === 1) throw new Error("offline"); return { id: "reply" }; });

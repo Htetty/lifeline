@@ -9,14 +9,23 @@ async function main() {
   }
   const { Spectrum } = await import("@spectrum-ts/core");
   const { imessage } = await import("@spectrum-ts/imessage");
+  const liveStreams = new Set();
   const app = await Spectrum({
     projectId: config.projectId,
     projectSecret: config.projectSecret,
-    providers: [imessage.config()],
+    providers: [imessage.config({
+      onHeartbeat(heartbeat) {
+        if (liveStreams.has(heartbeat.stream)) return;
+        liveStreams.add(heartbeat.stream);
+        console.log(`Photon ${heartbeat.stream} stream heartbeat received.`);
+      },
+    })],
     telemetry: false,
     options: { logLevel: "warn" },
   });
-  const handle = createEchoHandler(config);
+  const handle = createEchoHandler({ ...config,
+    onIgnored: reason => console.log(`Message ignored: ${reason}.`),
+  });
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
@@ -26,10 +35,11 @@ async function main() {
   const onSignal = () => { void stop().catch(() => { process.exitCode = 1; }); };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
-  console.log("Spectrum initialized. Listening for enrolled iMessage senders; send hi to the assigned line.");
+  console.log("Spectrum initialized. Opening message streams for enrolled iMessage senders.");
   try {
     for await (const [space, message] of app.messages) {
       if (stopping) break;
+      console.log(`Message event received (${message.direction}, ${message.content?.type}).`);
       try {
         if (await handle(imessage(space), message)) console.log("Photon accepted an echo reply; check receipt on the phone.");
       } catch {
