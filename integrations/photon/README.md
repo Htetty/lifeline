@@ -74,9 +74,10 @@ the port). The Quick Tunnel exposes only that server; it cannot reach the existi
 FastAPI app or the dashboard through this process. No Cloudflare account is needed.
 Stop the process to close the tunnel and server.
 
-Each received text gets **one `richlink` message**, without accompanying text.
-The card's metadata and map artwork preview the location page. Native preview
-rendering depends on the receiving Messages client. Opening it requests location
+Each received text gets **one native `app` card**, without accompanying text.
+The card's map artwork previews the location page, which opens inside Messages
+through the Spectrum iMessage extension. Recipients may need to install that
+extension once from Messages. Opening it requests location
 permission and shows the current position with a blue dot and accuracy circle.
 The only primary action is **Confirm location**; an arrow recenters/retries GPS.
 
@@ -97,9 +98,13 @@ uses a fictional location fix, checks map tiles and the blue dot in a 390×844
 viewport, confirms exactly once, and checks denied-permission handling. It never
 sends an iMessage. Screenshots go to `/tmp/lifeline-location-{ready,confirmed}.png`.
 
-Native `app(url)` cards can be added separately; the current docs describe a
-Spectrum extension installation on first use. This increment uses ordinary rich
-links so it does not depend on that extension.
+The location page has been verified in Chrome and confirmed from the enrolled
+phone's browser. Location permission inside the Spectrum extension still needs
+verification on the phone; browser checks cannot verify the iOS host's permission
+support. Use `npm run location -- --browser-link` for an ordinary rich-link card
+that opens in the browser instead. The same option works with `--send-location`.
+The native card uses an explicit local JPEG layout rather than fetching preview
+metadata from a newly created tunnel hostname.
 
 ## Provider references
 
