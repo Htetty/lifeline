@@ -14,7 +14,8 @@ const local = url && /^http:\/\/(127\.0\.0\.1|localhost):/.test(url);
 const dispatcherToken = process.env.LIFELINE_LOCAL_DISPATCHER_TOKEN;
 
 describe.skipIf(!local)("approvals on a real local Convex", () => {
-  const client = new ConvexHttpClient(url!);
+  // Created lazily: describe bodies run during collection even when skipped.
+  let client: ConvexHttpClient;
   const state = async () => (await client.query(api.exercise.get, { dispatcherToken }))!;
   const fingerprint = async () => {
     const s = await state();
@@ -37,6 +38,7 @@ describe.skipIf(!local)("approvals on a real local Convex", () => {
   };
 
   test("two dispatchers approve plans that both use the same team: exactly one wins", async () => {
+    client = new ConvexHttpClient(url!);
     if (!(await client.query(api.exercise.get, { dispatcherToken }))) await client.mutation(api.exercise.ensureSeeded, { dispatcherToken });
     const tag = Math.random().toString(36).slice(2, 8);
     const report = (n: number) =>
@@ -74,5 +76,7 @@ describe.skipIf(!local)("approvals on a real local Convex", () => {
     const winner = results[0].ok ? pa : pb;
     expect(await client.mutation(api.planner.approvePlan, { dispatcherToken, ...winner, approvalId: `${winner.planId}-ok` })).toMatchObject({ ok: true });
     expect((await state()).incidents.filter((i) => i.assignedTeamId === team._id && [a, b].includes(i._id))).toHaveLength(1);
+    // Leave the disposable deployment as found: resolving frees the team for other suites.
+    for (const incidentId of [a, b]) await client.mutation(api.incidents.setStatus, { dispatcherToken, incidentId, status: "resolved" });
   });
 });
