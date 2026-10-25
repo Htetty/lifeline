@@ -19,10 +19,10 @@ const hooks = vi.hoisted(() => {
     },
   };
 });
-vi.mock("react", () => ({ useMemo: hooks.useMemo, useState: hooks.useState }));
+// Effects (the panel suggesting on open) don't run here; tests press "Suggest assignments" themselves.
+vi.mock("react", () => ({ useEffect: () => {}, useMemo: hooks.useMemo, useState: hooks.useState }));
 const store = vi.hoisted(() => ({
   recordProposal: vi.fn(),
-  explainPlan: vi.fn(),
   approvePlan: vi.fn(),
   errorMessage: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
@@ -79,7 +79,6 @@ function fixture() {
 
 beforeEach(() => {
   store.recordProposal.mockReset().mockResolvedValue({ matched: true });
-  store.explainPlan.mockReset().mockResolvedValue({ text: null, note: "not configured" });
   store.approvePlan.mockReset();
 });
 
@@ -142,7 +141,7 @@ test("a caller's water report on a resolved incident stales the plan on screen",
   expect(f.button("Approve 2 selected").props.disabled).toBe(true);
 });
 
-test("a failed record or late summary for an earlier plan doesn't show on the current one", async () => {
+test("a failed record for an earlier plan doesn't show on the current one", async () => {
   const f = fixture();
   let failOld!: (e: Error) => void;
   store.recordProposal.mockReturnValueOnce(new Promise((_, reject) => (failOld = reject)));

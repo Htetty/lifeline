@@ -100,10 +100,9 @@ flood-aware router finds. No route means not eligible; route data not loaded mea
 Suggesting changes nothing. Approval (`convex/planner.ts` `approvePlan`) refuses a plan whose inputs
 changed (fingerprint in `convex/planning.ts`), re-checks every pair and its route evidence, and assigns
 the whole batch in one transaction through the normal assignment path (`assignTeamTo`), or nothing.
-It never sends a team en route. Every approval attempt is recorded in `planDecisions`.
-Optional: `npx convex env set ANTHROPIC_API_KEY …` (and `CLAUDE_MODEL`) adds a short Claude summary of
-a plan, discarded if it names a team or number that isn't in the plan; without it the console shows
-its own summary. The server can't re-run the router (it needs browser-decoded elevation tiles), so it
+Once approved, the console sends each approved team en route on the route that was approved
+(the normal `setStatus` → `en_route` path). Every approval attempt is recorded in `planDecisions`.
+The server can't re-run the router (it needs browser-decoded elevation tiles), so it
 binds approval to the routing inputs instead.
 
 ## Tests

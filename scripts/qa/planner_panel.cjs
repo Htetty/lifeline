@@ -10,14 +10,14 @@ const { createRequire, Module } = require("node:module");
 const root = path.resolve(__dirname, "../..");
 const dependencies = createRequire(path.join(root, "dashboard/node_modules/__qa__.cjs"));
 const ts = dependencies("typescript");
-let values = [], cursor = 0, replies = [];
+let values = [], cursor = 0;
 const store = {
   recordProposal: async () => ({ matched: true }),
-  explainPlan: () => new Promise((resolve) => replies.push(resolve)),
   approvePlan: async () => { throw new Error("QA must not approve or contact a service"); },
   errorMessage: (e) => String(e),
 };
 const hooks = {
+  useEffect: () => {},
   useMemo: (fn) => fn(),
   useState(initial) {
     const k = cursor++;
@@ -54,7 +54,7 @@ function text(node) {
   return node && typeof node === "object" ? text(node.props?.children) : typeof node === "string" || typeof node === "number" ? String(node) : "";
 }
 function fixture() {
-  values = []; cursor = 0; replies = [];
+  values = []; cursor = 0;
   const i = { id: "fictional", exerciseId: "fictional", callId: null, source: "fixture", reportedAddress: "1 Fictional Way",
     latitude: 32.76, longitude: -117.17, locationVerified: true, peopleCount: 2, reportedPosition: "roof", hazards: [], summary: "Simulated",
     transcript: null, status: "awaiting_assignment", assignedTeamId: null, callConnected: false, createdAt: 1, updatedAt: 1, version: 1 };
@@ -71,15 +71,6 @@ function fixture() {
   return { props, render, button, suggest };
 }
 const cases = [
-  ["late explanation from an old plan cannot replace the current explanation", async () => {
-    const f = fixture(); await f.suggest();
-    f.button("Suggest again").props.onClick(); await Promise.resolve();
-    replies[1]({ text: "CURRENT fictional plan", note: "mock" }); await Promise.resolve();
-    assert.match(text(f.render()), /CURRENT fictional plan/);
-    replies[0]({ text: "OBSOLETE fictional plan", note: "mock" }); await Promise.resolve();
-    assert.match(text(f.render()), /CURRENT fictional plan/);
-    assert.doesNotMatch(text(f.render()), /OBSOLETE fictional plan/);
-  }],
   ["headcount change disables approval of the old capacity warning", async () => {
     const f = fixture(); await f.suggest();
     assert.equal(f.button("Approve 1 selected").props.disabled, false);

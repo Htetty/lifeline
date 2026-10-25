@@ -851,6 +851,12 @@ function DashboardView({ state }: { state: ExerciseState }) {
                 onPreview={setPlannerPreview}
                 onSelectIncident={openIncident}
                 onDone={setToast}
+                onApproved={(approved) => {
+                  // Approving a plan dispatches it: each team sets off on the route the plan was approved with.
+                  for (const p of approved) {
+                    run({ type: "setStatus", incidentId: p.incident.id, status: "en_route", plan: asTripPlan(p.route) });
+                  }
+                }}
                 onClose={() => {
                   setPlannerOpen(false);
                   setPlannerPreview(null);
