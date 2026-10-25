@@ -1,6 +1,7 @@
 import { CELL_METERS, depthAt, type FloodGrid, type FloodResult } from "./flood";
 import type { RescueTeam } from "./types";
 import { tripProgress, type LegMode, type Trip, type TripLeg } from "../../convex/tripMath";
+import { moverFor, PROFILES, type Mover, type Profile } from "../../convex/vehicles";
 
 // Flood-aware routing for the simulated rescue teams, on OpenStreetMap roads
 // (public/data/roads.json, from scripts/fetch-roads.mjs) and the flood grid.
@@ -24,6 +25,8 @@ const WADE_DEPTH = 0.3;
 const FOOT_LIMIT = 1.2;
 /** A boat can pull up to a building this close to deep water. */
 const BOAT_REACH_M = 45;
+/** Largest building (in grid cells) searched for a place to pull up alongside it. */
+const MAX_BUILDING_CELLS = 2000;
 /** A towed boat can be launched into deep water this close to the road it is on. */
 const LAUNCH_REACH_M = 30;
 /** Leaving the station to the nearest roads. */
@@ -51,29 +54,7 @@ const CLASS_SPEED: Record<string, number> = {
   service: 5,
 };
 
-export type Mover = "road_vehicle" | "high_water_vehicle" | "boat" | "air";
-
-interface Profile {
-  label: string;
-  /** Deepest water the vehicle (or a boat's tow vehicle) can drive through. */
-  limit: number;
-  /** Top speed once in water. */
-  wadingSpeed: number;
-}
-
-export const PROFILES: Record<Exclude<Mover, "air">, Profile> = {
-  road_vehicle: { label: "road vehicle", limit: 0.3, wadingSpeed: 3 },
-  high_water_vehicle: { label: "high-water truck", limit: 0.75, wadingSpeed: 5 },
-  // Towed on its trailer until the water is deep enough to launch.
-  boat: { label: "boat (towed on roads)", limit: 0.6, wadingSpeed: 4 },
-};
-
-export function moverFor(capabilities: RescueTeam["capabilities"]): Mover {
-  if (capabilities.includes("air")) return "air";
-  if (capabilities.includes("boat")) return "boat";
-  if (capabilities.includes("high_water_vehicle")) return "high_water_vehicle";
-  return "road_vehicle";
-}
+export { moverFor, PROFILES, type Mover } from "../../convex/vehicles";
 
 const ONEWAY = 1;
 const BRIDGE = 2;
@@ -317,6 +298,8 @@ export function planRoute(
   const total = TARGET + 1;
 
   const cellDepth = (c: number) => flood.depth[c];
+  /** A building the water doesn't top: boats go around it. */
+  const blocked = (c: number) => (grid.buildings?.[c] ?? 0) > cellDepth(c);
   const cellCenter = (c: number) => [
     grid.bounds.west + ((c % grid.cols) + 0.5) * grid.dLon,
     grid.bounds.north - (Math.floor(c / grid.cols) + 0.5) * grid.dLat,
@@ -336,13 +319,41 @@ export function planRoute(
     for (let r = Math.max(0, r0 - reach); r <= Math.min(grid.rows - 1, r0 + reach); r++) {
       for (let c = Math.max(0, c0 - reach); c <= Math.min(grid.cols - 1, c0 + reach); c++) {
         const cell = r * grid.cols + c;
-        if (cellDepth(cell) < BOAT_MIN_DEPTH) continue;
+        if (cellDepth(cell) < BOAT_MIN_DEPTH || blocked(cell)) continue;
         const [x, y] = cellCenter(cell);
         const d = planar(p[0], p[1], x, y, graph.cosLat);
         if (d <= radius) out.push([cell, d]);
       }
     }
     return out;
+  };
+  /** Deep, open-water cells touching the building that covers `start` (searched up to a size cap). */
+  const buildingEdge = (start: number) => {
+    const seen = new Set([start]);
+    const queue = [start];
+    const edge = new Set<number>();
+    while (queue.length && seen.size < MAX_BUILDING_CELLS) {
+      const cell = queue.pop()!;
+      const r = Math.floor(cell / grid.cols);
+      const c = cell % grid.cols;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr;
+          const cc = c + dc;
+          if ((!dr && !dc) || rr < 0 || rr >= grid.rows || cc < 0 || cc >= grid.cols) continue;
+          const next = rr * grid.cols + cc;
+          if (blocked(next)) {
+            if (!dr || !dc) {
+              if (!seen.has(next)) {
+                seen.add(next);
+                queue.push(next);
+              }
+            }
+          } else if (cellDepth(next) >= BOAT_MIN_DEPTH) edge.add(next);
+        }
+      }
+    }
+    return edge;
   };
   const roadsNear = (p: number[], radius: number) => {
     const out: [number, number][] = [];
@@ -373,7 +384,21 @@ export function planRoute(
       if (t != null) boatLinks.set(N + cell, [t, "foot"]);
     }
   }
-  if (isBoat) for (const [cell, d] of deepCellsNear(target, BOAT_REACH_M)) boatLinks.set(N + cell, [d / BOAT_SPEED, "water"]);
+  const targetCell = cellOf(target[0], target[1]);
+  const inBuilding = targetCell >= 0 && blocked(targetCell);
+  if (isBoat && !inBuilding) {
+    for (const [cell, d] of deepCellsNear(target, BOAT_REACH_M)) boatLinks.set(N + cell, [d / BOAT_SPEED, "water"]);
+  }
+  // In a building the water doesn't top, a boat pulls up anywhere along its walls, however big
+  // it is, and the crew goes in on foot from there.
+  if (isBoat && inBuilding) {
+    for (const cell of buildingEdge(targetCell)) {
+      const [x, y] = cellCenter(cell);
+      const t = planar(x, y, target[0], target[1], graph.cosLat) / FOOT_SPEED;
+      const known = boatLinks.get(N + cell);
+      if (!known || t < known[0]) boatLinks.set(N + cell, [t, "foot"]);
+    }
+  }
 
   const wetEdgeAt = (u: number) => {
     for (let k = graph.adjStart[u]; k < graph.adjStart[u + 1]; k++) if (depths.edge[graph.adjEdge[k]] > DRY_DEPTH) return true;
@@ -430,7 +455,9 @@ export function planRoute(
           const cc = c + dc;
           if (rr < 0 || rr >= grid.rows || cc < 0 || cc >= grid.cols) continue;
           const next = rr * grid.cols + cc;
-          if (cellDepth(next) < BOAT_MIN_DEPTH) continue;
+          if (cellDepth(next) < BOAT_MIN_DEPTH || blocked(next)) continue;
+          // No cutting a building's corner on a diagonal.
+          if (dr && dc && (blocked(r * grid.cols + cc) || blocked(rr * grid.cols + c))) continue;
           relax(u, N + next, (dr && dc ? Math.SQRT2 : 1) * (CELL_METERS / BOAT_SPEED), "water");
         }
       }
@@ -486,4 +513,25 @@ export function deepestAhead(graph: RoadGraph, grid: FloodGrid, flood: FloodResu
     deepest = Math.max(deepest, segmentDepth(grid, flood, a, b, planar(a[0], a[1], b[0], b[1], graph.cosLat)));
   }
   return deepest;
+}
+
+const routeCache = new WeakMap<FloodResult, Map<string, RoutePlan | NoRoute>>();
+
+/**
+ * planRoute, remembered per flood state: the same flood, team type, start and end always give
+ * the same route, and the assignment planner asks for every pair again every few seconds.
+ */
+export function cachedRoute(
+  graph: RoadGraph,
+  grid: FloodGrid,
+  flood: FloodResult,
+  team: Pick<RescueTeam, "longitude" | "latitude" | "capabilities">,
+  to: { longitude: number; latitude: number },
+): RoutePlan | NoRoute {
+  let routes = routeCache.get(flood);
+  if (!routes) routeCache.set(flood, (routes = new Map()));
+  const key = `${moverFor(team.capabilities)}|${team.longitude},${team.latitude}|${to.longitude},${to.latitude}`;
+  let route = routes.get(key);
+  if (!route) routes.set(key, (route = planRoute(graph, grid, flood, team, to)));
+  return route;
 }

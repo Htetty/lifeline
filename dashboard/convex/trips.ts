@@ -2,8 +2,10 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery, mutation, type MutationCtx } from "./_generated/server";
-import { logActivity, requireDispatcher } from "./lib";
-import { metres, MIN_TRIP_MS, TRIP_SPEEDUP, tripProgress, type Trip, type TripLeg } from "./tripMath";
+import { getExercise, logActivity, requireDispatcher } from "./lib";
+import { linkedReports } from "./linking";
+import { onSceneMinutes, onSceneMs } from "./rescueTime";
+import { metres, MIN_TRIP_MS, TRIP_SPEEDUP, vehiclePosition, type Trip, type TripLeg } from "./tripMath";
 
 // Simulated travel when a team goes en route. The dashboard normally supplies a
 // flood-aware route (src/lib/router.ts). Without one, road vehicles take a driving
@@ -149,16 +151,27 @@ export const arrive = internalMutation({
     const team = await ctx.db.get(teamId);
     // Stale when the trip was cancelled or replaced since this was scheduled.
     if (!team?.trip || team.trip.departAt !== departAt) return;
-    const [longitude, latitude] = team.trip.path[team.trip.path.length - 1];
+    // The vehicle stays where it parked; the crew walked the rest.
+    const [longitude, latitude] = vehiclePosition(team.trip, team.trip.arriveAt);
     const incident = await ctx.db.get(team.trip.incidentId);
     await ctx.db.patch(teamId, { latitude, longitude, trip: null, updatedAt: Date.now() });
     await logActivity(ctx, `${team.name} arrived at ${incident?.reportedAddress ?? "the incident"}.`, team.trip.incidentId);
+    // In the demo simulation the team finishes by itself after its time on scene.
+    const exercise = await getExercise(ctx);
+    if (exercise?.autoResolve && incident) {
+      const { minutes, why } = onSceneMinutes(incident, await linkedReports(ctx, incident._id), team);
+      await ctx.scheduler.runAfter(onSceneMs(minutes, exercise.onSceneSpeedup), internal.simulation.finishRescue, {
+        teamId,
+        incidentId: incident._id,
+      });
+      await logActivity(ctx, `${team.name} on scene: about ${minutes} min (${why}, simulated).`, incident._id);
+    }
   },
 });
 
 /** Ends a trip early, leaving the team where it is now. */
 export async function stopTrip(ctx: MutationCtx, team: Doc<"teams">) {
   if (!team.trip) return;
-  const [longitude, latitude] = tripProgress(team.trip, Date.now()).position;
+  const [longitude, latitude] = vehiclePosition(team.trip, Date.now());
   await ctx.db.patch(team._id, { latitude, longitude, trip: null, updatedAt: Date.now() });
 }

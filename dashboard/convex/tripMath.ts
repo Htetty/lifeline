@@ -71,6 +71,21 @@ export function tripProgress(trip: Pick<Trip, "path" | "departAt" | "arriveAt">,
 }
 
 /**
+ * Where the vehicle itself is at `now`. On a foot leg (the crew walking from the road or the
+ * water's edge into the building) the vehicle stays parked where the walk began.
+ */
+export function vehiclePosition(trip: Pick<Trip, "path" | "departAt" | "arriveAt" | "legs">, now: number): LonLat {
+  const { position, next } = tripProgress(trip, now);
+  let start = 0;
+  for (const leg of trip.legs ?? []) {
+    // Segment `next` runs from path[next - 1] to path[next]; it belongs to the leg ending at or after it.
+    if (next <= leg.end) return leg.mode === "foot" ? (trip.path[start] as LonLat) : position;
+    start = leg.end;
+  }
+  return position;
+}
+
+/**
  * Real-world minutes left, from the trip's travel estimate. Short trips are stretched
  * to MIN_TRIP_MS on screen, so this is not simply the time left on the clock × speed-up.
  */

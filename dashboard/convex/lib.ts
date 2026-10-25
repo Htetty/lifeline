@@ -10,6 +10,7 @@ import {
   EXERCISE_NAME,
   SEED_INCIDENTS,
   SEED_TEAMS,
+  type SeedTeam,
 } from "./seedData";
 import { LEVEL_METERS } from "./waterReports";
 
@@ -83,8 +84,17 @@ export async function getExercise(ctx: QueryCtx, exerciseId = EXERCISE_ID) {
     .unique();
 }
 
+/** Sets the river level at the gauge (and the replayed reading behind it, if any). */
+export async function setWater(ctx: MutationCtx, meters: number, observedAt: number | null) {
+  const exercise = await getExercise(ctx);
+  if (!exercise) return;
+  const clamped = Math.min(40, Math.max(0, Math.round(meters * 100) / 100));
+  if (clamped === exercise.waterSurfaceElevation && observedAt === (exercise.waterObservedAt ?? null)) return;
+  await ctx.db.patch(exercise._id, { waterSurfaceElevation: clamped, waterObservedAt: observedAt });
+}
+
 export async function clearExercise(ctx: MutationCtx, exerciseId = EXERCISE_ID) {
-  for (const table of ["incidents", "teams"] as const) {
+  for (const table of ["incidents", "teams", "assignmentPlans", "planDecisions"] as const) {
     const rows = await ctx.db
       .query(table)
       .withIndex("by_exercise", (q) => q.eq("exerciseId", exerciseId))
@@ -102,22 +112,34 @@ export async function clearExercise(ctx: MutationCtx, exerciseId = EXERCISE_ID) 
   if (exercise) await ctx.db.delete(exercise._id);
 }
 
+/** The demo simulation's setup (see convex/simulation.ts). */
+export interface SimulationSetup {
+  teams: Omit<SeedTeam, "key">[];
+  onSceneSpeedup: number;
+}
+
 /**
  * A fresh exercise: the rescue teams and the river at the start of the replayed storm,
  * with no incidents, so everything on the map comes from calls. `withSamples` also
- * loads the fictional sample incidents, for a quick demo without calls.
+ * loads the fictional sample incidents, for a quick demo without calls. `simulation`
+ * replaces the teams with the simulation's and turns on automatic rescue finishes.
  */
-export async function seedExercise(ctx: MutationCtx, { withSamples = false } = {}) {
+export async function seedExercise(
+  ctx: MutationCtx,
+  { withSamples = false, simulation }: { withSamples?: boolean; simulation?: SimulationSetup } = {},
+) {
   const now = Date.now();
   await ctx.db.insert("exercises", {
     exerciseId: EXERCISE_ID,
     name: EXERCISE_NAME,
     waterSurfaceElevation: withSamples ? SAMPLE_WATER_SURFACE_ELEVATION : DEFAULT_WATER_SURFACE_ELEVATION,
     waterObservedAt: withSamples ? SAMPLE_WATER_OBSERVED_AT : DEFAULT_WATER_OBSERVED_AT,
+    ...(simulation ? { autoResolve: true, onSceneSpeedup: simulation.onSceneSpeedup } : {}),
   });
 
   const teamIds = new Map<string, Id<"teams">>();
-  for (const t of SEED_TEAMS) {
+  const teams: SeedTeam[] = simulation ? simulation.teams.map((t, n) => ({ ...t, key: `sim-${n}` })) : SEED_TEAMS;
+  for (const t of teams) {
     const id = await ctx.db.insert("teams", {
       exerciseId: EXERCISE_ID,
       name: t.name,
@@ -132,6 +154,10 @@ export async function seedExercise(ctx: MutationCtx, { withSamples = false } = {
     teamIds.set(t.key, id);
   }
 
+  if (simulation) {
+    await logActivity(ctx, `Simulation ready: ${teams.length} rescue teams on standby, calls starting.`);
+    return;
+  }
   if (!withSamples) {
     await logActivity(ctx, "Exercise ready: rescue teams on standby, no incidents yet.");
     return;

@@ -6,7 +6,7 @@ import { getExercise, isCurrentEvent, logActivity, requireBackend } from "./lib"
 import { autoGroup, reevaluateLinks, unlink } from "./linking";
 import { advisoryTags, callerRole, hazard, incidentSource, riskFactor, withdrawal } from "./schema";
 import { EXERCISE_ID } from "./seedData";
-import { LEVEL_LABEL, reportMeters, waterLevel, type StoredWaterReport } from "./waterReports";
+import { describeReport, replacesReport, reportMeters, waterLevel, type StoredWaterReport } from "./waterReports";
 
 // Functions for the FastAPI voice backend. Each takes the shared BACKEND_SECRET.
 
@@ -197,7 +197,7 @@ export const upsertFromCall = mutation({
 
     // A later description replaces the earlier one; a missing one keeps it.
     const prior = existing.waterReport;
-    if (water && (!prior || prior.level !== water.level || prior.meters !== water.meters || prior.floor !== water.floor)) {
+    if (water && replacesReport(prior, water)) {
       patch.waterReport = water;
     }
 
@@ -231,7 +231,7 @@ export const upsertFromCall = mutation({
     changed("reportedPosition", existing.reportedPosition, patch.reportedPosition);
     if (existing.reportedAddress !== NO_ADDRESS_YET) changed("reportedAddress", existing.reportedAddress, args.reportedAddress);
     if (patch.waterReport && prior) {
-      history.push({ at: now, field: "waterReport", previous: LEVEL_LABEL[prior.level], evidence: prior.evidence });
+      history.push({ at: now, field: "waterReport", previous: describeReport(prior), evidence: prior.evidence });
     }
     if (patch.hazards) {
       const kept = new Set([...patch.hazards, ...withdrawnHazards].map((h) => h.hazard.trim().toLowerCase()));
@@ -250,7 +250,9 @@ export const upsertFromCall = mutation({
     const dispatched = !existing.linkedTo && (existing.status === "assigned" || existing.status === "en_route");
 
     const norm = (a: string) => a.trim().toLowerCase();
+    // A simulated caller's pin comes from the scenario (simulation.pinCall), not their words.
     const corrected =
+      existing.source !== "simulation" &&
       args.locationChanged === true &&
       hadAddress &&
       args.reportedAddress != null &&

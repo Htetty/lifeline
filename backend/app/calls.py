@@ -14,6 +14,7 @@ from convex import ConvexError
 from pydantic import BaseModel, Field, model_validator
 
 from . import convex_store
+from .config import settings
 from .extraction import Extraction, ExtractionUnavailable, extract_incident
 from .geocode import find_candidate
 
@@ -43,7 +44,8 @@ _has_incident: set[str] = set()
 class Utterance(BaseModel):
     speaker: Literal["caller", "agent"]
     text: str = Field(min_length=1, max_length=10000, pattern=r"\S")
-    source: Literal["live_demo", "recording"] = "live_demo"
+    # "simulation": a scripted caller from scripts/demo_sim.py, which pins the location itself.
+    source: Literal["live_demo", "recording", "simulation"] = "live_demo"
     # Optional turn identity (browser bridge): makes retries idempotent via Convex receipts.
     turn_id: str | None = Field(default=None, min_length=1, max_length=200)
     sequence: int | None = Field(default=None, ge=1)
@@ -176,7 +178,11 @@ async def process_utterance(
                 recorded = None
             try:
                 t = time.monotonic()
-                extraction = await extract_incident(transcript, recorded, latest_message, conversation_state)
+                # Simulated callers use the cheaper simulation model; live callers always get CLAUDE_MODEL.
+                model_options = {"model": settings.sim_claude_model} if utterance.source == "simulation" else {}
+                extraction = await extract_incident(
+                    transcript, recorded, latest_message, conversation_state, **model_options
+                )
                 extract_s = time.monotonic() - t
             except ExtractionUnavailable as e:
                 error = f"Extraction unavailable ({e}); the dispatcher will read the transcript."
@@ -189,9 +195,11 @@ async def process_utterance(
                 log.warning("call %s: %s", call_id, error)
 
         # Place the incident on the map when the caller named a findable place (never raises).
-        # Convex ignores candidates once the dispatcher has confirmed a location.
+        # Convex ignores candidates once the dispatcher has confirmed a location. Simulated calls
+        # are skipped: the map search allows one request a second, and live callers come first.
         t = time.monotonic()
-        candidate = await find_candidate(extraction.location_queries) if extraction else None
+        searchable = extraction and utterance.source != "simulation"
+        candidate = await find_candidate(extraction.location_queries) if searchable else None
         map_s = time.monotonic() - t
         if candidate:
             log.info("call %s: location candidate %r from %r", call_id, candidate.label, candidate.query)

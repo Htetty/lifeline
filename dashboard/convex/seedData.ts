@@ -4,6 +4,8 @@
 
 export const EXERCISE_ID = "mission-valley-exercise-1";
 export const EXERCISE_NAME = "Mission Valley, San Diego";
+/** The simulated area: the road graph (public/data/roads.json) and the flood grid cover exactly this. */
+export const EXERCISE_BOUNDS = { west: -117.185, south: 32.752, east: -117.135, north: 32.776 };
 // A reset exercise opens at the first replayed reading of the Feb 27, 2017 storm at the
 // Fashion Valley gauge: 4.4 ft at 07:00 PST, i.e. (16.48 ft datum + 4.4 ft) in metres NAVD88.
 export const DEFAULT_WATER_SURFACE_ELEVATION = 6.36;

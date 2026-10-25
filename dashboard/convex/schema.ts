@@ -19,6 +19,8 @@ export const incidentSource = v.union(
   v.literal("recording"),
   v.literal("fixture"),
   v.literal("map_report"),
+  /** A scripted caller from the demo simulation (backend/scripts/demo_sim.py). */
+  v.literal("simulation"),
 );
 
 export const hazard = v.object({
@@ -91,6 +93,18 @@ export const capability = v.union(
   v.literal("air"),
 );
 
+/** In brief, what the dashboard's flood-aware router returned for a team and incident (see convex/planning.ts). */
+export const routeEvidence = v.object({
+  mover: v.union(v.literal("road_vehicle"), v.literal("high_water_vehicle"), v.literal("boat"), v.literal("air")),
+  realSeconds: v.number(),
+  start: v.array(v.number()),
+  end: v.array(v.number()),
+  points: v.number(),
+  modes: v.array(v.union(v.literal("road"), v.literal("water"), v.literal("foot"), v.literal("air"))),
+  maxDepth: v.number(),
+  limit: v.union(v.number(), v.null()),
+});
+
 export default defineSchema({
   exercises: defineTable({
     exerciseId: v.string(),
@@ -99,6 +113,12 @@ export default defineSchema({
     waterSurfaceElevation: v.number(),
     /** Time of the replayed gauge reading behind the level; null when set by hand. */
     waterObservedAt: v.optional(v.union(v.number(), v.null())),
+    /**
+     * Demo simulation: teams finish a rescue by themselves after a time on scene that depends
+     * on the incident (see convex/rescueTime.ts), played `onSceneSpeedup` times faster.
+     */
+    autoResolve: v.optional(v.boolean()),
+    onSceneSpeedup: v.optional(v.number()),
   }).index("by_exerciseId", ["exerciseId"]),
 
   incidents: defineTable({
@@ -208,6 +228,60 @@ export default defineSchema({
     /** The incident's decisionRevision this event describes; stale once it moves on. */
     decisionRevision: v.optional(v.number()),
   }).index("by_call_announced", ["callId", "announcedAt"]),
+
+  /**
+   * Assignment suggestions the dashboard computed, as the dispatcher saw them. Recording one
+   * changes nothing else. `inputs` is the server's own snapshot of the planning inputs then.
+   */
+  assignmentPlans: defineTable({
+    exerciseId: v.string(),
+    planId: v.string(),
+    /** Fingerprint of the inputs the dashboard planned from. */
+    fingerprint: v.string(),
+    /** Whether that matched the server's inputs when the plan was recorded. */
+    matchedServer: v.boolean(),
+    inputs: v.string(),
+    /** The dashboard's fingerprint of every caller water report it planned with (resolved ones too).
+     * Required on new plans; optional only so older rows still load (they can't be approved). */
+    flood: v.optional(v.string()),
+    /** River level the dashboard planned with. Required on new plans (approval checks each
+     * proposal on its own, see planning.ts); optional only so older rows still load. */
+    water: v.optional(v.number()),
+    proposals: v.array(
+      v.object({
+        incidentId: v.id("incidents"),
+        teamId: v.id("teams"),
+        tier: priorityTier,
+        seconds: v.number(),
+        reason: v.string(),
+        /** The route the dispatcher was shown; approval must send this same route. Required on
+         * new plans; optional only so older rows still load (they can't be approved). */
+        evidence: v.optional(routeEvidence),
+        /** The dashboard's pairBasis for this proposal; required on new plans. */
+        basis: v.optional(v.string()),
+      }),
+    ),
+    unassigned: v.array(v.object({ incidentId: v.id("incidents"), reason: v.string() })),
+    status: v.union(v.literal("proposed"), v.literal("approved")),
+    createdAt: v.number(),
+  })
+    .index("by_planId", ["planId"])
+    .index("by_exercise", ["exerciseId"]),
+
+  /** Every approval attempt on a plan: what was applied, or why it was refused. */
+  planDecisions: defineTable({
+    exerciseId: v.string(),
+    approvalId: v.string(),
+    planId: v.string(),
+    outcome: v.union(v.literal("approved"), v.literal("rejected_stale"), v.literal("rejected_invalid")),
+    reason: v.union(v.string(), v.null()),
+    selected: v.array(v.object({ incidentId: v.id("incidents"), teamId: v.id("teams") })),
+    /** Fingerprint of the whole request, so a reused approvalId can only repeat the same request. */
+    request: v.optional(v.string()),
+    at: v.number(),
+  })
+    .index("by_approvalId", ["approvalId"])
+    .index("by_exercise", ["exerciseId"]),
 
   voiceCalls: defineTable({
     callId: v.string(), nextSequence: v.number(), ended: v.boolean(),

@@ -23,14 +23,39 @@ export interface FloodGrid {
   channel: Float32Array;
   /** Column of the stream gauge the water level is measured at. */
   gaugeCol: number;
+  /**
+   * Building height in metres per cell (0 = no building), from public/data/buildings.json. The
+   * ground model is bare earth, so without this a flooded block of houses looks like open water.
+   */
+  buildings?: Float32Array;
 }
 
-export function buildFloodGrid(elevation: ElevationGrid, bounds: Bounds, gaugeLon: number): FloodGrid {
+/** Cell layout of the flood grid over an area (shared with scripts/fetch-buildings.ts). */
+export function gridShape(bounds: Bounds) {
   const midLat = (bounds.north + bounds.south) / 2;
   const dLat = CELL_METERS / 111_320;
   const dLon = CELL_METERS / (111_320 * Math.cos((midLat * Math.PI) / 180));
   const cols = Math.floor((bounds.east - bounds.west) / dLon);
   const rows = Math.floor((bounds.north - bounds.south) / dLat);
+  return { dLat, dLon, cols, rows };
+}
+
+/** Building heights per grid cell from public/data/buildings.json (scripts/fetch-buildings.ts). */
+export async function loadBuildings(bounds: Bounds): Promise<Float32Array> {
+  const res = await fetch("/data/buildings.json");
+  if (!res.ok) throw new Error(`Building data failed: ${res.status}`);
+  const file = (await res.json()) as { cols: number; rows: number; cellMeters: number; runs: [number, number, number][] };
+  const { cols, rows } = gridShape(bounds);
+  if (file.cols !== cols || file.rows !== rows || file.cellMeters !== CELL_METERS) {
+    throw new Error("Building data is for a different flood grid; run npm run fetch:buildings");
+  }
+  const heights = new Float32Array(cols * rows);
+  for (const [start, length, decimetres] of file.runs) heights.fill(decimetres / 10, start, start + length);
+  return heights;
+}
+
+export function buildFloodGrid(elevation: ElevationGrid, bounds: Bounds, gaugeLon: number): FloodGrid {
+  const { dLat, dLon, cols, rows } = gridShape(bounds);
   const ground = new Float32Array(cols * rows);
   const seeds: number[] = [];
   const lowestByCol: number[] = [];
@@ -101,6 +126,8 @@ export interface WaterObservation {
   offset: number;
   /** How much a report of shallower water lowers the model: 1 for a confirmed location, less otherwise. */
   weight: number;
+  /** A minimum ("there's water here"): it can add water but never lowers the river model. */
+  raiseOnly?: boolean;
 }
 
 /** A report sets the water within this distance and fades out by twice it. */
@@ -204,7 +231,7 @@ export interface FloodResult {
 export function computeFlood(grid: FloodGrid, waterSurface: number, observations: WaterObservation[] = []): FloodResult {
   const { cols, rows, ground, bounds, dLon, dLat } = grid;
   const column = Float32Array.from({ length: cols }, (_, c) => columnSurface(grid, waterSurface, c));
-  const lower = observations.filter((o) => o.offset < 0);
+  const lower = observations.filter((o) => o.offset < 0 && !o.raiseOnly);
   const delta = lower.length ? loweringField(grid, lower) : null;
   const surface = (i: number) => column[i % cols] + (delta ? delta[i] : 0);
   const wet = new Uint8Array(cols * rows);

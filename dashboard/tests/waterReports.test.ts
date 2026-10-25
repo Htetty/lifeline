@@ -59,4 +59,35 @@ describe("caller water reports", () => {
     await t.mutation(api.calls.upsertFromCall, turn(2, { level: "measured", measuredMeters: 0.9, floor: 1, evidence: "about three feet upstairs" }));
     expect((await incident())!.waterReport).toMatchObject({ meters: 0.9, floor: 1 });
   });
+
+  test("an estimate is used within bounds, and a re-read within tolerance keeps the stored one", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.exercise.ensureSeeded, { dispatcherToken });
+    await t.mutation(api.calls.startVoiceCall, { secret, callId: "w" });
+    const incident = () => t.run((ctx) => ctx.db.query("incidents").withIndex("by_callId", (q) => q.eq("callId", "w")).unique());
+    await t.mutation(api.calls.upsertFromCall, turn(1, { level: "estimated", measuredMeters: 9, floor: 0, evidence: "way up" }));
+    expect((await incident())!.waterReport).toBeNull();
+
+    const stairs = "halfway up the first floor stairs";
+    await t.mutation(api.calls.upsertFromCall, turn(2, { level: "estimated", measuredMeters: 1.5, floor: 0, evidence: stairs }));
+    expect((await incident())!.waterReport).toMatchObject({ level: "estimated", meters: 1.5, floor: 0 });
+    await t.mutation(api.calls.upsertFromCall, turn(3, { level: "estimated", measuredMeters: 1.25, floor: 0, evidence: stairs }));
+    expect((await incident())!.waterReport).toMatchObject({ meters: 1.5 });
+    await t.mutation(api.calls.upsertFromCall, turn(4, { level: "estimated", measuredMeters: 2.5, floor: 0, evidence: "up to the ceiling now" }));
+    expect((await incident())!.waterReport).toMatchObject({ meters: 2.5 });
+  });
+
+  test("water with no depth counts as a small amount, and never replaces a report with a depth", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.exercise.ensureSeeded, { dispatcherToken });
+    await t.mutation(api.calls.startVoiceCall, { secret, callId: "w" });
+    const incident = () => t.run((ctx) => ctx.db.query("incidents").withIndex("by_callId", (q) => q.eq("callId", "w")).unique());
+    await t.mutation(api.calls.upsertFromCall, turn(1, { level: "present", measuredMeters: null, floor: 0, evidence: "the lobby is flooded" }));
+    expect((await incident())!.waterReport).toMatchObject({ level: "present", meters: 0.3, floor: 0 });
+
+    await t.mutation(api.calls.upsertFromCall, turn(2, { level: "waist", measuredMeters: null, floor: 0, evidence: "up to my waist" }));
+    expect((await incident())!.waterReport).toMatchObject({ level: "waist" });
+    await t.mutation(api.calls.upsertFromCall, turn(3, { level: "present", measuredMeters: null, floor: 0, evidence: "it's coming in" }));
+    expect((await incident())!.waterReport).toMatchObject({ level: "waist" });
+  });
 });

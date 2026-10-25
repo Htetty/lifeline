@@ -14,9 +14,14 @@ import type * as exercise from "../exercise.js";
 import type * as incidents from "../incidents.js";
 import type * as lib from "../lib.js";
 import type * as linking from "../linking.js";
+import type * as planner from "../planner.js";
+import type * as planning from "../planning.js";
+import type * as rescueTime from "../rescueTime.js";
 import type * as seedData from "../seedData.js";
+import type * as simulation from "../simulation.js";
 import type * as tripMath from "../tripMath.js";
 import type * as trips from "../trips.js";
+import type * as vehicles from "../vehicles.js";
 import type * as waterReports from "../waterReports.js";
 
 import type {
@@ -32,9 +37,14 @@ declare const fullApi: ApiFromModules<{
   incidents: typeof incidents;
   lib: typeof lib;
   linking: typeof linking;
+  planner: typeof planner;
+  planning: typeof planning;
+  rescueTime: typeof rescueTime;
   seedData: typeof seedData;
+  simulation: typeof simulation;
   tripMath: typeof tripMath;
   trips: typeof trips;
+  vehicles: typeof vehicles;
   waterReports: typeof waterReports;
 }>;
 

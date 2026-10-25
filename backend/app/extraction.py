@@ -85,22 +85,35 @@ means a child:
 - on_roof: they are on a roof
 - child / elderly / limited_mobility / pregnant: such a person is among them
 
-`water_report` is how deep the water is where the people needing rescue are, if the
-caller described it, using their latest description. The map uses it to update the
-estimated flood depth around them, so record what they conveyed, not a guess:
-- `level`: the body reference they gave or clearly meant: ankle, knee, thigh, waist,
-  chest, neck, or over_head ("I can't touch the floor", "it's over my head"). Use
-  "measured" only when they gave a measurement ("about three feet of water") and put
-  it in `measured_meters`, converted to metres.
-- `floor`: which floor they are standing on when they describe it, counted above the
-  street: 0 for the ground or street level (in the US "first floor" is 0), 1 for the
-  next floor up, and so on. An attic is the floor above the top storey (the attic of
-  a one-storey house is 1; if the number of storeys isn't known, treat it as a
-  one-storey house). Null if they didn't say or it isn't clear.
+`water_report` is how deep the water is where the people needing rescue are, using
+the caller's latest description. The map uses it to add or correct the simulated flood
+around them. Callers are frightened and rarely precise, so any sign of water counts:
+- `level`, in this order of preference:
+  - the body reference they gave or clearly meant: ankle, knee, thigh, waist, chest,
+    neck, or over_head ("I can't touch the floor", "it's over my head");
+  - "measured" when they gave a number ("about three feet of water"), converted to
+    metres in `measured_meters`;
+  - "estimated" when they described the depth some other way: against the building,
+    furniture or a car. Put your best estimate in metres in `measured_meters`, taking
+    a storey as about 3 m: "halfway up the stairs to the next floor" about 1.5,
+    "up to the ceiling" about 2.5, "over the first step" or "at the door" about 0.15,
+    "up to the table" about 0.75, "up to the car windows" about 1.0. Water "right
+    below us" on a roof is near the ceiling of the top storey: `floor` is that storey
+    (0 for a one-storey building, or when the number of storeys isn't known) and the
+    depth about 2.5. Round to 0.25 m and give the same estimate for the same words on
+    later turns;
+  - "present" when they only said there is water without a depth: "it's coming in",
+    "the lobby is flooded", "the stairwell is flooding", "water everywhere". Leave
+    `measured_meters` null.
+- `floor`: the floor the water is on when they describe it, counted above the street:
+  0 for the ground or street level (in the US "first floor" is 0), 1 for the next floor
+  up, and so on. "The lobby is flooded" is floor 0 even if they are upstairs. An attic is
+  the floor above the top storey (the attic of a one-storey house is 1; if the number
+  of storeys isn't known, treat it as a one-storey house). Null if it isn't clear.
 - `evidence`: the caller's words.
-Leave `water_report` null when they only said water is "coming in", "everywhere" or
-"rising" without a depth, when they are on a roof or in an attic above the water, or
-when a witness describes a building from outside without a depth.
+Water elsewhere in their building counts ("the lobby downstairs is flooded but our floor
+is dry" is present on floor 0). Leave `water_report` null only when the caller says
+nothing about water at their building, or that there is none.
 
 `location_queries` are up to three map-search strings for where the people needing
 rescue are, most specific first, each ending with ", San Diego, CA". The current
@@ -260,9 +273,11 @@ class RiskFact(BaseModel):
 
 
 class WaterReport(BaseModel):
-    level: Literal["ankle", "knee", "thigh", "waist", "chest", "neck", "over_head", "measured"]
-    measured_meters: float | None = Field(description="Only for level 'measured': the depth they gave, in metres")
-    floor: int | None = Field(description="Floor they stand on, counted above the street (0 = ground/street level)")
+    level: Literal["ankle", "knee", "thigh", "waist", "chest", "neck", "over_head", "measured", "estimated", "present"]
+    measured_meters: float | None = Field(
+        description="For 'measured': the depth they gave; for 'estimated': your estimate; in metres. Otherwise null"
+    )
+    floor: int | None = Field(description="Floor the water is on, counted above the street (0 = ground/street level)")
     evidence: str = Field(description="The caller's words describing the water depth")
 
 
@@ -386,6 +401,7 @@ async def extract_incident(
     recorded_hazards: list[str] | None = None,
     latest_message: str | None = None,
     conversation_state: str | None = None,
+    model: str | None = None,
 ) -> Extraction:
     content = f"<transcript>\n{transcript}\n</transcript>"
     if latest_message:
@@ -397,16 +413,22 @@ async def extract_incident(
         content += "\n<recorded_hazards>\n" + "\n".join(recorded_hazards) + "\n</recorded_hazards>"
     # What the agent may truthfully say about actions in progress (the location link). Data, not evidence.
     content += f"\n<conversation_state>\n{conversation_state or DEFAULT_STATE}\n</conversation_state>"
+    model = model or settings.claude_model
+    # If a safety classifier declines, re-run on Anthropic's recommended fallback model.
+    # Haiku has no server-side fallback.
+    fallback = (
+        {}
+        if model.startswith("claude-haiku")
+        else dict(extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"}, extra_body={"fallbacks": "default"})
+    )
     response = await client.messages.parse(
-        model=settings.claude_model,
+        model=model,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
         output_config={"effort": settings.extraction_effort},
         messages=[{"role": "user", "content": content}],
         output_format=Extraction,
-        # If a safety classifier declines, re-run on Anthropic's recommended fallback model.
-        extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
-        extra_body={"fallbacks": "default"},
+        **fallback,
     )
     if response.stop_reason == "refusal" or response.parsed_output is None:
         raise ExtractionUnavailable(f"stop_reason={response.stop_reason}")

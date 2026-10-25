@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
-import { MIN_TRIP_MS, TRIP_SPEEDUP } from "../convex/tripMath";
+import { MIN_TRIP_MS, TRIP_SPEEDUP, vehiclePosition } from "../convex/tripMath";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 const dispatcherToken = "isolated-dispatcher-only";
@@ -42,8 +42,8 @@ async function assigned(kind: Doc<"teams">["capabilities"][number]) {
 }
 
 describe("simulated team trips", () => {
-  test("a planned route is stored, played faster than real time, and ends at the incident", async () => {
-    const { t, incident, to, plan, getTeam } = await assigned("high_water_vehicle");
+  test("a planned route is stored, played faster than real time, and parks where the crew walks in", async () => {
+    const { t, incident, from, to, plan, getTeam } = await assigned("high_water_vehicle");
     await t.mutation(api.incidents.setStatus, {
       dispatcherToken, incidentId: incident._id, status: "en_route", plan: plan(240),
     });
@@ -53,7 +53,8 @@ describe("simulated team trips", () => {
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     const arrived = await getTeam();
-    expect(arrived).toMatchObject({ trip: null, longitude: to[0], latitude: to[1], available: false });
+    // The vehicle stays at the end of the road leg; only the crew walks on to the building.
+    expect(arrived).toMatchObject({ trip: null, longitude: (from[0] + to[0]) / 2, latitude: from[1], available: false });
     const log = await t.run((ctx) => ctx.db.query("activity").collect());
     expect(log.map((a) => a.message).join("\n")).toMatch(/arrived at/);
   });
@@ -88,7 +89,8 @@ describe("simulated team trips", () => {
     expect(second.realSeconds).toBe(900);
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await getTeam()).toMatchObject({ trip: null, longitude: to[0], latitude: to[1] });
+    // Parked at the end of the new route's road leg.
+    expect(await getTeam()).toMatchObject({ trip: null, longitude: from[0], latitude: to[1] });
   });
 
   test("without a dashboard route, a boat falls back to a direct water trip", async () => {
@@ -111,5 +113,21 @@ describe("reset", () => {
     expect(empty!.teams.every((team) => team.available)).toBe(true);
     await t.mutation(api.exercise.reset, { dispatcherToken, withSamples: true });
     expect((await t.query(api.exercise.get, { dispatcherToken }))!.incidents.length).toBeGreaterThan(0);
+  });
+});
+
+describe("vehiclePosition", () => {
+  // Road for two segments, then the crew walks the last one into the building.
+  const trip = {
+    path: [[0, 0], [0.001, 0], [0.002, 0], [0.002, 0.001]],
+    legs: [{ mode: "road" as const, end: 2 }, { mode: "foot" as const, end: 3 }],
+    departAt: 0,
+    arriveAt: 3000,
+  };
+  test("follows the road, then stays parked while the crew walks in", () => {
+    expect(vehiclePosition(trip, 500)[0]).toBeGreaterThan(0);
+    expect(vehiclePosition(trip, 500)[1]).toBe(0);
+    expect(vehiclePosition(trip, 2900)).toEqual([0.002, 0]);
+    expect(vehiclePosition(trip, 3000)).toEqual([0.002, 0]);
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Map as MLMap, NavigationControl, ScaleControl, setWorkerUrl, type GeoJSONSource } from "maplibre-gl";
+import { Map as MLMap, Marker, NavigationControl, ScaleControl, setWorkerUrl, type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { DEMO_AREA } from "@/data/fixtures";
 import type { FloodResult } from "@/lib/flood";
@@ -10,14 +10,15 @@ import type { ExerciseState, Incident } from "@/lib/types";
 import { ACTIVE_STATUSES, DISPATCHED_STATUSES } from "@/lib/types";
 import { ROUTE_COLOR } from "@/lib/router";
 import { OBSERVATION_RADIUS_M } from "@/lib/flood";
-import { etaMinutes, remainingLegs, tripProgress, type LegMode, type TripLeg } from "../../convex/tripMath";
+import { etaMinutes, remainingLegs, vehiclePosition, type LegMode, type TripLeg } from "../../convex/tripMath";
 
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const BUILDING_SOURCE = { source: "openmaptiles", sourceLayer: "building" } as const;
 const BUILDING_LAYER = "building-3d";
 const INCIDENT_BUILDING_LAYER = "incident-buildings";
 const SNAP_DISTANCE_M = 25;
-const TEAM_FRAME_MS = 200;
+/** How often the remaining-route lines are trimmed; moving teams themselves move every animation frame. */
+const ROUTE_FRAME_MS = 250;
 
 // The bundler can't serve MapLibre's worker next to its chunk, so it is copied
 // to public/ by the postinstall script.
@@ -55,6 +56,8 @@ interface Props {
   focusTeam: { id: string; key: number } | null;
   onFocusTeam: (teamId: string | null) => void;
   selectedId: string | null;
+  /** Pixels of map hidden under the incident sheet (right, bottom), so a selected incident is centred in what stays visible. */
+  coveredBy?: () => [number, number];
   reportMode: boolean;
   onSelect: (incidentId: string | null) => void;
   onReportBuilding: (pick: BuildingPick) => void;
@@ -92,7 +95,7 @@ function incidentPoints(state: ExerciseState, selectedId: string | null): GeoJSO
 }
 
 function teamPosition(team: ExerciseState["teams"][number], now: number) {
-  return team.trip ? tripProgress(team.trip, now).position : [team.longitude, team.latitude];
+  return team.trip ? vehiclePosition(team.trip, now) : [team.longitude, team.latitude];
 }
 
 function teamPoints(state: ExerciseState, now: number, focusedId: string | null): GeoJSON.FeatureCollection {
@@ -143,13 +146,51 @@ function previewRoute(preview: Props["preview"]): GeoJSON.FeatureCollection {
   return { type: "FeatureCollection", features: legLines(legs) };
 }
 
-function drawTeams(map: MLMap, props: Props, follow: string | null) {
+function drawTeams(map: MLMap, props: Props) {
   const now = Date.now();
   (map.getSource("teams") as GeoJSONSource).setData(teamPoints(props.state, now, props.focusTeam?.id ?? null));
   (map.getSource("team-routes") as GeoJSONSource).setData(teamRoutes(props.state, now));
-  // Keep a followed team in view, without fighting a camera move already under way.
-  const team = follow ? props.state.teams.find((t) => t.id === follow) : null;
-  if (team?.trip && !map.isMoving()) map.jumpTo({ center: teamPosition(team, now) as [number, number] });
+}
+
+/**
+ * Teams on the move are DOM markers placed every animation frame: a GeoJSON source
+ * updates through MapLibre's worker, which can't keep up at 60 fps. The followed team's
+ * camera moves in the same frame, so the view glides with it.
+ */
+function moveMarkers(map: MLMap, props: Props, markers: Map<string, Marker>, follow: string | null, onFocus: (id: string) => void) {
+  const now = Date.now();
+  const moving = props.state.teams.filter((t) => t.trip && now < t.trip.arriveAt);
+  for (const [id, marker] of markers) {
+    if (!moving.some((t) => t.id === id)) {
+      marker.remove();
+      markers.delete(id);
+    }
+  }
+  for (const team of moving) {
+    let marker = markers.get(team.id);
+    if (!marker) {
+      const el = document.createElement("button");
+      el.className = "team-mover";
+      el.title = "Follow on map";
+      el.append(Object.assign(document.createElement("span"), { className: "team-mover-dot" }));
+      el.append(Object.assign(document.createElement("span"), { className: "team-mover-label" }));
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onFocus(team.id);
+      });
+      marker = new Marker({ element: el }).setLngLat(teamPosition(team, now) as [number, number]).addTo(map);
+      markers.set(team.id, marker);
+    }
+    const position = teamPosition(team, now) as [number, number];
+    marker.setLngLat(position);
+    const el = marker.getElement();
+    const label = `${team.name} · ETA ${etaMinutes(team.trip!, now)} min`;
+    const text = el.lastElementChild!;
+    if (text.textContent !== label) text.textContent = label;
+    el.classList.toggle("is-focused", team.id === (props.focusTeam?.id ?? null));
+    // Keep a followed team in view, without fighting a camera move already under way.
+    if (team.id === follow && !map.isMoving()) map.jumpTo({ center: position });
+  }
 }
 
 /** A ring around each caller's water report, with a label at its northern edge. */
@@ -280,23 +321,29 @@ export default function FloodMap(props: Props) {
     map.addControl(new NavigationControl({ visualizePitch: true }), "top-right");
     map.addControl(new ScaleControl({ unit: "metric" }), "bottom-right");
 
+    // MapLibre opens the compact attribution on first load; start it folded behind its (i) button.
+    map.once("idle", () => {
+      map.getContainer().querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show");
+    });
     map.on("load", () => {
       // Recolor the existing basemap, preserving its tiles, buildings and overlays.
       for (const layer of map.getStyle().layers) {
         const name = layer.id.toLowerCase();
         if (layer.type === "background") {
-          map.setPaintProperty(layer.id, "background-color", "#0b111c");
+          map.setPaintProperty(layer.id, "background-color", "#0f1113");
         } else if (layer.type === "fill") {
           map.setPaintProperty(layer.id, "fill-color",
-            /water/.test(name) ? "#142b40" : /park|wood|grass|landcover/.test(name) ? "#132126" : "#101925");
+            /water/.test(name) ? "#13202b" : /park|wood|grass|landcover/.test(name) ? "#121815" : "#121416");
         } else if (layer.type === "line") {
           map.setPaintProperty(layer.id, "line-color",
-            /water/.test(name) ? "#25445a" : /boundary/.test(name) ? "#3b4860" : /casing/.test(name) ? "#141d2b" : "#465268");
+            /water/.test(name) ? "#22394a" : /boundary/.test(name) ? "#3a3f47" : /casing/.test(name) ? "#16181b" : "#3c4149");
         } else if (layer.type === "symbol" && layer.layout?.["text-field"]) {
-          map.setPaintProperty(layer.id, "text-color", /place|city|town/.test(name) ? "#b3bfd0" : "#7f90a8");
-          map.setPaintProperty(layer.id, "text-halo-color", "#0b111c");
+          map.setPaintProperty(layer.id, "text-color", /place|city|town/.test(name) ? "#b9bec6" : "#7d838c");
+          map.setPaintProperty(layer.id, "text-halo-color", "#0f1113");
+          // Basemap POI icons are full-colour; dim them so incidents and teams stand out.
+          if (layer.layout?.["icon-image"]) map.setPaintProperty(layer.id, "icon-opacity", 0.4);
         } else if (layer.type === "fill-extrusion") {
-          map.setPaintProperty(layer.id, "fill-extrusion-color", "#253247");
+          map.setPaintProperty(layer.id, "fill-extrusion-color", "#262a30");
         }
       }
       map.setPaintProperty(BUILDING_LAYER, "fill-extrusion-opacity", 0.92);
@@ -345,7 +392,7 @@ export default function FloodMap(props: Props) {
         type: "line",
         source: "caller-zones",
         filter: ["==", ["geometry-type"], "LineString"],
-        paint: { "line-color": "#0f172a", "line-width": 1.5, "line-opacity": 0.7, "line-dasharray": [2, 2] },
+        paint: { "line-color": "#e3e6ea", "line-width": 1.5, "line-opacity": 0.6, "line-dasharray": [2, 2] },
       });
       map.addLayer({
         id: "caller-zones-label",
@@ -353,7 +400,7 @@ export default function FloodMap(props: Props) {
         source: "caller-zones",
         filter: ["==", ["geometry-type"], "Point"],
         layout: { "text-field": ["get", "label"], "text-font": ["Noto Sans Bold"], "text-size": 11, "text-anchor": "bottom" },
-        paint: { "text-color": "#0f172a", "text-halo-color": "#fff", "text-halo-width": 1.5 },
+        paint: { "text-color": "#e3e6ea", "text-halo-color": "#0f1113", "text-halo-width": 1.5 },
       });
       map.addSource("route-preview", { type: "geojson", data: previewRoute(propsRef.current.preview) });
       map.addLayer({
@@ -389,10 +436,11 @@ export default function FloodMap(props: Props) {
         id: "teams-dot",
         type: "circle",
         source: "teams",
+        filter: ["!", ["get", "moving"]],
         paint: {
           "circle-radius": ["case", ["get", "focused"], 12, ["get", "moving"], 9, 7],
           "circle-color": ["case", ["get", "moving"], "#f59e0b", ["get", "available"], "#2563eb", "#64748b"],
-          "circle-stroke-color": ["case", ["get", "focused"], "#0f172a", "#fff"],
+          "circle-stroke-color": ["case", ["get", "focused"], "#8fc2ff", "#0f1113"],
           "circle-stroke-width": ["case", ["get", "focused"], 4, 2],
         },
       });
@@ -400,6 +448,7 @@ export default function FloodMap(props: Props) {
         id: "teams-label",
         type: "symbol",
         source: "teams",
+        filter: ["!", ["get", "moving"]],
         layout: {
           "text-field": ["get", "name"],
           "text-font": ["Noto Sans Bold"],
@@ -407,7 +456,7 @@ export default function FloodMap(props: Props) {
           "text-offset": [0, 1.4],
           "text-anchor": "top",
         },
-        paint: { "text-color": "#1e3a8a", "text-halo-color": "#fff", "text-halo-width": 1.5 },
+        paint: { "text-color": "#bcd6ff", "text-halo-color": "#0f1113", "text-halo-width": 1.5 },
       });
 
       map.addSource("incidents", {
@@ -438,7 +487,7 @@ export default function FloodMap(props: Props) {
             "dispatched", "#f59e0b",
             "#16a34a",
           ],
-          "circle-stroke-color": ["case", ["get", "verified"], "#fff", "#111"],
+          "circle-stroke-color": ["case", ["get", "verified"], "#fff", "#0f1113"],
           "circle-stroke-width": 2.5,
         },
       });
@@ -455,7 +504,7 @@ export default function FloodMap(props: Props) {
           "text-anchor": "bottom",
           "text-allow-overlap": true,
         },
-        paint: { "text-color": "#7f1d1d", "text-halo-color": "#fff", "text-halo-width": 2 },
+        paint: { "text-color": "#ffd0d0", "text-halo-color": "#0f1113", "text-halo-width": 2 },
       });
 
       readyRef.current = true;
@@ -530,7 +579,7 @@ export default function FloodMap(props: Props) {
     const map = mapRef.current;
     if (!map || !readyRef.current) return;
     (map.getSource("incidents") as GeoJSONSource).setData(incidentPoints(props.state, props.selectedId));
-    drawTeams(map, propsRef.current, followRef.current);
+    drawTeams(map, propsRef.current);
     syncBuildings.current();
   }, [props.state, props.selectedId]);
 
@@ -559,18 +608,37 @@ export default function FloodMap(props: Props) {
       zoom: Math.max(map.getZoom(), 16),
       duration: 900,
     });
-    if (readyRef.current) drawTeams(map, propsRef.current, followRef.current);
+    if (readyRef.current) drawTeams(map, propsRef.current);
   }, [focus]);
 
-  // Moving teams are redrawn from the clock while any trip is under way.
+  // While any trip is under way, moving teams glide every animation frame and the route lines shorten.
   const anyTrip = props.state.teams.some((t) => t.trip);
+  const markersRef = useRef(new Map<string, Marker>());
   useEffect(() => {
     if (!anyTrip) return;
-    const timer = setInterval(() => {
+    const markers = markersRef.current;
+    let frame = 0;
+    let lastRoutes = 0;
+    const tick = (time: number) => {
       const map = mapRef.current;
-      if (map && readyRef.current) drawTeams(map, propsRef.current, followRef.current);
-    }, TEAM_FRAME_MS);
-    return () => clearInterval(timer);
+      if (map && readyRef.current) {
+        const focus = (id: string) => propsRef.current.onFocusTeam(id);
+        moveMarkers(map, propsRef.current, markers, followRef.current, focus);
+        if (time - lastRoutes >= ROUTE_FRAME_MS) {
+          lastRoutes = time;
+          drawTeams(map, propsRef.current);
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(frame);
+      for (const marker of markers.values()) marker.remove();
+      markers.clear();
+      const map = mapRef.current;
+      if (map && readyRef.current) drawTeams(map, propsRef.current);
+    };
   }, [anyTrip]);
 
   // Centre on the selected incident.
@@ -578,7 +646,13 @@ export default function FloodMap(props: Props) {
     const map = mapRef.current;
     const incident = props.state.incidents.find((i) => i.id === props.selectedId);
     if (!map || incident?.latitude == null || incident.longitude == null) return;
-    map.easeTo({ center: [incident.longitude, incident.latitude], zoom: Math.max(map.getZoom(), 16.2), duration: 900 });
+    const [right, bottom] = propsRef.current.coveredBy?.() ?? [0, 0];
+    map.easeTo({
+      center: [incident.longitude, incident.latitude],
+      zoom: Math.max(map.getZoom(), 16.2),
+      offset: [-right / 2, -bottom / 2],
+      duration: 900,
+    });
     // Only when the selection changes, not on every incident update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.selectedId]);
