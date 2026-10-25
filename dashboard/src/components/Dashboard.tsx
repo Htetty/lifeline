@@ -53,6 +53,10 @@ import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
 import { etaMinutes, TRIP_SPEEDUP, tripProgress } from "../../convex/tripMath";
 import { LEVEL_LABEL } from "../../convex/waterReports";
 
+import { AssignmentPlanner } from "./AssignmentPlanner";
+import { TIER_STYLE, TierPill } from "./TierPill";
+import { routeSummary } from "@/lib/routeText";
+
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
 
 type Filter = "all" | "stuck" | "dispatched" | "resolved";
@@ -177,6 +181,9 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [roads, setRoads] = useState<RoadGraph | null>(null);
   /** Team whose route is previewed for an incident. */
   const [preview, setPreview] = useState<{ incidentId: string; teamId: string } | null>(null);
+  /** Assignment suggestions panel, and the route of the proposal being looked at. */
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerPreview, setPlannerPreview] = useState<RoutePlan | null>(null);
   /** Team the map shows and follows; `key` lets the same team be re-centred. */
   const [focusTeam, setFocusTeam] = useState<{ id: string; key: number } | null>(null);
   /** Clock for where moving teams are, refreshed while any team is travelling. */
@@ -241,6 +248,12 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const flood = useMemo(
     () => (grid && observations.length ? computeFlood(grid, waterLevel, observations) : riverFlood),
     [grid, waterLevel, observations, riverFlood],
+  );
+  // What the planner's routes depend on locally: road and elevation data, river level and
+  // caller observations. A plan made under different values is stale.
+  const routeContext = useMemo(
+    () => JSON.stringify([roads != null, grid != null, waterLevel, observations]),
+    [roads, grid, waterLevel, observations],
   );
   const depthOverChannel = grid ? Math.max(0, channelDepth(grid, waterLevel)) : null;
   const observedAt = waterDraft == null ? state.waterObservedAt : null;
@@ -433,7 +446,20 @@ function DashboardView({ state }: { state: ExerciseState }) {
       <div className="flex min-h-0 flex-1">
         {/* Left: controls, queue, activity */}
         <aside className="incident-sidebar flex shrink-0 flex-col border-r border-slate-800">
-          <div className="queue-heading"><h2>Incidents</h2><span>Sorted by priority</span></div>
+          <div className="queue-heading">
+            <h2>Incidents</h2>
+            <span>Sorted by priority</span>
+            <button
+              onClick={() => {
+                setPlannerOpen(true);
+                setSelectedId(null);
+                setPendingPick(null);
+              }}
+              className="ml-auto rounded bg-sky-500 px-2 py-1 text-[11px] font-semibold text-slate-950 hover:bg-sky-400"
+            >
+              Suggest assignments
+            </button>
+          </div>
           <details className="simulation-controls border-b border-slate-800 p-4">
             <summary>Simulation controls <span>{surfaceToStage(waterLevel).toFixed(1)} ft</span></summary>
             <div className="mt-4 space-y-3">
@@ -586,7 +612,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
           <FloodMap
             state={mapState}
             flood={flood}
-            preview={previewPlan}
+            preview={plannerOpen && plannerPreview ? { path: plannerPreview.path, legs: plannerPreview.legs } : previewPlan}
             selectedId={selectedId}
             reportMode={reportMode || placingFor != null}
             onSelect={(id) => {
@@ -627,8 +653,41 @@ function DashboardView({ state }: { state: ExerciseState }) {
           <Legend />
 
           </div>
+          {plannerOpen && (
+            // Kept mounted while an incident is open, so the plan under review survives.
+            <section
+              aria-label="Suggested assignments"
+              className={`incident-detail overflow-y-auto ${selected || pendingPick ? "hidden" : ""}`}
+            >
+              <AssignmentPlanner
+                state={state}
+                priorities={priorities}
+                routeFor={(team, incident) => planFor(team, incident, Date.now())}
+                routeContext={routeContext}
+                notReady={
+                  waterDraft != null
+                    ? "Wait for the river level change to save, then suggest."
+                    : pendingPick || placingFor
+                      ? "Finish or cancel the location you're placing on the map, then suggest."
+                      : null
+                }
+                onPreview={setPlannerPreview}
+                onSelectIncident={setSelectedId}
+                onDone={setToast}
+                onClose={() => {
+                  setPlannerOpen(false);
+                  setPlannerPreview(null);
+                }}
+              />
+            </section>
+          )}
           {(selected || pendingPick) && (
             <section aria-label="Incident details" className="incident-detail overflow-y-auto">
+              {plannerOpen && (
+                <button onClick={() => setSelectedId(null)} className="mb-2 text-xs text-sky-300 underline">
+                  ← Back to suggested assignments
+                </button>
+              )}
               {pendingPick ? (
                 <NewReportForm
                   pick={pendingPick}
@@ -1060,22 +1119,6 @@ function IncidentDetail({
   );
 }
 
-const LEG_WORDS = { road: "drive", water: "boat", foot: "on foot", air: "fly" } as const;
-
-function distance(m: number) {
-  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
-}
-
-/** e.g. "tow 2.3 km → boat 380 m → on foot 80 m · deepest water 0.3 of 0.6 m" */
-function routeSummary(plan: RoutePlan) {
-  const steps = [...new Set(plan.legs.map((l) => l.mode))].map((mode) => {
-    const word = mode === "road" && plan.mover === "boat" ? "tow" : LEG_WORDS[mode];
-    return `${word} ${distance(plan.metres[mode])}`;
-  });
-  const depth = plan.limit != null && plan.maxDepth > 0.05 ? ` · deepest water ${plan.maxDepth.toFixed(1)} of ${plan.limit} m` : "";
-  return steps.join(" → ") + depth;
-}
-
 /** Render the saved speaker-prefixed text without inventing turns or dropping lines. */
 function IncidentTranscript({ transcript }: { transcript: string | null }) {
   if (!transcript?.trim()) return <p className="transcript-empty">No transcript available for this report.</p>;
@@ -1094,23 +1137,6 @@ function IncidentTranscript({ transcript }: { transcript: string | null }) {
     {turn.speaker && <span className="transcript-speaker">{turn.speaker}</span>}
     <p className={turn.speaker ? undefined : "transcript-unattributed"}>{turn.text}</p>
   </div>)}</div>;
-}
-
-const TIER_STYLE: Record<PriorityTier, { label: string; cls: string }> = {
-  critical: { label: "CRITICAL", cls: "bg-red-600 text-white" },
-  high: { label: "HIGH", cls: "bg-orange-500 text-slate-950" },
-  standard: { label: "STANDARD", cls: "bg-slate-600 text-slate-100" },
-};
-
-function TierPill({ priority }: { priority?: Priority }) {
-  if (!priority) return null;
-  const t = TIER_STYLE[priority.tier];
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold tracking-wide ${t.cls}`}>
-      {t.label}
-      {priority.overrideReason != null && " ✎"}
-    </span>
-  );
 }
 
 /** Why the incident has its priority, with the caller's words, and a dispatcher override. */

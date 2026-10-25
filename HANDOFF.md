@@ -90,6 +90,22 @@ Claude extracts literal risk factors with the caller's words (injury, water at c
 critical / high / standard with reasons. The queue sorts by tier, then longest wait. Factors only accumulate. The
 dispatcher can override a tier with a reason. Rule cases: `cd dashboard && npm run test:priority`.
 
+## Assignment suggestions (dispatcher-reviewed)
+
+"Suggest assignments" in the console proposes one available team per waiting incident for the whole
+queue (`src/lib/planner.ts`): most critical, then high, then standard incidents covered; then the least
+simulated travel for critical, then high, then standard; then a fixed tie-break. It is exact (dynamic
+programming over teams, up to 12 free teams and 40 waiting incidents) and uses only routes the
+flood-aware router finds. No route means not eligible; route data not loaded means "cannot evaluate".
+Suggesting changes nothing. Approval (`convex/planner.ts` `approvePlan`) refuses a plan whose inputs
+changed (fingerprint in `convex/planning.ts`), re-checks every pair and its route evidence, and assigns
+the whole batch in one transaction through the normal assignment path (`assignTeamTo`), or nothing.
+It never sends a team en route. Every approval attempt is recorded in `planDecisions`.
+Optional: `npx convex env set ANTHROPIC_API_KEY …` (and `CLAUDE_MODEL`) adds a short Claude summary of
+a plan, discarded if it names a team or number that isn't in the plan; without it the console shows
+its own summary. The server can't re-run the router (it needs browser-decoded elevation tiles), so it
+binds approval to the routing inputs instead.
+
 ## Tests
 
 Integration tests and the end-to-end walkthrough run on a throwaway local Convex backend, never the shared one:
