@@ -26,8 +26,8 @@ def session_with(calls, questions=None, fail_first=False):
         calls.append((utterance.sequence, utterance.text, options))
         if options.get("extract", True):
             await asyncio.sleep(EXTRACT_S)
-        return SimpleNamespace(incident={}, extraction_error=None,
-                               next_question=None if options.get("extract") is False else questions.get(utterance.text))
+        return SimpleNamespace(incident={}, extraction=None, extraction_error=None,
+                               reply=None if options.get("extract") is False else questions.get(utterance.text))
 
     s = Session("call", SimpleNamespace(synthesize=AsyncMock(return_value=b"audio")), AsyncMock())
     s.speak = lambda text, *a, **k: s.spoken.append(text) or True

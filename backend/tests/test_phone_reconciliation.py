@@ -83,8 +83,8 @@ async def test_question_behind_a_pending_update_is_asked_after_it_not_dropped(se
     assert session.playback is None and session.deferred_question[0] == "How many people are with you?"
     # The update goes first ...
     monkeypatch.setattr(main, "announcements", AsyncMock(return_value=[
-        {"eventId": "details", "type": "details_received", "createdAt": 1,
-         "text": "I've passed your details to the dispatcher. Stay on the line with me."}]))
+        {"eventId": "details", "type": "location_confirmed", "createdAt": 1,
+         "text": "The dispatcher has confirmed your location and is arranging a rescue team."}]))
     await idle_poll(session)
     assert session.playback.event_id == "details"
     monkeypatch.setattr(main.convex_store, "mark_announced", AsyncMock(return_value={"acknowledged": True}))

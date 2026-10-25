@@ -20,6 +20,7 @@ from fastapi.responses import Response
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse
 
+from .location_share import LocationShare
 from .voice import Session
 from .voice_provider import CartesiaSpeech, voice_environment
 
@@ -34,6 +35,7 @@ SID = re.compile(r"CA[a-zA-Z0-9]{32}\Z")
 # leaving finished statements waiting (median end-of-turn +~150 ms). Phone only.
 PHONE_TURN = {"turn_end_threshold": 0.15}
 STREAM_SID = re.compile(r"MZ[a-zA-Z0-9]{32}\Z")
+PHONE = re.compile(r"\+[1-9]\d{6,14}\Z")
 
 
 def configuration():
@@ -53,6 +55,7 @@ class Lease:
     token: str
     expires: float
     claimed: bool = False
+    caller: str | None = None  # signed webhook From: the only recipient a location link may go to
 
 
 # Only transport authorization. All incident facts and retry receipts stay in Convex.
@@ -81,7 +84,8 @@ async def incoming_call(request: Request):
     if not lease:
         if len(_leases) >= 1000:
             raise HTTPException(429, "Call capacity exceeded")
-        lease = _leases[call_id] = Lease(secrets.token_urlsafe(32), now + 120)
+        caller = str(form.get("From", ""))
+        lease = _leases[call_id] = Lease(secrets.token_urlsafe(32), now + 120, caller=caller if PHONE.fullmatch(caller) else None)
     response = VoiceResponse()
     stream = response.connect().stream(url=base.replace("https://", "wss://", 1) + MEDIA_PATH)
     stream.parameter(name="lease", value=lease.token)
@@ -247,6 +251,7 @@ async def media_stream(socket: WebSocket):
         session = Session(call_id, speech, transport.send)
         session.turn_prefix = stream_id
         session.audio_frame_alignment = 1
+        session.location = LocationShare.for_call(call_id, lease.caller)
         log.info("call %s: authenticated phone stream connected", call_id)
         await session.run(transport, 8000)
     except Exception as exc:

@@ -15,9 +15,13 @@ const assets = new Map([
 const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self' https://tile.openstreetmap.org; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 const escape = value => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-/** Ephemeral, terminal-only location requests. No dashboard, database or voice APIs. */
+/** Ephemeral, terminal-only location links. No dashboard or database writes.
+ * `isActive(context)` lets the issuer withdraw a link (call ended, link resent);
+ * `onConfirmed(record, context)` receives the context the link was issued with.
+ */
 export async function startLocationServer({ port = 8091, host = "127.0.0.1", publicOrigin,
-  ttlMs = 30 * 60_000, now = Date.now, onConfirmed = value => console.log(JSON.stringify(value)) } = {}) {
+  ttlMs = 30 * 60_000, now = Date.now, isActive = () => true,
+  onConfirmed = value => console.log(JSON.stringify(value)) } = {}) {
   const sessions = new Map();
   let origin = publicOrigin;
   let localOrigin;
@@ -42,7 +46,9 @@ export async function startLocationServer({ port = 8091, host = "127.0.0.1", pub
       }
       const match = path.match(/^\/l\/([A-Za-z0-9_-]{43})$/);
       if (match && ["GET", "HEAD"].includes(req.method)) {
-        if (!getSession(match[1])) return send(res, 410, "This location link has expired. Send another message to get a new one.", "text/plain");
+        const session = getSession(match[1]);
+        if (!session) return send(res, 410, "This location link has expired. Ask for a new one.", "text/plain");
+        if (!session.confirmed && !isActive(session.context)) return send(res, 410, "This location link is no longer active.", "text/plain");
         const base = origin ?? localOrigin;
         const page = html.replaceAll("__PUBLIC_ORIGIN__", escape(base));
         return send(res, 200, req.method === "HEAD" ? "" : page, "text/html");
@@ -50,7 +56,7 @@ export async function startLocationServer({ port = 8091, host = "127.0.0.1", pub
       const api = path.match(/^\/api\/location\/([A-Za-z0-9_-]{43})$/);
       if (!api || req.method !== "POST") return send(res, 404, { error: "Not found" });
       const session = getSession(api[1]);
-      if (!session) return send(res, 410, { error: "This location link has expired. Send another message for a new link." });
+      if (!session) return send(res, 410, { error: "This location link has expired. Ask for a new one." });
       if (![origin, localOrigin].filter(Boolean).includes(req.headers.origin)) return send(res, 403, { error: "Open this link in your browser to confirm." });
       if (req.headers["content-type"]?.split(";")[0] !== "application/json") return send(res, 415, { error: "Expected JSON" });
       let length = 0;
@@ -75,6 +81,7 @@ export async function startLocationServer({ port = 8091, host = "127.0.0.1", pub
           ? send(res, 200, { confirmed: true })
           : send(res, 409, { error: "This link already has a confirmed location." });
       }
+      if (!isActive(session.context)) return send(res, 410, { error: "This location link is no longer active." });
       if (capturedAt < now() - 120_000 || capturedAt > now() + 30_000) return send(res, 400, { error: "Location is stale. Find your location again." });
       const record = { event: "location.confirmed", requestId: session.id,
         latitude, longitude, accuracyMeters: accuracy, capturedAt: new Date(capturedAt).toISOString(),
@@ -84,7 +91,7 @@ export async function startLocationServer({ port = 8091, host = "127.0.0.1", pub
       // and emitted to its terminal. Store before responding so HTTP retries are safe.
       session.confirmed = record;
       session.fingerprint = fingerprint;
-      onConfirmed(record);
+      onConfirmed(record, session.context);
       return send(res, 200, { confirmed: true });
     } catch {
       if (!res.headersSent) send(res, 500, { error: "Could not confirm. Please try again." });

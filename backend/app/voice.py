@@ -17,18 +17,25 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from . import convex_store
+from . import convex_store, extraction
 from .auth import require_voice
 from .voice_provider import CartesiaSpeech
 
 log = logging.getLogger("voice-bridge")
 router = APIRouter()
-GREETING = ("Hello, this is Lifeline, a non-emergency hackathon simulation. "
-            "If this is a real emergency, contact local emergency services. "
-            "Please describe your fictional flood incident and where you are.")
+GREETING = ("Hello, this is Lifeline. "
+            "Tell me what's happening and where help is needed.")
 QUIET_SECONDS = 2.0
+# After a reply that asks nothing, how long the caller may stay silent before the agent
+# carries on with the follow-up question the model chose for that turn.
+FOLLOW_UP_QUIET_S = 5.0
 REPEAT = re.compile(r"\brepeat\b|\bsay (?:that|it) again\b|\b(?:did not|didn't|couldn't|could not) hear\b|\bwhat did you say\b", re.I)
 TEAM_STATUS = re.compile(r"\b(?:what|which|where|who)\b.{0,80}\b(?:team|assigned|coming)\b|\b(?:is|has)\b.{0,25}\bteam\b", re.I)
+
+
+def _same_words(a: str, b: str) -> bool:
+    words = lambda text: re.findall(r"[a-z0-9']+", text.lower())
+    return words(a) == words(b)
 
 
 @dataclass
@@ -63,12 +70,22 @@ class Session:
         self.last_output_end = 0.0
         self.last_audible = None
         self.requested_repeat = None
-        # An intake question that arrived while a caller update was pending: asked after it.
+        # A reply that arrived while a dispatcher update was pending: said after it, unless the
+        # caller has spoken again or the location-link state has changed since it was written.
         self.deferred_question = None
+        # Location-link state version the latest caller turn's reply was written against.
+        self.reply_state = None
+        # The question to carry on with if the caller stays silent after a reply that asked
+        # nothing; once, and only if nothing else has been said or changed since.
+        self.quiet_followup = None
+        # Writing the acknowledgement + next question for a location that arrived between turns.
+        self.continuing = None
         # Backlog control: caller turns still waiting in the queue, and caller text saved
         # without extraction because a newer caller turn was already queued behind it.
         self.queued_callers = 0
         self.unextracted: list[str] = []
+        # Photon location sharing (app/location_share.py); phone calls with a trusted caller number only.
+        self.location = None
 
     def repeat_request(self, text, turn_id):
         """Narrow playback/status intents from verified caller text, not LLM IDs."""
@@ -141,6 +158,11 @@ class Session:
                 options = {"extract": False}
             elif self.unextracted:
                 options = {"latest_message": "\n".join([*self.unextracted, text])}
+            if options.get("extract") is not False and self.location:
+                # The reply may only claim what the link's real status supports.
+                await self.location.refresh_now()
+                options["conversation_state"] = self.location.state()
+                self.reply_state = self.location.version
         # Same sequence and identity on EVERY retry, including lost responses.
         for attempt in range(6):
             try:
@@ -174,11 +196,29 @@ class Session:
                         # Do not answer "repeat that/team?" with an unrelated
                         # intake question. Persistence still happened first.
                         continue
-                    text = result.next_question
+                    text = result.reply
                     if result.extraction_error:
                         text = "Your words have been saved for the dispatcher. You can add more details."
+                    elif self.location:
+                        if self.reply_state != self.location.version:
+                            # The link's status changed while the reply was being written (e.g. the
+                            # location arrived): its claims may be out of date. The status line covers it.
+                            text = None
+                        text = self.location.after_turn(result.extraction, text)
+                    previous = self.last_audible
+                    if text and previous and not previous.event_id and text.rstrip().endswith("?") \
+                            and _same_words(text, previous.text):
+                        # Never ask the same question twice in a row: the caller moved on. (An answer
+                        # to a question they asked again may be repeated.)
+                        text = None
                     if text and self.queue.empty() and item[3] == self.generation and not self.open_turn:
                         self.speak(text)
+                    # Keep the conversation moving if the reply asked nothing and the caller goes quiet.
+                    follow = result.extraction.follow_up_if_quiet if result.extraction and not result.extraction_error else None
+                    self.quiet_followup = None
+                    if follow and not (text and text.rstrip().endswith("?")) and item[3] == self.generation:
+                        self.quiet_followup = {"text": follow, "generation": self.generation, "after": text,
+                                               "version": self.location and self.location.version}
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -214,7 +254,7 @@ class Session:
             if not event_id and not replay and text != GREETING and await convex_store.pending_events(self.call_id):
                 # The caller update goes first (e.g. dev's "details received" after the
                 # first turn); keep the question for afterwards rather than dropping it.
-                self.deferred_question = (text, generation)
+                self.deferred_question = (text, generation, self.location and self.location.version)
                 return
             if self.playback is not p or generation != self.generation or self.open_turn:
                 return
@@ -261,6 +301,11 @@ class Session:
                 await convex_store.mark_announced(self.call_id, p.event_id)
                 self.acknowledged.add(p.event_id)
             self.last_output_end = time.monotonic()
+            if self.location and not p.event_id:
+                self.location.spoken(p.text)
+            follow = self.quiet_followup
+            if follow and p.text not in (follow["after"], follow["text"]):
+                self.quiet_followup = None  # something else was said; that question may no longer fit
             if self.requested_repeat and p.request_id == self.requested_repeat["id"]:
                 self.requested_repeat = None
             if not self.stopping and p.text != GREETING:
@@ -278,6 +323,8 @@ class Session:
             # delays announcements instead of ending the call.
             from .calls import _confirmed_status_text
             from .main import announcements
+            if self.location:
+                self.location.tick()
             p = self.playback
             if p and p.phase == "completed":
                 await self.complete(p)
@@ -309,12 +356,51 @@ class Session:
                 question = self.deferred_question
                 if question:
                     self.deferred_question = None
-                    if question[1] == self.generation:  # no newer caller turn since it was asked
+                    # Not if the caller spoke again, or the link's status changed since it was written.
+                    if question[1] == self.generation and question[2] == (self.location and self.location.version):
                         self.speak(question[0])
+                        return
+                # Location-link status lines come after dispatcher updates and the pending question.
+                if self.location and self.location.wants_continuation() and not (self.audio_task and not self.audio_task.done()):
+                    # Snapshot now, not when the task first runs: the caller may start talking first.
+                    self.continuing = asyncio.create_task(
+                        self.continue_after_location(self.generation, self.location.writing_continuation()))
+                line = self.location and self.location.next_line()
+                if line:
+                    self.speak(line)
+                    return
+                follow = self.quiet_followup
+                if follow and time.monotonic() - max(self.last_speech, self.last_output_end) >= FOLLOW_UP_QUIET_S:
+                    self.quiet_followup = None
+                    previous = self.last_audible
+                    if (follow["generation"] == self.generation
+                            and follow["version"] == (self.location and self.location.version)
+                            and not (previous and _same_words(follow["text"], previous.text))):
+                        self.speak(follow["text"])
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("Announcement check delayed (%s)", type(exc).__name__)
+
+    async def continue_after_location(self, generation, version):
+        """A location arrived between caller turns: write the acknowledgement and the next
+        question from the current transcript and state, without waiting for the caller."""
+        location = self.location
+        text = None
+        try:
+            from .calls import _confirmed_status_text
+            transcript = await convex_store.transcript_for_call(self.call_id) or ""
+            # The only dispatch wording this line may use, in case the caller just asked.
+            state = f"{location.state(track=False)}\nDispatch status: {await _confirmed_status_text(self.call_id)}"
+            text = await asyncio.wait_for(
+                extraction.continue_after_location(transcript, state),
+                location.continuation_deadline - location.clock())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Location acknowledgement said without a continuation (%s)", type(exc).__name__)
+        # If the caller started speaking meanwhile, their own reply acknowledges it from fresh state.
+        location.continued(text, version, still_quiet=generation == self.generation and not self.open_turn)
 
     async def run(self, socket, sample_rate):
         from .main import end_call
@@ -322,6 +408,8 @@ class Session:
         try:
             state = await convex_store.start_voice_call(self.call_id)
             self.sequence = state["nextSequence"]
+            if self.location:
+                self.location.start()
             await self.speech.configure()
             async with self.speech.listen(sample_rate) as stt:
                 controls = asyncio.Queue(maxsize=32)
@@ -398,9 +486,15 @@ class Session:
             self.stopping = True
             if self.audio_task:
                 tasks.append(self.audio_task)
+            if self.continuing:
+                tasks.append(self.continuing)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self.location:
+                # Withdraw an open link so a late confirmation can't attach to anything.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self.location.close(), 5)
             await self.speech.close()
             try:
                 await asyncio.wait_for(end_call(self.call_id), 10)

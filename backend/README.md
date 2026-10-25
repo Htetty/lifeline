@@ -64,7 +64,7 @@ The backend pushes every change from Convex; there is nothing to poll.
 
 | Message | What to do |
 | --- | --- |
-| `utterance_result`: `next_question`, `extraction`, `location_match` | Ask `next_question` if not null |
+| `utterance_result`: `reply`, `extraction`, `location_match` | Say `reply` if not null: it responds to what the caller just said (answers a question, acknowledges, or asks the next detail). `next_question` is a deprecated alias with the same value |
 | `status`: `stage`, `sayIfAsked`, `assignedTeamName`, facts | Keep it in the LLM context. Answer "is anyone coming?" only from `sayIfAsked` |
 | `announcement`: `eventId`, `kind`, `text` | Speak `text` word for word at the next pause, then `ack` |
 | `announcement_cancelled`: `eventId` | A newer update replaced it. Don't speak it (stop if queued) |
@@ -87,7 +87,7 @@ A minimal working client is `scripts/simulate_call.py`.
 | `GET /calls/{callId}/state` | Status card and pending announcements (what the stream pushes) |
 | `POST /calls/{callId}/announcements/{eventId}/ack` | Same as the `ack` message |
 | `POST /calls/{callId}/end` | Same as the `end` message |
-| `POST /calls/{callId}/utterances` `{speaker: "caller"\|"agent", text}` | After each finished utterance. Returns extracted facts and `next_question` to ask. |
+| `POST /calls/{callId}/utterances` `{speaker: "caller"\|"agent", text}` | After each finished utterance. Returns extracted facts and `reply` to say (`next_question`: deprecated alias). |
 | `GET /calls/{callId}/announcements` | At a natural pause: confirmed updates that are still true, with approved wording. Re-poll right before speaking; empty after the call ends. |
 | `POST /calls/{callId}/announcements/{eventId}/ack` | Only after the whole update was played; not if playback was interrupted. `acknowledged: false` means it was superseded. |
 | `GET /calls/{callId}/status` | Confirmed status, for truthful answers to "is someone coming?". |

@@ -3,7 +3,6 @@ import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 
 // Everything the voice agent may tell a caller about progress, in one place.
-// Dispatcher decisions keep the "Simulation update" framing used for the live voice demo.
 // Wording only states what has been confirmed and saved: no arrival times,
 // no promises beyond the current stage.
 
@@ -61,13 +60,13 @@ export function announcementText(
     case "location_unclear":
       return "I need to double-check exactly where you are so the team goes to the right place.";
     case "assignment_approved":
-      return `Simulation update from the dispatcher: a simulated rescue team${team} has been assigned to this fictional incident.`;
+      return `Update from the dispatcher: a rescue team${team} has been assigned to you.`;
     case "assignment_changed":
       return "Update: the dispatcher is arranging a different rescue team for you. You're still in the queue; stay where you are.";
     case "team_en_route":
-      return "Simulation update: the dispatcher has marked the simulated team as en route.";
+      return "The dispatcher has marked the rescue team as on its way to you.";
     case "rescue_resolved":
-      return "Simulation update: the dispatcher has marked this fictional incident as complete.";
+      return "The dispatcher has marked your rescue as complete.";
     case "dispatcher_message":
       return `The dispatcher asked me to tell you: ${message ?? ""}`.trim();
     case "report_linked":
