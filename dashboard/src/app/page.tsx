@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Brand } from "@/components/Brand";
 import LandingMap from "@/components/LandingMap";
 
 function MapPreview() {
@@ -27,7 +28,7 @@ export default function Home() {
   return (
     <main className="landing">
       <nav className="landing-nav" aria-label="Main navigation">
-        <Link href="/" className="brand">Lifeline</Link>
+        <Brand />
       </nav>
       <section className="hero">
         <div>

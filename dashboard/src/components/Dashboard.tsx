@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import Link from "next/link";
+import { Brand } from "@/components/Brand";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -586,7 +586,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
   return (
     <div className="dispatcher flex h-screen flex-col bg-slate-950 text-slate-100">
       <header className="console-header">
-        <Link href="/" className="brand">Lifeline</Link>
+        <Brand />
         <span className="console-region">
           <PinIcon />
           {DEMO_AREA.name}
