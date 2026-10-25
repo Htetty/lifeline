@@ -65,7 +65,7 @@ try {
   const screenshot = await send("Page.captureScreenshot", { format: "png" });
   await writeFile("/tmp/lifeline-location-ready.png", Buffer.from(screenshot.data, "base64"));
   await evaluate("document.querySelector('#confirm').click()");
-  await until("document.querySelector('#title')?.textContent === 'Location confirmed'");
+  await until("document.querySelector('#confirm')?.classList.contains('done')");
   assert.equal(records.length, 1);
   assert.equal(records[0].latitude, 37.4275);
   const confirmed = await send("Page.captureScreenshot", { format: "png" });

@@ -2,7 +2,6 @@ import { Map, Marker, setWorkerUrl } from "/maplibre-gl.mjs";
 
 setWorkerUrl("/maplibre-gl-worker.mjs");
 const status = document.querySelector("#status");
-const title = document.querySelector("#title");
 const confirm = document.querySelector("#confirm");
 const recenter = document.querySelector("#recenter");
 let latest, submitted, watchId, marker, mapLoaded = false, following = true;
@@ -61,7 +60,7 @@ function locate() {
       accuracy: position.coords.accuracy, capturedAt: position.timestamp };
     if (!Object.values(latest).every(Number.isFinite)) return;
     paintLocation();
-    status.textContent = `Current position · within ${Math.max(1, Math.round(latest.accuracy))} m`;
+    status.textContent = "";
     confirm.disabled = false;
   }, error => {
     if (submitted) return;
@@ -82,23 +81,23 @@ confirm.addEventListener("click", async () => {
   submitted = { ...latest };
   if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
   confirm.disabled = true;
-  confirm.textContent = "Confirming…";
+  confirm.setAttribute("aria-busy", "true");
   try {
     const token = location.pathname.split("/").pop();
     const response = await fetch(`/api/location/${token}`, { method: "POST",
       headers: { "content-type": "application/json" }, body: JSON.stringify(submitted) });
     const result = await response.json();
     if (!response.ok || !result.confirmed) throw new Error(result.error ?? "Could not confirm. Try again.");
-    title.textContent = "Location confirmed";
-    status.textContent = "You’re all set.";
-    confirm.textContent = "Confirmed ✓";
+    status.textContent = "";
+    confirm.setAttribute("aria-label", "Location confirmed");
     confirm.classList.add("done");
     recenter.hidden = true;
   } catch (error) {
     status.textContent = error.message === "Failed to fetch" ? "Connection lost. Tap again to retry." : error.message;
     latest = submitted; submitted = undefined;
-    confirm.textContent = "Confirm location";
     confirm.disabled = false;
+  } finally {
+    confirm.removeAttribute("aria-busy");
   }
 });
 window.addEventListener("pagehide", () => { if (watchId !== undefined) navigator.geolocation.clearWatch(watchId); });
