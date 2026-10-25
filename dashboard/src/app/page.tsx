@@ -1,30 +1,41 @@
 import Link from "next/link";
+import LandingMap from "@/components/LandingMap";
+
+function MapPreview() {
+  return (
+    <article className="map-preview" aria-label="Illustrative dispatcher map">
+      <header>
+        <span><i className="live-dot" /> Live flood map</span>
+        <span className="mono muted">EXAMPLE</span>
+      </header>
+      <LandingMap />
+      <div className="map-legend-chips">
+        <span><i style={{ background: "#c62828" }} /> Awaiting rescue</span>
+        <span><i style={{ background: "#f59e0b" }} /> Team en route</span>
+        <span><i style={{ background: "#4caf50" }} /> Resolved</span>
+        <span><i style={{ background: "#2563eb" }} /> Rescue team</span>
+        <span><i className="line" style={{ background: "#7c3aed" }} /> Road</span>
+        <span><i className="line" style={{ background: "#facc15" }} /> Boat</span>
+        <span><i className="line dashed" /> Air</span>
+        <span><i className="depth" /> Water depth</span>
+      </div>
+    </article>
+  );
+}
 
 export default function Home() {
   return (
     <main className="landing">
       <nav className="landing-nav" aria-label="Main navigation">
         <Link href="/" className="brand">Lifeline</Link>
-        <div><a href="#how">How it works</a><Link className="button button-light" href="/console">Open dispatcher console <span>↗</span></Link></div>
       </nav>
       <section className="hero">
         <div>
-          <p className="eyebrow"><i className="live-dot" /> Flood response · Call overflow</p>
-          <h1>When the lines flood, no caller gets a busy signal.</h1>
+          <h1>When the lines <em className="water">flood</em>, no caller should be <em>on hold</em>.</h1>
           <p className="hero-copy">Lifeline’s AI voice agent collects location, people and hazards, and puts a report on the dispatcher’s live map. Dispatchers send the teams. The AI takes the notes.</p>
-          <div className="hero-actions"><Link className="button button-blue" href="/console">Open dispatcher console <span>↗</span></Link></div>
-          <p className="prototype-note">A flood-response prototype. Fictional exercises only.</p>
+          <div className="hero-actions"><Link className="button button-light" href="/console">Open dispatcher console <span>↗</span></Link></div>
         </div>
-        <article className="intake-preview" id="intake" aria-label="Illustrative call intake">
-          <header><span><i className="live-dot" /> AI call intake</span><span className="mono muted">EXAMPLE</span><div className="waveform" aria-hidden="true">{[10, 20, 13, 27, 18, 30, 14, 23, 10].map((h, i) => <i key={i} style={{ height: h, animationDelay: `${i * -0.13}s`, animationDuration: `${0.8 + (i % 3) * 0.2}s` }} />)}</div></header>
-          <div className="transcript-preview">
-            <p><span>CALLER</span>We’re upstairs. The water is rising on the stairs. There are three of us.</p>
-            <p><span>AI</span>What’s the address, or the nearest cross street?</p>
-            <p><span>CALLER</span>123 Hotel Circle South, in Mission Valley.</p>
-          </div>
-          <footer><p className="eyebrow">Extracted → dispatcher review</p><div className="preview-tags"><span className="tag-warning">Rising water</span><span>123 Hotel Circle South</span><span>3 people · upstairs</span><span>Location needs confirmation</span></div></footer>
-          <div className="preview-caption"><span className="live-dot" /> Caller facts first. Human decisions always.</div>
-        </article>
+        <MapPreview />
       </section>
       <section className="how-section" id="how" aria-label="How it works">
         {[
