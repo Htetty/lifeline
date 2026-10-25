@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -14,7 +14,7 @@
 /coverage
 
 # next.js
-/.next/
+.next/
 /out/
 
 # production
@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -41,6 +42,7 @@ yarn-error.log*
 next-env.d.ts
 
 # local Python environment and generated model files
+.venv/
 ml/.venv/
 ml/outputs/
 __pycache__/
@@ -53,5 +55,10 @@ ml/data/processed/
 # local Python environment for the backend
 backend/.venv/
 
-docs
 .claude/settings.local.json
+
+# Local test and build caches
+.pytest_cache/
+.test-build/
+coverage/
+.convex/

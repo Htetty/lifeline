@@ -1,16 +1,15 @@
 # Handoff — Flood Rescue Dispatcher
 
-**Twilio phone adapter:** [`docs/integration/twilio-media-streams.md`](docs/integration/twilio-media-streams.md)
-documents the PR #8-based bidirectional phone transport, native μ-law/8 kHz,
-signature/identity checks, clear/mark semantics, public setup and rollback.
-Human phone verification is recorded separately from protocol/provider tests.
+**Current setup:** See [README.md](README.md) and the [Cartesia phone guide](CARTESIA.md#phone-entry-point).
+The former `docs/` directory was removed during submission cleanup. The implementation
+notes below are historical; use the README guides for current setup and limitations.
 
 Updated: 2026-10-23. Read `PROJECT_PLAN.md` for the product plan; this file is the current state.
 
 **2026-10-24 voice bridge increment:** See
-[`docs/integration/live-voice-dashboard.md`](docs/integration/live-voice-dashboard.md)
-for the browser microphone path, isolated startup, authentication changes, and
-recorded validation. The existing Managed Agent / Twilio setup is unchanged.
+[the Cartesia guide](CARTESIA.md)
+for current browser microphone setup and limitations. The following describes the
+historical milestone: the existing Managed Agent / Twilio setup was unchanged.
 New Convex tables `voiceCalls` and `voiceTurns` provide atomic ordering and retry
 receipts. All FastAPI `/calls/*` routes now require the backend bearer secret.
 Use fixture tests or the isolated local exercise; the shared reset/regression
@@ -109,7 +108,7 @@ binds approval to the routing inputs instead.
 
 Integration tests and the end-to-end walkthrough run on a throwaway local Convex backend, never the shared one:
 `scripts/integration/local_convex.sh backend/.venv/bin/python -m unittest discover -s backend/tests -v`.
-See `docs/integration/verification.md`.
+See [README.md](README.md#checks) for the current check entry points.
 
 ## Gotchas already solved (don't undo)
 

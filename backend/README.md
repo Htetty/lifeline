@@ -11,13 +11,13 @@ Cartesia (voice) ──POST utterance──► FastAPI ──Claude extraction�
 
 ## Run
 
-For the phone product path, see [Twilio bidirectional Media Streams](../docs/integration/twilio-media-streams.md).
+For the phone product path, see [the Cartesia phone guide](../CARTESIA.md#phone-entry-point).
 It adds `POST /twilio/voice` and `WSS /twilio/media` to this same FastAPI app,
 reusing Claude, Convex and the shared session controller. Follow its signed
 readiness checks and routing backup before changing the existing number.
 
 For the browser microphone → live dashboard → spoken dispatcher assignment flow,
-use [the voice bridge guide](../docs/integration/live-voice-dashboard.md). It starts
+use [the local setup guide](../README.md#run-locally). It starts
 an isolated local Convex deployment and does not change the working phone agent.
 
 ```bash
@@ -41,7 +41,7 @@ deployment (`npx convex env set DISPATCHER_TOKEN <value>`) to make the dashboard
 `BACKEND_SECRET` stays between this server and Convex (nobody types it); the browser never receives a provider key
 or backend secret.
 Do not run `scripts/check_call_rules.py` against the shared deployment: it changes
-and deletes test incidents. Prefer the isolated fixture tests in the bridge guide.
+and deletes test incidents. Prefer the isolated fixture checks in the root README.
 
 Then in the dashboard: select the new incident, place it on its building, confirm the
 location, approve a team. The simulator prints the confirmed update the caller would hear.
@@ -105,10 +105,8 @@ A minimal working client is `scripts/simulate_call.py`.
 - If extraction fails, the transcript is still saved and the incident still appears.
 - A corrected address after review sends the incident back to `needs_review`.
 - Assignment requires a dispatcher-confirmed location; a team can't be double-booked.
-- The caller only hears updates that were confirmed and saved, once each; a newer progress update
-  replaces an unspoken older one, dispatcher messages are never dropped.
-- Backend-only Convex functions (`convex/calls.ts`) require `BACKEND_SECRET`.
-- The caller only hears updates the dispatcher confirmed, once each.
+- Announcements come from saved dispatcher updates. Newer progress replaces an unspoken
+  older update; playback completion is acknowledged separately from audio generation.
 - Backend-only Convex functions (`convex/calls.ts`) require `BACKEND_SECRET`; dashboard functions require `DISPATCHER_TOKEN`.
 - An update is never spoken once the dispatcher reversed or superseded it, or after the caller hung up.
 - A caller correction keeps the earlier value and its evidence in `factHistory`.
@@ -116,5 +114,5 @@ A minimal working client is `scripts/simulate_call.py`.
   change incident facts. Without the model the backend works the same.
 - The bridge checks that a dispatcher update is current before starting audio,
   retains interrupted updates, and acknowledges naturally completed browser playback.
-  See the bridge guide for disconnect/crash limits; this is not a global exactly-once
+  See the Cartesia guide for disconnect/crash limits; this is not a global exactly-once
   audible-delivery guarantee.
