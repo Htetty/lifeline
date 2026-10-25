@@ -4,7 +4,9 @@ import { useMemo, useState } from "react";
 import {
   describePlan,
   planAssignments,
+  priorityFingerprint,
   stateFingerprint,
+  stateFloodFingerprint,
   type Plan,
   type Proposal,
   type RouteResult,
@@ -19,7 +21,8 @@ import type { ExerciseState, Incident, RescueTeam } from "@/lib/types";
 import { TierPill } from "./TierPill";
 
 // Review panel for assignment suggestions. The plan is frozen when computed; if anything it
-// depends on changes, the panel says so and approval waits for a fresh suggestion.
+// depends on changes (server data, caller water reports, the computed priorities, the local
+// route model) or a local edit is pending, approval waits for a fresh suggestion.
 
 const OPTION_LABEL: Record<TeamOption["state"], string> = {
   proposed: "Proposed",
@@ -34,8 +37,15 @@ interface Suggestion {
   plan: Plan;
   planId: string;
   fingerprint: string;
+  flood: string;
+  priorities: string;
+  routeContext: string;
   /** Whether the server's data matched the dashboard's when recorded; null while recording. */
   matched: boolean | null;
+  /** Claude's summary of this plan, once it arrives (never one for an earlier plan). */
+  summary: { text: string | null; note: string } | null;
+  /** Why this plan couldn't be recorded, if it couldn't. */
+  recordError: string | null;
 }
 
 const newId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
@@ -45,6 +55,7 @@ export function AssignmentPlanner({
   state,
   priorities,
   routeFor,
+  routeContext = "",
   notReady,
   onPreview,
   onSelectIncident,
@@ -54,7 +65,9 @@ export function AssignmentPlanner({
   state: ExerciseState;
   priorities: Map<string, Priority>;
   routeFor: (team: RescueTeam, incident: Incident) => RouteResult;
-  /** Why suggestions can't be made right now (e.g. routes loading), or null. */
+  /** Identifies the local road and flood model routeFor uses; a change makes a plan stale. */
+  routeContext?: string;
+  /** Why suggestions can't be made or approved right now (e.g. a local edit pending), or null. */
   notReady: string | null;
   onPreview: (route: RoutePlan | null) => void;
   onSelectIncident: (id: string) => void;
@@ -64,39 +77,58 @@ export function AssignmentPlanner({
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [summary, setSummary] = useState<{ text: string | null; note: string } | null>(null);
   const [approvalId, setApprovalId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
 
   const current = useMemo(() => stateFingerprint(state), [state]);
-  const stale = suggestion != null && suggestion.fingerprint !== current;
+  const currentFlood = useMemo(() => stateFloodFingerprint(state), [state]);
+  const currentPriorities = useMemo(() => priorityFingerprint(priorities), [priorities]);
+  const stale =
+    suggestion != null &&
+    (suggestion.fingerprint !== current ||
+      suggestion.flood !== currentFlood ||
+      suggestion.priorities !== currentPriorities ||
+      suggestion.routeContext !== routeContext);
+  /** Applies an update only if this plan is still the one on screen. */
+  const forPlan = (planId: string, update: (s: Suggestion) => Suggestion) =>
+    setSuggestion((s) => (s?.planId === planId ? update(s) : s));
 
   const suggest = (exclusions = excluded) => {
     const plan = planAssignments({ incidents: state.incidents, teams: state.teams, priorities, route: routeFor, excluded: exclusions });
-    const next: Suggestion = { plan, planId: newId(), fingerprint: stateFingerprint(state), matched: null };
+    const next: Suggestion = {
+      plan,
+      planId: newId(),
+      fingerprint: current,
+      flood: currentFlood,
+      priorities: currentPriorities,
+      routeContext,
+      matched: null,
+      summary: null,
+      recordError: null,
+    };
     setSuggestion(next);
     setSelected(new Set(plan.proposals.map((p) => p.incident.id)));
     setApprovalId(null);
     setRefusal(null);
-    setSummary(null);
     onPreview(null);
     if (plan.status !== "ok") return;
     recordProposal({
       planId: next.planId,
       fingerprint: next.fingerprint,
+      floodFingerprint: next.flood,
       proposals: plan.proposals.map((p) => ({
-        incidentId: p.incident.id as never, teamId: p.team.id as never, tier: p.tier, seconds: p.seconds, reason: p.reason,
+        incidentId: p.incident.id as never, teamId: p.team.id as never, tier: p.tier, seconds: p.seconds, reason: p.reason, evidence: p.evidence,
       })),
       unassigned: plan.unassigned.map((u) => ({ incidentId: u.incident.id as never, reason: u.reason })),
     })
-      .then((r) => setSuggestion((s) => (s?.planId === next.planId ? { ...s, matched: r.matched } : s)))
-      .catch((e) => setRefusal(errorMessage(e)));
+      .then((r) => forPlan(next.planId, (s) => ({ ...s, matched: r.matched })))
+      .catch((e) => forPlan(next.planId, (s) => ({ ...s, recordError: errorMessage(e) })));
     // Optional and non-blocking: the deterministic summary is shown until (unless) this returns.
     explainPlan(describePlan(plan))
-      .then((r) => setSummary(r))
-      .catch(() => setSummary({ text: null, note: "Claude summary unavailable" }));
+      .then((r) => forPlan(next.planId, (s) => ({ ...s, summary: r })))
+      .catch(() => forPlan(next.planId, (s) => ({ ...s, summary: { text: null, note: "Claude summary unavailable" } })));
   };
 
   const exclude = (p: Proposal) => {
@@ -107,7 +139,7 @@ export function AssignmentPlanner({
 
   const approve = async () => {
     if (!suggestion) return;
-    const id = approvalId ?? newId(); // reused if the call is retried after a network error
+    const id = approvalId ?? newId(); // reused only to retry this same selection after a network error
     setApprovalId(id);
     setBusy(true);
     try {
@@ -133,7 +165,8 @@ export function AssignmentPlanner({
 
   const plan = suggestion?.plan;
   const chosen = plan?.proposals.filter((p) => selected.has(p.incident.id)) ?? [];
-  const canApprove = !!plan && chosen.length > 0 && !stale && suggestion?.matched === true && !busy;
+  const summary = suggestion?.summary ?? null;
+  const canApprove = !!plan && chosen.length > 0 && !stale && notReady == null && suggestion?.matched === true && !busy;
 
   return (
     <div className="space-y-3 text-sm">
@@ -150,8 +183,9 @@ export function AssignmentPlanner({
       {!plan && (
         <div className="space-y-2">
           <p className="text-xs text-slate-300">
-            Proposes one available team per waiting incident for the whole queue: highest priority covered first, then the least
-            total travel time. Only routes the flood-aware router finds count.
+            Proposes one available team per waiting incident for the whole queue: as many critical incidents covered as possible,
+            then high, then standard; then the least simulated travel time for critical incidents, then high, then standard. Only
+            routes the flood-aware router finds count.
           </p>
           <button
             disabled={notReady != null}
@@ -178,7 +212,8 @@ export function AssignmentPlanner({
           {plan.message && <p className="rounded bg-slate-800 p-2 text-xs text-amber-200">{plan.message}</p>}
           {stale && (
             <p role="alert" className="rounded bg-amber-400/15 p-2 text-xs text-amber-200 ring-1 ring-amber-400/50">
-              Something this plan depends on has changed (a team, an incident, or the river). Suggest again before approving.
+              Something this plan depends on has changed (a team, an incident, a caller&apos;s water report, the river, or a computed
+              priority). Suggest again before approving.
             </p>
           )}
           {suggestion?.matched === false && !stale && (
@@ -186,7 +221,12 @@ export function AssignmentPlanner({
               This screen was behind the latest data. Suggest again.
             </p>
           )}
-          {refusal && <p role="alert" className="rounded bg-red-500/15 p-2 text-xs text-red-200 ring-1 ring-red-400/50">{refusal}</p>}
+          {notReady && <p className="rounded bg-slate-800 p-2 text-xs text-amber-200">{notReady}</p>}
+          {(refusal ?? suggestion?.recordError) && (
+            <p role="alert" className="rounded bg-red-500/15 p-2 text-xs text-red-200 ring-1 ring-red-400/50">
+              {refusal ?? suggestion?.recordError}
+            </p>
+          )}
 
           <ul className="space-y-2">
             {plan.proposals.map((p) => (
@@ -195,12 +235,16 @@ export function AssignmentPlanner({
                 proposal={p}
                 checked={selected.has(p.incident.id)}
                 expanded={open === p.incident.id}
-                onToggle={() => setSelected((s) => {
-                  const n = new Set(s);
-                  if (n.has(p.incident.id)) n.delete(p.incident.id);
-                  else n.add(p.incident.id);
-                  return n;
-                })}
+                onToggle={() => {
+                  // A different selection is a different request: it gets its own approval ID.
+                  setApprovalId(null);
+                  setSelected((s) => {
+                    const n = new Set(s);
+                    if (n.has(p.incident.id)) n.delete(p.incident.id);
+                    else n.add(p.incident.id);
+                    return n;
+                  });
+                }}
                 onExpand={() => setOpen((o) => (o === p.incident.id ? null : p.incident.id))}
                 onPreview={() => onPreview(p.route)}
                 onSelect={() => onSelectIncident(p.incident.id)}
@@ -242,7 +286,7 @@ export function AssignmentPlanner({
               {busy ? "Approving…" : `Approve ${chosen.length} selected`}
             </button>
             <button
-              disabled={notReady != null}
+              disabled={notReady != null || busy}
               onClick={() => suggest()}
               className="rounded bg-slate-700 px-2.5 py-1.5 text-xs hover:bg-slate-600 disabled:opacity-40"
             >

@@ -1,18 +1,25 @@
 import type { Doc } from "./_generated/dataModel";
+import { EXERCISE_BOUNDS } from "./seedData";
 import { moverFor, PROFILES, type Mover } from "./vehicles";
 
 // Shared by the dashboard's assignment planner and the server's approval checks.
 //
 // The flood-aware router and the priority rules run in the dashboard (they need the
 // elevation tiles), so the server cannot re-run them. Instead a plan is bound to a
-// fingerprint of every server-known input to routing and priority. Approval recomputes
-// it from the database and refuses a plan made from different inputs. Route evidence
-// sent with an approval is also checked for internal consistency (see checkRouteEvidence).
+// fingerprint of every server-known input to routing, priority, eligibility and what the
+// dispatcher is shown, plus a fingerprint of every caller water report that shapes the
+// flood. Approval recomputes both from the database and refuses a plan made from different
+// inputs. Route evidence sent with an approval is checked for internal consistency (see
+// checkRouteEvidence) and against what the dispatcher reviewed. It is still computed in
+// the browser: the server does not re-route, so a well-formed route is trusted as given.
 
-/** The parts of an incident that can change who should go there, or how a route runs. */
+/** The parts of an incident that can change who should go there, how a route runs, or what the plan says. */
 type IncidentInput = Pick<
   Doc<"incidents">,
   | "status"
+  | "createdAt"
+  | "reportedAddress"
+  | "peopleCount"
   | "locationVerified"
   | "latitude"
   | "longitude"
@@ -24,7 +31,7 @@ type IncidentInput = Pick<
   | "linkedTo"
 > & { id: string };
 
-type TeamInput = Pick<Doc<"teams">, "available" | "currentAssignment" | "latitude" | "longitude" | "capabilities"> & {
+type TeamInput = Pick<Doc<"teams">, "name" | "available" | "currentAssignment" | "latitude" | "longitude" | "capabilities"> & {
   id: string;
   moving: boolean;
 };
@@ -43,6 +50,9 @@ export function incidentInput(i: Omit<IncidentInput, "id"> & ({ _id: string } | 
   return {
     id: "_id" in i ? i._id : i.id,
     status: i.status,
+    createdAt: i.createdAt,
+    reportedAddress: i.reportedAddress,
+    peopleCount: nul(i.peopleCount),
     locationVerified: i.locationVerified,
     latitude: i.latitude,
     longitude: i.longitude,
@@ -60,6 +70,7 @@ export function teamInput(
 ): TeamInput {
   return {
     id: "_id" in t ? t._id : t.id,
+    name: t.name,
     available: t.available,
     currentAssignment: t.currentAssignment,
     latitude: t.latitude,
@@ -95,9 +106,16 @@ function fnv(text: string): string {
   return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
 }
 
+/** A short deterministic identifier of any JSON-like value (sorted keys). */
+export function fingerprintOf(value: unknown): string {
+  return fnv(canonical(value));
+}
+
 /**
- * Fingerprint of everything a plan depends on. Resolved incidents are left out (they can't
- * change a plan); transcript-only updates are not inputs, so ongoing calls don't stale a plan.
+ * Fingerprint of everything a plan depends on except caller water reports on resolved
+ * incidents (see floodFingerprint). Resolved incidents are otherwise left out (they can't
+ * be assigned or change a priority); transcript-only updates are not inputs, so ongoing
+ * calls don't stale a plan.
  */
 export function planningFingerprint(inputs: PlanningInputs): string {
   const incidents = inputs.incidents.filter((i) => i.status !== "resolved").sort((x, y) => (x.id < y.id ? -1 : 1));
@@ -108,6 +126,28 @@ export function planningFingerprint(inputs: PlanningInputs): string {
       incidents,
       teams,
     }),
+  );
+}
+
+/** Where a caller's water report sits: it shapes the simulated flood whatever the incident's status. */
+interface WaterObservationInput {
+  id: string;
+  waterReport?: Doc<"incidents">["waterReport"];
+  latitude?: number | null;
+  longitude?: number | null;
+  locationVerified: boolean;
+}
+
+/**
+ * Fingerprint of every caller water report the flood model uses (Dashboard.tsx turns each
+ * one, resolved incidents included, into an observation that raises or lowers the water).
+ */
+export function floodFingerprint(incidents: WaterObservationInput[]): string {
+  return fingerprintOf(
+    incidents
+      .filter((i) => i.waterReport != null)
+      .map((i) => ({ id: i.id, report: i.waterReport, at: [i.longitude ?? null, i.latitude ?? null], verified: i.locationVerified }))
+      .sort((x, y) => (x.id < y.id ? -1 : 1)),
   );
 }
 
@@ -134,36 +174,62 @@ const ALLOWED_MODES: Record<Mover, RouteEvidence["modes"]> = {
 /** Fastest anything in the simulation moves (helicopter 50 m/s; motorway 27 m/s). */
 const MAX_SPEED: Record<Mover, number> = { road_vehicle: 27, high_water_vehicle: 27, boat: 27, air: 50 };
 const SAME_POINT_M = 2;
+/** More points than the road graph has nodes (about 11,500), so no real route exceeds it. */
+export const MAX_ROUTE_POINTS = 50_000;
 
-function metresBetween(a: number[], b: number[]) {
-  const kx = 111_320 * Math.cos((a[1] * Math.PI) / 180);
-  return Math.hypot((b[0] - a[0]) * kx, (b[1] - a[1]) * 111_320);
+const inArea = (p: number[]) =>
+  p.length === 2 &&
+  p.every(Number.isFinite) &&
+  p[0] >= EXERCISE_BOUNDS.west &&
+  p[0] <= EXERCISE_BOUNDS.east &&
+  p[1] >= EXERCISE_BOUNDS.south &&
+  p[1] <= EXERCISE_BOUNDS.north;
+
+/**
+ * Planar distance with the east-west scale at the area's north edge. The router scales by
+ * the cosine of its graph's middle latitude; within the area this cosine is never larger,
+ * so the result is never longer than the router's own distance (a safe speed lower bound).
+ */
+const COS_NORTH = Math.cos((EXERCISE_BOUNDS.north * Math.PI) / 180);
+function metresAtMost(a: number[], b: number[]) {
+  return Math.hypot((b[0] - a[0]) * 111_320 * COS_NORTH, (b[1] - a[1]) * 111_320);
 }
 
 /**
- * Whether a route is something the flood-aware router could have produced for this team
- * and incident: the right vehicle, from the team to the incident, only the leg types the
- * vehicle has, within its depth limit, and not faster than the vehicle can move. A road or
- * boat "route" that is a single straight line (the flood-ignoring fallback) never passes.
- * Returns the problem, or null when it is consistent.
+ * Whether route evidence is well formed and something the flood-aware router could have
+ * produced for this team and incident: two finite coordinates inside the exercise area at
+ * each end, a whole number of points, the right vehicle, from the team to the incident,
+ * only the leg types the vehicle has, a finite non-negative depth within its limit, and a
+ * positive travel time no faster than the vehicle can move. A road or boat "route" that is
+ * a single straight line (the flood-ignoring fallback) never passes. Returns the problem,
+ * or null when it is consistent. Consistency only: the server does not re-run the router.
  */
 export function checkRouteEvidence(
   team: Pick<Doc<"teams">, "longitude" | "latitude" | "capabilities">,
   incident: Pick<Doc<"incidents">, "longitude" | "latitude">,
   r: RouteEvidence,
 ): string | null {
+  if (!Array.isArray(r.start) || !inArea(r.start)) return "route start isn't a point in the exercise area";
+  if (!Array.isArray(r.end) || !inArea(r.end)) return "route end isn't a point in the exercise area";
+  if (!Number.isInteger(r.points) || r.points < 2 || r.points > MAX_ROUTE_POINTS) return "route has an invalid number of points";
+  if (!Number.isFinite(r.maxDepth) || r.maxDepth < 0) return "route has an invalid water depth";
+  if (!Number.isFinite(r.realSeconds) || r.realSeconds <= 0) return "route has no usable travel time";
   const mover = moverFor(team.capabilities);
   if (r.mover !== mover) return `route is for a ${r.mover}, but this team moves as a ${mover}`;
   if (incident.longitude == null || incident.latitude == null) return "incident has no location";
-  if (metresBetween(r.start, [team.longitude, team.latitude]) > SAME_POINT_M) return "route doesn't start at the team";
-  if (metresBetween(r.end, [incident.longitude, incident.latitude]) > SAME_POINT_M) return "route doesn't end at the incident";
-  if (!r.modes.length || r.modes.some((m) => !ALLOWED_MODES[mover].includes(m))) return "route uses travel this team can't do";
-  if (mover !== "air" && r.points < 3) return "straight-line route; flood-aware route needed";
+  if (metresAtMost(r.start, [team.longitude, team.latitude]) > SAME_POINT_M) return "route doesn't start at the team";
+  if (metresAtMost(r.end, [incident.longitude, incident.latitude]) > SAME_POINT_M) return "route doesn't end at the incident";
+  if (!r.modes.length || new Set(r.modes).size !== r.modes.length || r.modes.some((m) => !ALLOWED_MODES[mover].includes(m))) {
+    return "route uses travel this team can't do";
+  }
+  if (mover === "air" ? r.points !== 2 || r.maxDepth !== 0 : r.points < 3) {
+    return mover === "air" ? "aircraft route isn't a single direct flight" : "straight-line route; flood-aware route needed";
+  }
   const limit = mover === "air" ? null : PROFILES[mover].limit;
   if (r.limit !== limit) return "route used the wrong depth limit";
   if (limit != null && !(r.maxDepth <= limit)) return "route drives through water deeper than the team's limit";
-  if (!Number.isFinite(r.realSeconds) || r.realSeconds <= 0) return "route has no usable travel time";
-  if (r.realSeconds < metresBetween(r.start, r.end) / MAX_SPEED[mover]) return "travel time is faster than the team can move";
+  // A relative epsilon only absorbs floating-point rounding between the two calculations.
+  if (r.realSeconds * (1 + 1e-9) < metresAtMost(r.start, r.end) / MAX_SPEED[mover]) return "travel time is faster than the team can move";
   return null;
 }
 
@@ -193,6 +259,9 @@ export function snapshotOf(inputs: PlanningInputs): string {
 
 const INCIDENT_FIELDS: [keyof IncidentInput, string][] = [
   ["status", "status"],
+  ["reportedAddress", "address"],
+  ["peopleCount", "number of people"],
+  ["createdAt", "report time"],
   ["locationVerified", "location confirmation"],
   ["latitude", "location"],
   ["longitude", "location"],
@@ -204,6 +273,7 @@ const INCIDENT_FIELDS: [keyof IncidentInput, string][] = [
   ["waterReport", "reported water depth"],
 ];
 const TEAM_FIELDS: [keyof TeamInput, string][] = [
+  ["name", "name"],
   ["available", "availability"],
   ["currentAssignment", "assignment"],
   ["latitude", "position"],

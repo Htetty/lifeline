@@ -73,15 +73,17 @@ function evidence(team: Doc<"teams">, incident: Doc<"incidents">): RouteEvidence
 /** Record a plan for these pairs from the current state, as the dashboard does. */
 async function propose(t: T, pairs: [Id<"incidents">, Id<"teams">][], fp?: string) {
   const planId = `plan-${++planCounter}`;
-  const matched = await t.mutation(api.planner.recordProposal, {
-    dispatcherToken, planId, fingerprint: fp ?? (await fingerprint(t)),
-    proposals: pairs.map(([incidentId, teamId]) => ({ incidentId, teamId, tier: "critical" as const, seconds: 300, reason: "test" })),
-    unassigned: [],
-  });
-  // The dashboard keeps the route evidence it planned with.
+  // The dashboard records the routes it shows, and keeps them for approval.
   const planned = await t.run(async (ctx) =>
     Promise.all(pairs.map(async ([incidentId, teamId]) => evidence((await ctx.db.get(teamId))!, (await ctx.db.get(incidentId))!))),
   );
+  const matched = await t.mutation(api.planner.recordProposal, {
+    dispatcherToken, planId, fingerprint: fp ?? (await fingerprint(t)),
+    proposals: pairs.map(([incidentId, teamId], k) => ({
+      incidentId, teamId, tier: "critical" as const, seconds: Math.round(planned[k].realSeconds), reason: "test", evidence: planned[k],
+    })),
+    unassigned: [],
+  });
   return { planId, matched, pairs, planned };
 }
 
@@ -216,6 +218,28 @@ describe("stale plans are refused, with what changed", () => {
     ["a new incident started waiting", async (t) => {
       await mapIncident(t, "5 New Rd");
     }, /incident "5 New Rd" is new/],
+    ["the caller corrected the number of people", async (t) => {
+      await t.mutation(api.calls.upsertFromCall, {
+        secret, callId: "call-a", source: "live_demo", reportedAddress: "1 Fictional Way", peopleCount: 7,
+        reportedPosition: "second floor", hazards: [], summary: "more people", transcript: "Caller: actually seven of us",
+      });
+    }, /"1 Fictional Way": number of people changed/],
+    ["the number of people became unknown", async (t) => {
+      await t.mutation(api.calls.upsertFromCall, {
+        secret, callId: "call-a", source: "live_demo", reportedAddress: "1 Fictional Way", peopleCount: null,
+        reportedPosition: "second floor", hazards: [], summary: "unsure", transcript: "Caller: I don't know how many",
+        withdrawn: [{ fact: "people_count", name: null, evidence: "I don't know how many" }],
+      });
+    }, /"1 Fictional Way": number of people changed/],
+    ["a resolved caller's water report changed the flood", async (t) => {
+      const r = await callIncident(t, "call-r", "3 Resolved Way");
+      await t.mutation(api.incidents.setStatus, { dispatcherToken, incidentId: r, status: "resolved" });
+      await t.mutation(api.calls.upsertFromCall, {
+        secret, callId: "call-r", source: "live_demo", reportedAddress: "3 Resolved Way", peopleCount: 3,
+        reportedPosition: "second floor", hazards: [], summary: "water", transcript: "Caller: water is at my chest",
+        waterReport: { level: "chest", floor: 0, evidence: "water is at my chest", measuredMeters: null },
+      });
+    }, /water report changed the simulated flood/],
   ];
   for (const [what, change, reason] of cases) {
     test(`${what}`, async () => {
@@ -234,6 +258,28 @@ describe("stale plans are refused, with what changed", () => {
       expect((await decisions(t)).at(-1)!.outcome).toBe("rejected_stale");
     });
   }
+
+  test("a resolved report is set up before the plan: only its later water change stales it", async () => {
+    // Guards the case above: resolving an incident before planning is not itself a change.
+    const { t, boat } = await setup();
+    const a = await callIncident(t, "call-a", "1 Fictional Way");
+    const r = await callIncident(t, "call-r", "3 Resolved Way", {
+      waterReport: { level: "knee", floor: 0, evidence: "knee deep", measuredMeters: null },
+    });
+    await t.mutation(api.incidents.setStatus, { dispatcherToken, incidentId: r, status: "resolved" });
+    expect(await approve(t, await propose(t, [[a, boat._id]]))).toMatchObject({ ok: true });
+  });
+
+  test("a dashboard whose caller water reports differ from the server's is told it's behind", async () => {
+    const { t, boat } = await setup();
+    const a = await mapIncident(t, "1 Fictional Way");
+    const planId = `plan-${++planCounter}`;
+    const r = await t.mutation(api.planner.recordProposal, {
+      dispatcherToken, planId, fingerprint: await fingerprint(t), floodFingerprint: "0000000000000000",
+      proposals: [{ incidentId: a, teamId: boat._id, tier: "high", seconds: 300, reason: "test" }], unassigned: [],
+    });
+    expect(r).toEqual({ matched: false });
+  });
 
   test("a plan made from out-of-date dashboard data can't be approved", async () => {
     const { t, boat } = await setup();
@@ -254,6 +300,51 @@ describe("stale plans are refused, with what changed", () => {
     expect(results.find((r) => !r.ok)).toMatchObject({ outcome: "rejected_stale" });
     const boatNow = (await t.run((ctx) => ctx.db.get(boat._id)))!;
     expect([a, b]).toContain(boatNow.currentAssignment);
+  });
+});
+
+describe("approval IDs and reviewed routes", () => {
+  test("reusing an approval ID for a different selection, plan or route is refused and applies nothing", async () => {
+    const { t, boat, truck } = await setup();
+    const a = await mapIncident(t, "1 Fictional Way");
+    const b = await mapIncident(t, "2 Fictional Way");
+    const plan = await propose(t, [[a, boat._id], [b, truck._id]]);
+    const other = await propose(t, [[b, truck._id]]);
+    const only = { ...plan, pairs: plan.pairs.slice(0, 1) };
+    expect(await approve(t, only, "id-1")).toMatchObject({ ok: true, assigned: 1 });
+    const before = await snapshot(t);
+    for (const attempt of [
+      () => approve(t, plan, "id-1"), // same plan, bigger selection
+      () => approve(t, other, "id-1"), // another plan
+      () => approve(t, only, "id-1", (e) => ({ ...e, points: e.points + 1 })), // another route
+    ]) {
+      const r = await attempt();
+      expect(r).toMatchObject({ ok: false, outcome: "rejected_invalid" });
+      expect((r as { reason: string }).reason).toMatch(/already used for a different request/);
+    }
+    expect(await snapshot(t)).toEqual(before);
+    expect((await decisions(t)).filter((d) => d.approvalId === "id-1")).toHaveLength(1);
+    // The identical retry still gets its original receipt.
+    expect(await approve(t, only, "id-1")).toEqual({ ok: true, outcome: "approved", assigned: 1 });
+  });
+
+  test("a route other than the reviewed one is refused, even if well formed", async () => {
+    const { t, boat } = await setup();
+    const a = await mapIncident(t, "1 Fictional Way");
+    const plan = await propose(t, [[a, boat._id]]);
+    for (const tweak of [
+      (e: RouteEvidence) => ({ ...e, points: e.points + 3 }),
+      (e: RouteEvidence) => ({ ...e, maxDepth: 0.2 }),
+      (e: RouteEvidence) => ({ ...e, modes: ["road", "foot"] as RouteEvidence["modes"] }),
+    ]) {
+      const r = await approve(t, plan, undefined, tweak);
+      expect(r).toMatchObject({ ok: false, outcome: "rejected_invalid" });
+      expect((r as { reason: string }).reason).toMatch(/differs from the one that was reviewed/);
+    }
+    const slower = await approve(t, plan, undefined, (e) => ({ ...e, realSeconds: e.realSeconds + 120 }));
+    expect((slower as { reason: string }).reason).toMatch(/route time differs from the proposal that was reviewed/);
+    expect((await t.run((ctx) => ctx.db.get(a)))!.assignedTeamId).toBeNull();
+    expect(await approve(t, plan)).toMatchObject({ ok: true });
   });
 });
 

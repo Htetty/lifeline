@@ -9,30 +9,22 @@ import {
   changesBetween,
   checkRouteEvidence,
   explanationProblems,
+  fingerprintOf,
+  floodFingerprint,
   incidentInput,
   planningFingerprint,
   snapshotOf,
   teamInput,
   type PlanningInputs,
 } from "./planning";
-import { priorityTier } from "./schema";
+import { priorityTier, routeEvidence } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
 // Dispatcher-reviewed assignment plans (src/lib/planner.ts computes them in the dashboard).
 // Suggesting a plan changes nothing. Approval re-checks the selected assignments against the
-// database, refuses a plan made from inputs that have since changed, and applies the whole
-// batch in one transaction through the normal assignment path, or nothing at all.
-
-const routeEvidence = v.object({
-  mover: v.union(v.literal("road_vehicle"), v.literal("high_water_vehicle"), v.literal("boat"), v.literal("air")),
-  realSeconds: v.number(),
-  start: v.array(v.number()),
-  end: v.array(v.number()),
-  points: v.number(),
-  modes: v.array(v.union(v.literal("road"), v.literal("water"), v.literal("foot"), v.literal("air"))),
-  maxDepth: v.number(),
-  limit: v.union(v.number(), v.null()),
-});
+// database, refuses a plan made from inputs that have since changed or with routes other
+// than the ones the dispatcher reviewed, and applies the whole batch in one transaction
+// through the normal assignment path, or nothing at all.
 
 async function currentState(ctx: QueryCtx) {
   const exercise = await ctx.db
@@ -54,7 +46,8 @@ async function currentState(ctx: QueryCtx) {
     ...incidents.map((i) => [i._id, `"${i.reportedAddress}"`] as [string, string]),
     ...teams.map((t) => [t._id, t.name] as [string, string]),
   ]);
-  return { inputs, fingerprint: planningFingerprint(inputs), incidents, teams, names };
+  const flood = floodFingerprint(incidents.map((i) => ({ ...i, id: i._id })));
+  return { inputs, fingerprint: planningFingerprint(inputs), flood, incidents, teams, names };
 }
 
 /** Record what the dispatcher was shown. Touches no incident, team or caller update. */
@@ -63,16 +56,25 @@ export const recordProposal = mutation({
     dispatcherToken: v.optional(v.string()),
     planId: v.string(),
     fingerprint: v.string(),
+    /** The dashboard's floodFingerprint; when given it must match the server's too. */
+    floodFingerprint: v.optional(v.string()),
     proposals: v.array(
-      v.object({ incidentId: v.id("incidents"), teamId: v.id("teams"), tier: priorityTier, seconds: v.number(), reason: v.string() }),
+      v.object({
+        incidentId: v.id("incidents"),
+        teamId: v.id("teams"),
+        tier: priorityTier,
+        seconds: v.number(),
+        reason: v.string(),
+        evidence: v.optional(routeEvidence),
+      }),
     ),
     unassigned: v.array(v.object({ incidentId: v.id("incidents"), reason: v.string() })),
   },
-  handler: async (ctx, { dispatcherToken, planId, fingerprint, proposals, unassigned }) => {
+  handler: async (ctx, { dispatcherToken, planId, fingerprint, floodFingerprint: flood, proposals, unassigned }) => {
     requireDispatcher(dispatcherToken);
     const existing = await ctx.db.query("assignmentPlans").withIndex("by_planId", (q) => q.eq("planId", planId)).unique();
     const state = await currentState(ctx);
-    const matched = fingerprint === state.fingerprint;
+    const matched = fingerprint === state.fingerprint && (flood === undefined || flood === state.flood);
     if (existing) return { matched: existing.matchedServer };
     await ctx.db.insert("assignmentPlans", {
       exerciseId: EXERCISE_ID,
@@ -80,6 +82,7 @@ export const recordProposal = mutation({
       fingerprint,
       matchedServer: matched,
       inputs: snapshotOf(state.inputs),
+      flood: state.flood,
       proposals,
       unassigned,
       status: "proposed",
@@ -94,8 +97,10 @@ export type ApprovalResult =
   | { ok: false; outcome: "rejected_stale" | "rejected_invalid"; reason: string };
 
 /**
- * Approve the selected proposals of a plan. Idempotent per approvalId: a retry returns the
- * first attempt's result without assigning anything again or queueing more caller updates.
+ * Approve the selected proposals of a plan. Idempotent per approvalId: a retry of the same
+ * request returns the first attempt's result without assigning anything again or queueing
+ * more caller updates. Reusing an approvalId for a different plan, selection or route is
+ * refused and applies nothing.
  */
 export const approvePlan = mutation({
   args: {
@@ -106,8 +111,14 @@ export const approvePlan = mutation({
   },
   handler: async (ctx, { dispatcherToken, planId, approvalId, selected }): Promise<ApprovalResult> => {
     requireDispatcher(dispatcherToken);
+    const request = fingerprintOf({ planId, selected });
     const prior = await ctx.db.query("planDecisions").withIndex("by_approvalId", (q) => q.eq("approvalId", approvalId)).unique();
     if (prior) {
+      if (prior.request !== request) {
+        const reason = "this approval ID was already used for a different request. Nothing was applied for this one; approve again.";
+        await logActivity(ctx, `Planned assignments not applied: ${reason}`);
+        return { ok: false, outcome: "rejected_invalid", reason };
+      }
       return prior.outcome === "approved"
         ? { ok: true, outcome: "approved", assigned: prior.selected.length }
         : { ok: false, outcome: prior.outcome, reason: prior.reason ?? "" };
@@ -118,7 +129,7 @@ export const approvePlan = mutation({
 
     // Writes only the decision record; nothing about incidents or teams changes.
     const refuse = async (outcome: "rejected_stale" | "rejected_invalid", reason: string): Promise<ApprovalResult> => {
-      await ctx.db.insert("planDecisions", { exerciseId: EXERCISE_ID, approvalId, planId, outcome, reason, selected: pairs, at: Date.now() });
+      await ctx.db.insert("planDecisions", { exerciseId: EXERCISE_ID, approvalId, planId, outcome, reason, selected: pairs, request, at: Date.now() });
       await logActivity(ctx, `Planned assignments not applied: ${reason}`);
       return { ok: false, outcome, reason };
     };
@@ -129,13 +140,14 @@ export const approvePlan = mutation({
     if (!plan.matchedServer) {
       return refuse("rejected_stale", "the dashboard was behind the latest data when this plan was made. Suggest assignments again.");
     }
-    if (state.fingerprint !== plan.fingerprint) {
+    if (state.fingerprint !== plan.fingerprint || (plan.flood !== undefined && state.flood !== plan.flood)) {
       const what = changesBetween(plan.inputs, state.inputs, state.names);
+      if (plan.flood !== undefined && state.flood !== plan.flood) what.push("a caller's water report changed the simulated flood");
       return refuse("rejected_stale", `things changed since the plan was made (${what.slice(0, 4).join("; ") || "planning inputs"}). Suggest assignments again.`);
     }
 
     // Same inputs as when planned: still check every pair against the database itself.
-    const proposed = new Set(plan.proposals.map((p) => `${p.incidentId}|${p.teamId}`));
+    const proposed = new Map(plan.proposals.map((p) => [`${p.incidentId}|${p.teamId}`, p]));
     const problems: string[] = [];
     const seenIncidents = new Set<Id<"incidents">>();
     const seenTeams = new Set<Id<"teams">>();
@@ -145,7 +157,8 @@ export const approvePlan = mutation({
       const team = state.teams.find((t) => t._id === teamId);
       const label = `${incident ? `"${incident.reportedAddress}"` : "an incident"} → ${team?.name ?? "a team"}`;
       const fail = (why: string) => problems.push(`${label}: ${why}`);
-      if (!proposed.has(`${incidentId}|${teamId}`)) fail("not part of this plan");
+      const reviewed = proposed.get(`${incidentId}|${teamId}`);
+      if (!reviewed) fail("not part of this plan");
       else if (seenIncidents.has(incidentId) || seenTeams.has(teamId)) fail("selected twice");
       else if (!incident || !team) fail("no longer exists");
       else if (incident.linkedTo) fail("is a linked report; it follows its main incident");
@@ -155,7 +168,11 @@ export const approvePlan = mutation({
       else {
         const routeProblem = checkRouteEvidence(team, incident, evidence);
         if (routeProblem) fail(routeProblem);
-        else ready.push([incident, team]);
+        else if (Math.round(evidence.realSeconds) !== Math.round(reviewed.seconds)) {
+          fail("route time differs from the proposal that was reviewed; suggest assignments again");
+        } else if (reviewed.evidence && fingerprintOf(reviewed.evidence) !== fingerprintOf(evidence)) {
+          fail("route differs from the one that was reviewed; suggest assignments again");
+        } else ready.push([incident, team]);
       }
       seenIncidents.add(incidentId);
       seenTeams.add(teamId);
@@ -165,7 +182,7 @@ export const approvePlan = mutation({
     // All checks passed before any write: apply the whole batch in this one transaction.
     for (const [incident, team] of ready) await assignTeamTo(ctx, incident, team);
     await ctx.db.patch(plan._id, { status: "approved" });
-    await ctx.db.insert("planDecisions", { exerciseId: EXERCISE_ID, approvalId, planId, outcome: "approved", reason: null, selected: pairs, at: Date.now() });
+    await ctx.db.insert("planDecisions", { exerciseId: EXERCISE_ID, approvalId, planId, outcome: "approved", reason: null, selected: pairs, request, at: Date.now() });
     await logActivity(ctx, `Dispatcher approved ${ready.length} planned assignment${ready.length === 1 ? "" : "s"} (simulated plan).`);
     return { ok: true, outcome: "approved", assigned: ready.length };
   },

@@ -52,12 +52,13 @@ describe.skipIf(!local)("approvals on a real local Convex", () => {
     const fp = await fingerprint();
     const plan = async (incidentId: Id<"incidents">) => {
       const planId = `live-${tag}-${incidentId}`;
+      const route = evidence(team, s.incidents.find((i) => i._id === incidentId)!);
       await client.mutation(api.planner.recordProposal, {
         dispatcherToken, planId, fingerprint: fp,
-        proposals: [{ incidentId, teamId: team._id, tier: "high", seconds: 300, reason: "race" }], unassigned: [],
+        proposals: [{ incidentId, teamId: team._id, tier: "high", seconds: Math.round(route.realSeconds), reason: "race", evidence: route }],
+        unassigned: [],
       });
-      const incident = s.incidents.find((i) => i._id === incidentId)!;
-      return { planId, selected: [{ incidentId, teamId: team._id, evidence: evidence(team, incident) }] };
+      return { planId, selected: [{ incidentId, teamId: team._id, evidence: route }] };
     };
     const [pa, pb] = [await plan(a), await plan(b)];
     // Separate clients so the two mutations really run at the same time.

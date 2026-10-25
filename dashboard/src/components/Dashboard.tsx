@@ -249,6 +249,12 @@ function DashboardView({ state }: { state: ExerciseState }) {
     () => (grid && observations.length ? computeFlood(grid, waterLevel, observations) : riverFlood),
     [grid, waterLevel, observations, riverFlood],
   );
+  // What the planner's routes depend on locally: road and elevation data, river level and
+  // caller observations. A plan made under different values is stale.
+  const routeContext = useMemo(
+    () => JSON.stringify([roads != null, grid != null, waterLevel, observations]),
+    [roads, grid, waterLevel, observations],
+  );
   const depthOverChannel = grid ? Math.max(0, channelDepth(grid, waterLevel)) : null;
   const observedAt = waterDraft == null ? state.waterObservedAt : null;
 
@@ -657,7 +663,14 @@ function DashboardView({ state }: { state: ExerciseState }) {
                 state={state}
                 priorities={priorities}
                 routeFor={(team, incident) => planFor(team, incident, Date.now())}
-                notReady={waterDraft != null ? "Wait for the river level change to save, then suggest." : null}
+                routeContext={routeContext}
+                notReady={
+                  waterDraft != null
+                    ? "Wait for the river level change to save, then suggest."
+                    : pendingPick || placingFor
+                      ? "Finish or cancel the location you're placing on the map, then suggest."
+                      : null
+                }
                 onPreview={setPlannerPreview}
                 onSelectIncident={setSelectedId}
                 onDone={setToast}

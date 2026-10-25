@@ -1,4 +1,11 @@
-import { incidentInput, planningFingerprint, teamInput, type RouteEvidence } from "../../convex/planning";
+import {
+  fingerprintOf,
+  floodFingerprint,
+  incidentInput,
+  planningFingerprint,
+  teamInput,
+  type RouteEvidence,
+} from "../../convex/planning";
 import type { Priority } from "./priority";
 import { TIER_RANK } from "./priority";
 import type { NoRoute, RoutePlan } from "./router";
@@ -83,6 +90,8 @@ export interface Plan {
 const TIERS: PriorityTier[] = ["critical", "high", "standard"];
 const pairKey = (incidentId: string, teamId: string) => `${incidentId}|${teamId}`;
 const minutes = (s: number) => `${Math.max(1, Math.round(s / 60))} min`;
+/** A travel-time difference, in seconds when under a minute so it is never overstated. */
+const duration = (s: number) => (s < 60 ? `${s} s` : minutes(s));
 
 export function evidenceFor(route: RoutePlan): RouteEvidence {
   return {
@@ -175,31 +184,36 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
     };
   }
 
-  // Exact DP over which teams are used.
+  // Exact DP over which teams are used. `forced` pins one incident to one team, to see
+  // what the best plan would be if that choice were made (used to explain the plan).
   const T = free.length;
-  let layer = new Map<number, { score: Score; pick: number[] }>([[0, { score: [0, 0, 0, 0, 0, 0], pick: [] }]]);
-  candidates.forEach((incident, k) => {
-    const next = new Map<number, { score: Score; pick: number[] }>();
-    const offer = (mask: number, score: Score, pick: number[]) => {
-      const cur = next.get(mask);
-      if (!cur || better(score, pick, cur.score, cur.pick)) next.set(mask, { score, pick });
-    };
-    const tier = TIER_RANK[tierOf(incident)];
-    for (const [mask, s] of layer) {
-      offer(mask, s.score, [...s.pick, -1]);
-      for (let j = 0; j < T; j++) {
-        if (mask & (1 << j) || !eligible(k, j)) continue;
-        const score = [...s.score];
-        score[tier] += 1;
-        score[3 + tier] -= secs(k, j);
-        offer(mask | (1 << j), score, [...s.pick, j]);
+  const solve = (forced?: { k: number; j: number }) => {
+    let layer = new Map<number, { score: Score; pick: number[] }>([[0, { score: [0, 0, 0, 0, 0, 0], pick: [] }]]);
+    candidates.forEach((incident, k) => {
+      const next = new Map<number, { score: Score; pick: number[] }>();
+      const offer = (mask: number, score: Score, pick: number[]) => {
+        const cur = next.get(mask);
+        if (!cur || better(score, pick, cur.score, cur.pick)) next.set(mask, { score, pick });
+      };
+      const tier = TIER_RANK[tierOf(incident)];
+      for (const [mask, s] of layer) {
+        if (forced?.k !== k) offer(mask, s.score, [...s.pick, -1]);
+        for (let j = 0; j < T; j++) {
+          if (mask & (1 << j) || !eligible(k, j) || (forced?.k === k && forced.j !== j)) continue;
+          const score = [...s.score];
+          score[tier] += 1;
+          score[3 + tier] -= secs(k, j);
+          offer(mask | (1 << j), score, [...s.pick, j]);
+        }
       }
-    }
-    layer = next;
-  });
-  let best: { score: Score; pick: number[] } | null = null;
-  for (const s of layer.values()) if (!best || better(s.score, s.pick, best.score, best.pick)) best = s;
-  const pick = best!.pick;
+      layer = next;
+    });
+    let best: { score: Score; pick: number[] } | null = null;
+    for (const s of layer.values()) if (!best || better(s.score, s.pick, best.score, best.pick)) best = s;
+    return best;
+  };
+  const best = solve()!;
+  const pick = best.pick;
   /** Team index → the candidate it is proposed for. */
   const servedBy = new Map<number, number>();
   pick.forEach((j, k) => j >= 0 && servedBy.set(j, k));
@@ -222,6 +236,32 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
       })
       .sort((a, b) => (a.seconds ?? Infinity) - (b.seconds ?? Infinity) || a.team.name.localeCompare(b.team.name));
 
+  /**
+   * Why a faster team isn't proposed here: the best plan that does send it here, compared
+   * with the chosen plan on the objective, in order. The first difference is the reason.
+   */
+  const tradeoff = (k: number, faster: TeamOption, seconds: number): string => {
+    const lead =
+      faster.seconds! < seconds
+        ? `${faster.team.name} would be faster (${duration(faster.seconds!)} vs ${duration(seconds)})`
+        : `${faster.team.name} is just as fast (${duration(seconds)})`;
+    const alt = solve({ k, j: free.indexOf(faster.team) });
+    if (!alt) return `${lead}, but no complete plan can send it here.`;
+    for (let t = 0; t < 3; t++) {
+      if (alt.score[t] === best.score[t]) continue;
+      const lost = candidates.filter((_, x) => TIER_RANK[tierOf(candidates[x])] === t && pick[x] >= 0 && alt.pick[x] < 0);
+      const tier = TIERS[t];
+      const names = lost.map((i) => i.reportedAddress).join(", ");
+      return `${lead}, but sending it here would leave ${alt.score[t] - best.score[t] === -1 ? `a ${tier} incident` : `${best.score[t] - alt.score[t]} ${tier} incidents`} without a team${names ? ` (${names})` : ""}. Covering more incidents of each priority, most urgent first, comes before travel time.`;
+    }
+    for (let t = 3; t < 6; t++) {
+      if (alt.score[t] === best.score[t]) continue;
+      const tier = TIERS[t - 3];
+      return `${lead}, but sending it here would add ${duration(best.score[t] - alt.score[t])} of simulated travel for ${tier} incidents overall (${duration(-alt.score[t])} instead of ${duration(-best.score[t])}). Travel time is kept lowest for the most urgent incidents first.`;
+    }
+    return `${lead}, and the plan that sends it here is otherwise equal; equal plans are settled by queue order, each incident taking the team first by name.`;
+  };
+
   const proposals: Proposal[] = [];
   const unassigned: Unassigned[] = [];
   candidates.forEach((incident, k) => {
@@ -233,7 +273,7 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
       const reason = !free.length
         ? "No team is available."
         : usable.length
-          ? `Every team that can reach it is proposed for ${tier === "critical" ? "another critical" : "a higher-priority or nearer"} incident (${usable.map((o) => o.team.name).join(", ")}).`
+          ? `Every team that can reach it is proposed for another incident (${usable.map((o) => `${o.team.name}: ${o.note.replace(/^Proposed for /, "")}`).join("; ")}); sending one here would leave that incident without a team, and the plan covers the most incidents of each priority, most urgent first.`
           : alternatives.some((o) => o.state === "excluded")
             ? "The teams that can reach it were excluded by the dispatcher."
             : alternatives.some((o) => o.state === "cannot_evaluate")
@@ -250,19 +290,8 @@ export function planAssignments({ incidents, teams, priorities, route, excluded 
     let reason: string;
     if (onlyOption) reason = `${team.name} is the only available team that can reach it under the simulated flood.`;
     else if (fastest?.team.id === team.id) reason = `Fastest eligible team (${minutes(seconds)}, simulated).`;
-    else {
-      const faster = alternatives.filter((o) => o.state === "used_elsewhere" && o.seconds != null && o.seconds < seconds);
-      const scarce = faster.find((o) => {
-        const k2 = servedBy.get(free.indexOf(o.team))!;
-        return optionsFor(k2).filter((x) => ["proposed", "eligible", "used_elsewhere"].includes(x.state)).length === 1;
-      });
-      const first = faster[0];
-      reason = scarce
-        ? `${scarce.team.name} would be faster but is the only team that can reach ${candidates[servedBy.get(free.indexOf(scarce.team))!].reportedAddress}.`
-        : first
-          ? `${first.team.name} would be faster (${minutes(first.seconds!)}) but is ${first.note.charAt(0).toLowerCase()}${first.note.slice(1)}, which ranks the same or higher.`
-          : `Best option in the overall plan (${minutes(seconds)}, simulated).`;
-    }
+    else if (fastest) reason = tradeoff(k, fastest, seconds);
+    else reason = `Best option in the overall plan (${minutes(seconds)}, simulated).`;
     coverage[tier].covered++;
     proposals.push({ incident, tier, team, route, seconds, reason, unknowns: materialUnknowns(incident), alternatives, evidence: evidenceFor(route) });
   });
@@ -300,4 +329,14 @@ export function stateFingerprint(state: ExerciseState): string {
     incidents: state.incidents.map((i) => incidentInput(i as unknown as In)),
     teams: state.teams.map((t) => teamInput(t as unknown as TIn)),
   });
+}
+
+/** The server's floodFingerprint, from what the dashboard sees (resolved reports included). */
+export function stateFloodFingerprint(state: ExerciseState): string {
+  return floodFingerprint(state.incidents);
+}
+
+/** Fingerprint of the priorities the dashboard computed (they also depend on the local flood model). */
+export function priorityFingerprint(priorities: Map<string, Priority>): string {
+  return fingerprintOf([...priorities].map(([id, p]) => [id, p.tier, p.reasons]).sort((a, b) => (a[0] < b[0] ? -1 : 1)));
 }

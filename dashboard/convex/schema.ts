@@ -91,6 +91,18 @@ export const capability = v.union(
   v.literal("air"),
 );
 
+/** In brief, what the dashboard's flood-aware router returned for a team and incident (see convex/planning.ts). */
+export const routeEvidence = v.object({
+  mover: v.union(v.literal("road_vehicle"), v.literal("high_water_vehicle"), v.literal("boat"), v.literal("air")),
+  realSeconds: v.number(),
+  start: v.array(v.number()),
+  end: v.array(v.number()),
+  points: v.number(),
+  modes: v.array(v.union(v.literal("road"), v.literal("water"), v.literal("foot"), v.literal("air"))),
+  maxDepth: v.number(),
+  limit: v.union(v.number(), v.null()),
+});
+
 export default defineSchema({
   exercises: defineTable({
     exerciseId: v.string(),
@@ -221,8 +233,18 @@ export default defineSchema({
     /** Whether that matched the server's inputs when the plan was recorded. */
     matchedServer: v.boolean(),
     inputs: v.string(),
+    /** Fingerprint of every caller water report shaping the flood when recorded (resolved ones too). */
+    flood: v.optional(v.string()),
     proposals: v.array(
-      v.object({ incidentId: v.id("incidents"), teamId: v.id("teams"), tier: priorityTier, seconds: v.number(), reason: v.string() }),
+      v.object({
+        incidentId: v.id("incidents"),
+        teamId: v.id("teams"),
+        tier: priorityTier,
+        seconds: v.number(),
+        reason: v.string(),
+        /** The route the dispatcher was shown; approval must send this same route. */
+        evidence: v.optional(routeEvidence),
+      }),
     ),
     unassigned: v.array(v.object({ incidentId: v.id("incidents"), reason: v.string() })),
     status: v.union(v.literal("proposed"), v.literal("approved")),
@@ -239,6 +261,8 @@ export default defineSchema({
     outcome: v.union(v.literal("approved"), v.literal("rejected_stale"), v.literal("rejected_invalid")),
     reason: v.union(v.string(), v.null()),
     selected: v.array(v.object({ incidentId: v.id("incidents"), teamId: v.id("teams") })),
+    /** Fingerprint of the whole request, so a reused approvalId can only repeat the same request. */
+    request: v.optional(v.string()),
     at: v.number(),
   })
     .index("by_approvalId", ["approvalId"])

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { checkRouteEvidence } from "../convex/planning";
+import { checkRouteEvidence, MAX_ROUTE_POINTS } from "../convex/planning";
+import { EXERCISE_BOUNDS } from "../convex/seedData";
 import { computeFlood, type FloodGrid } from "../src/lib/flood";
-import { describePlan, planAssignments, type RouteResult } from "../src/lib/planner";
+import { describePlan, evidenceFor, planAssignments, type RouteResult } from "../src/lib/planner";
 import type { Priority } from "../src/lib/priority";
 import { buildGraph, planRoute, type NoRoute, type RoutePlan } from "../src/lib/router";
 import type { Incident, PriorityTier, RescueTeam } from "../src/lib/types";
@@ -67,7 +68,9 @@ describe("whole-queue objective", () => {
     });
     expect(pairs(plan)).toEqual({ A: "truck", B: "boat" });
     expect(plan.proposals.find((p) => p.incident.id === "B")!.reason).toMatch(/only available team/);
-    expect(plan.proposals.find((p) => p.incident.id === "A")!.reason).toMatch(/Boat 1 would be faster but is the only team/);
+    expect(plan.proposals.find((p) => p.incident.id === "A")!.reason).toBe(
+      "Boat 1 would be faster (2 min vs 10 min), but sending it here would leave a critical incident without a team (B St (fictional)). Covering more incidents of each priority, most urgent first, comes before travel time.",
+    );
     expect(plan.unassigned.filter((u) => u.incident.status === "awaiting_assignment")).toEqual([]);
   });
 
@@ -93,7 +96,7 @@ describe("whole-queue objective", () => {
     });
     expect(pairs(plan)).toEqual({ crit: "heli", high: "truck" });
     expect(plan.proposals.find((p) => p.incident.id === "high")!.reason).toBe(
-      "Heli 1 would be faster (1 min) but is proposed for crit St (fictional) (critical), which ranks the same or higher.",
+      "Heli 1 would be faster (1 min vs 12 min), but sending it here would add 10 min of simulated travel for critical incidents overall (15 min instead of 5 min). Travel time is kept lowest for the most urgent incidents first.",
     );
   });
 
@@ -292,5 +295,87 @@ describe("with the real flood-aware router", () => {
     expect(checkRouteEvidence(p.team, p.incident, { ...p.evidence, modes: ["water"] })).toMatch(/travel this team can't do/);
     expect(checkRouteEvidence(p.team, p.incident, { ...p.evidence, realSeconds: 1 })).toMatch(/faster than the team can move/);
     expect(checkRouteEvidence(car, p.incident, p.evidence)).toMatch(/this team moves as a road_vehicle/);
+  });
+});
+
+// ---- route evidence: geography and shape --------------------------------------------
+
+describe("route evidence checks", () => {
+  // The real road file's bounds (public/data/roads.json): the router scales distances by
+  // the cosine of their middle latitude. Aircraft ignore roads, so no nodes are needed.
+  const graph = buildGraph({ bounds: EXERCISE_BOUNDS, classes: [], nodes: [], edges: [] });
+  const grid: FloodGrid = {
+    bounds: { west: -117.169, east: -117.167, north: 32.763, south: 32.761 }, cols: 2, rows: 2, dLon: 0.001, dLat: 0.001,
+    ground: new Float32Array(4).fill(10), seeds: [0, 1], channel: new Float32Array([9, 9]), gaugeCol: 0,
+  };
+  const { west, east, south, north } = EXERCISE_BOUNDS;
+  const mid = (south + north) / 2;
+  const flights: [string, [number, number], [number, number]][] = [
+    ["south edge, east to west", [east, south], [west, south]],
+    ["north edge, west to east", [west, north], [east, north]],
+    ["corner to corner", [west, south], [east, north]],
+    ["along the middle latitude", [west, mid], [east, mid]],
+    ["short hop in the south", [-117.1625, 32.756], [-117.168, 32.762]],
+    ["due north", [-117.16, south], [-117.16, north]],
+  ];
+  test("the exercise area is exactly the checked-in road graph's area", async () => {
+    const roads = (await import("../public/data/roads.json")).default as { bounds: typeof EXERCISE_BOUNDS };
+    expect(roads.bounds).toEqual(EXERCISE_BOUNDS);
+  });
+
+  for (const [what, from, to] of flights) {
+    test(`a real helicopter route passes, and a slightly faster one doesn't: ${what}`, () => {
+      const heli = team("heli", "Heli 1", { capabilities: ["air"], longitude: from[0], latitude: from[1] });
+      const target = incident("target", { longitude: to[0], latitude: to[1] });
+      const route = planRoute(graph, grid, computeFlood(grid, 9), heli, { longitude: target.longitude!, latitude: target.latitude! });
+      if (!route.ok) throw new Error("expected an aircraft route");
+      const evidence = evidenceFor(route);
+      expect(checkRouteEvidence(heli, target, evidence)).toBeNull();
+      // The speed check still bites: 1% faster than the aircraft can fly is refused.
+      expect(checkRouteEvidence(heli, target, { ...evidence, realSeconds: evidence.realSeconds * 0.99 })).toMatch(/faster than the team can move/);
+    });
+  }
+
+  test("malformed or out-of-area evidence is refused before anything else", () => {
+    const heli = team("heli", "Heli 1", { capabilities: ["air"], longitude: -117.16, latitude: 32.76 });
+    const target = incident("target", { longitude: -117.15, latitude: 32.77 });
+    const route = planRoute(graph, grid, computeFlood(grid, 9), heli, { longitude: target.longitude!, latitude: target.latitude! });
+    if (!route.ok) throw new Error("expected an aircraft route");
+    const good = evidenceFor(route);
+    const outside = team("far", "Far 1", { capabilities: ["air"], longitude: -117.2, latitude: 32.76 });
+    expect(checkRouteEvidence(outside, target, { ...good, start: [-117.2, 32.76] })).toMatch(/start isn't a point in the exercise area/);
+    expect(checkRouteEvidence(heli, target, { ...good, end: [-117.15, 32.8] })).toMatch(/end isn't a point in the exercise area/);
+    expect(checkRouteEvidence(heli, target, { ...good, points: MAX_ROUTE_POINTS + 1 })).toMatch(/invalid number of points/);
+    expect(checkRouteEvidence(heli, target, { ...good, points: 3 })).toMatch(/single direct flight/);
+    expect(checkRouteEvidence(heli, target, { ...good, maxDepth: 0.1 })).toMatch(/single direct flight/);
+    expect(checkRouteEvidence(heli, target, { ...good, modes: ["air", "air"] })).toMatch(/travel this team can't do/);
+    expect(checkRouteEvidence(heli, target, { ...good, realSeconds: Number.MAX_VALUE * 2 })).toMatch(/no usable travel time/);
+  });
+});
+
+describe("plan reasons describe the objective", () => {
+  test("an equally fast team elsewhere is explained as a tie, not as faster", () => {
+    const plan = planAssignments({
+      incidents: [incident("A"), incident("B")],
+      teams: [team("t1", "Truck 1"), team("t2", "Truck 2")],
+      priorities: priorities({ A: "high", B: "high" }),
+      route: routes({ A: { t1: 300, t2: 300 }, B: { t1: 300, t2: 300 } }),
+    });
+    expect(pairs(plan)).toEqual({ A: "t1", B: "t2" });
+    expect(plan.proposals.find((p) => p.incident.id === "B")!.reason).toBe(
+      "Truck 1 is just as fast (5 min), and the plan that sends it here is otherwise equal; equal plans are settled by queue order, each incident taking the team first by name.",
+    );
+  });
+
+  test("an unassigned incident names who has each team and why it isn't moved", () => {
+    const plan = planAssignments({
+      incidents: [incident("crit"), incident("std")],
+      teams: [team("t1", "Truck 1")],
+      priorities: priorities({ crit: "critical", std: "standard" }),
+      route: routes({ crit: { t1: 600 }, std: { t1: 60 } }),
+    });
+    expect(plan.unassigned.find((u) => u.incident.id === "std")!.reason).toBe(
+      "Every team that can reach it is proposed for another incident (Truck 1: crit St (fictional) (critical)); sending one here would leave that incident without a team, and the plan covers the most incidents of each priority, most urgent first.",
+    );
   });
 });
