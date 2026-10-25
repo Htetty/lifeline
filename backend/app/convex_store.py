@@ -81,6 +81,11 @@ def _water_report(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def check_dispatcher(token: str | None) -> None:
+    """Raises ConvexError unless `token` is the dispatcher passcode (or none is configured)."""
+    await asyncio.to_thread(_client.query, "exercise:get", {"dispatcherToken": token} if token else {})
+
+
 async def exercise_area() -> dict[str, float]:
     """Bounds of the exercise's region: west, south, east, north."""
     return await _query("calls:exerciseArea", {})

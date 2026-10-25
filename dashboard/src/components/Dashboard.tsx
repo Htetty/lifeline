@@ -51,12 +51,20 @@ import { ACTIVE_STATUSES, DISPATCHED_STATUSES, STATUS_LABEL } from "@/lib/types"
 import { buildingSummary, isOpen, nearbyReports, pickMain, type NearbyReport } from "@/lib/grouping";
 import { computePriority, FACTOR_LABEL, TIER_RANK, type Priority } from "@/lib/priority";
 import { capitalize, capitalizeEach } from "@/lib/text";
+
+/** An incident's headline: the emergency as the call summarised it, else where it is. */
+function incidentTitle(i: Incident) {
+  return capitalize(i.summary.trim() || i.reportedAddress);
+}
+/** A call you placed yourself (phone, browser or a recording), not a scripted one. */
+const isLiveCall = (i: Incident) => i.source === "live_demo" || i.source === "recording";
 import type { BuildingPick, ResolvedBuilding } from "./FloodMap";
 import { etaMinutes, TRIP_SPEEDUP, vehiclePosition } from "../../convex/tripMath";
 import { describeReport } from "../../convex/waterReports";
 import { AssignmentPlanner } from "./AssignmentPlanner";
 import { TierPill } from "./TierPill";
 import { routeSummary } from "@/lib/routeText";
+import { useDemoSim } from "@/lib/demoSim";
 
 const FloodMap = dynamic(() => import("./FloodMap"), { ssr: false });
 
@@ -233,6 +241,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
   const [transcriptId, setTranscriptId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const demoSim = useDemoSim(settingsOpen);
   const [activityOpen, setActivityOpen] = useState(false);
   /** Activity newer than this is flagged as unseen on the bell. */
   const [activitySeenAt, setActivitySeenAt] = useState(() => Date.now());
@@ -416,6 +425,8 @@ function DashboardView({ state }: { state: ExerciseState }) {
         ACTIVE_STATUSES.includes(i.status) ? 0 : DISPATCHED_STATUSES.includes(i.status) ? 1 : 2;
       const tier = (i: Incident) => TIER_RANK[priorities.get(i.id)?.tier ?? "standard"];
       if (group(a) !== group(b)) return group(a) - group(b);
+      // Your own calls come first, above the simulated ones.
+      if (isLiveCall(a) !== isLiveCall(b)) return isLiveCall(a) ? -1 : 1;
       if (group(a) === 2) return b.updatedAt - a.updatedAt;
       return tier(a) - tier(b) || a.createdAt - b.createdAt || (b.peopleCount ?? 0) - (a.peopleCount ?? 0);
     });
@@ -653,7 +664,7 @@ function DashboardView({ state }: { state: ExerciseState }) {
           aria-expanded={settingsOpen}
           aria-label="Simulation settings"
           title="Simulation settings"
-          className={`icon-button ${settingsOpen || liveFeed ? "icon-button-on" : ""}`}
+          className={`icon-button ${settingsOpen || liveFeed || demoSim.status?.running ? "icon-button-on" : ""}`}
         >
           <GearIcon />
         </button>
@@ -662,6 +673,34 @@ function DashboardView({ state }: { state: ExerciseState }) {
             <div className="fixed inset-0 z-30" onClick={() => setSettingsOpen(false)} aria-hidden />
             <section className="settings-popover" aria-label="Simulation settings">
               <h2>Simulation</h2>
+              <div className="demo-sim">
+                <button
+                  disabled={demoSim.busy || !demoSim.status}
+                  onClick={() => {
+                    if (demoSim.status?.running) return void demoSim.stop();
+                    if (!confirm(`Run the demo in ${region.name}? This clears every incident for everyone, loads simulated teams and places scripted calls as the water rises.`)) return;
+                    setLiveFeed(false);
+                    setSelectedId(null);
+                    setPendingPick(null);
+                    setPlacingFor(null);
+                    setPlannerOpen(false);
+                    void demoSim.start(region.id);
+                  }}
+                  className={`soft-button ${demoSim.status?.running ? "soft-button-alert" : "soft-button-on"}`}
+                >
+                  {demoSim.status?.running ? "■ Stop demo" : "▶ Run demo"}
+                </button>
+                <p className="demo-sim-status">
+                  {demoSim.error ??
+                    (demoSim.status?.running
+                      ? `Running in ${REGIONS[demoSim.status.region ?? region.id].name}${demoSim.status.lastLine ? ` · ${demoSim.status.lastLine.trim()}` : ""}`
+                      : demoSim.status?.exitCode != null
+                        ? `Last run finished${demoSim.status.lastLine ? `: ${demoSim.status.lastLine.trim()}` : ""}`
+                        : demoSim.status
+                          ? "Scripted callers and simulated teams while the water rises."
+                          : "Checking the backend…")}
+                </p>
+              </div>
               <label className="block text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="exercise-area">
                 Area
               </label>
@@ -800,7 +839,10 @@ function DashboardView({ state }: { state: ExerciseState }) {
                 <li key={i.id}>
                   <button onClick={() => toggleSelected(i.id)} aria-pressed={i.id === selectedId} className="incident-card">
                     <div className="flex items-start justify-between gap-3">
-                      <p className="incident-card-title">{capitalize(i.reportedAddress)}</p>
+                      <div className="min-w-0">
+                        <p className="incident-card-title">{incidentTitle(i)}</p>
+                        {i.summary.trim() && <p className="incident-card-address">{capitalize(i.reportedAddress)}</p>}
+                      </div>
                       {i.status !== "resolved" && <TierPill priority={p} />}
                     </div>
                     {i.status !== "resolved" && !!p?.reasons.length && (
@@ -1223,10 +1265,11 @@ function IncidentDetail({
     <div className="sheet-content">
       <header className="sheet-header">
         <div className="min-w-0">
-          <h2 className="sheet-title" title={capitalize(incident.reportedAddress)}>
-            {capitalize(incident.reportedAddress)}
+          <h2 className="sheet-title" title={incidentTitle(incident)}>
+            {incidentTitle(incident)}
           </h2>
           <p className="sheet-subtitle">
+            {incident.summary.trim() && `${capitalize(incident.reportedAddress)} · `}
             {people}
             {incident.reportedPosition ? ` · ${capitalize(incident.reportedPosition)}` : ""}
             <span className="detail-id" title={incident.id}>{incident.id.slice(-8).toUpperCase()}</span>

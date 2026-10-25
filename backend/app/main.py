@@ -126,3 +126,6 @@ app.include_router(voice_router)
 
 from .twilio_media import router as twilio_router
 app.include_router(twilio_router)
+
+from .simulation import router as simulation_router
+app.include_router(simulation_router)

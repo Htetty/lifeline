@@ -162,7 +162,8 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .incident-card { display: block; width: 100%; text-align: left; padding: 14px 16px; border-radius: 14px; background: var(--surface-card); border: 1px solid #ffffff14; box-shadow: 0 1px 0 #ffffff08 inset, 0 2px 8px #0005; transition: background .15s, border-color .15s; }
 .incident-card:hover { background: #1e2125; border-color: #ffffff22; }
 .incident-card[aria-pressed="true"] { background: #26292e; border-color: #ffffff2a; box-shadow: 0 4px 14px #0006; }
-.incident-card-title { font-size: 14px; font-weight: 500; line-height: 1.4; color: var(--text); }
+.incident-card-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 14px; font-weight: 500; line-height: 1.4; color: var(--text); }
+.incident-card-address { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-muted); }
 .incident-card-reasons { margin-top: 4px; font-size: 12px; line-height: 1.5; color: #d9a3a3; }
 
 .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 6px; border: 1px solid; font: 600 10px/1.6 var(--font-geist-mono), monospace; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
@@ -309,6 +310,9 @@ a, button, input, summary { -webkit-tap-highlight-color: transparent; }
 .icon-button:hover, .icon-button-on { color: var(--text); background: var(--surface-3); }
 .settings-popover { position: absolute; z-index: 40; top: 54px; right: 16px; width: 340px; display: grid; gap: 12px; padding: 16px; background: var(--surface-1); border: 1px solid var(--line-strong); border-radius: 16px; box-shadow: 0 20px 60px #000c; animation: pop-in .2s cubic-bezier(.2, .8, .2, 1); }
 .settings-popover h2 { font-size: 14px; font-weight: 600; }
+.demo-sim { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.demo-sim .soft-button:disabled { opacity: .5; cursor: default; }
+.demo-sim-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
 .icon-badge { position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center; border-radius: 999px; background: #ef4444; color: #fff; font: 600 10px/1 var(--font-geist-sans), sans-serif; box-shadow: 0 0 0 2px var(--surface-0); }
 .activity-popover { right: 58px; width: 380px; max-height: min(70vh, 560px); grid-template-rows: auto minmax(0, 1fr); padding: 16px 8px 8px 16px; }
 .activity-popover ul { overflow-y: auto; padding-right: 8px; display: grid; gap: 2px; align-content: start; }
