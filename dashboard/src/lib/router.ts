@@ -1,4 +1,5 @@
 import { CELL_METERS, depthAt, type FloodGrid, type FloodResult } from "./flood";
+import type { RegionId } from "../../convex/regions";
 import type { RescueTeam } from "./types";
 import { tripProgress, type LegMode, type Trip, type TripLeg } from "../../convex/tripMath";
 import { moverFor, PROFILES, type Mover, type Profile } from "../../convex/vehicles";
@@ -83,8 +84,8 @@ export interface RoadFile {
   edges: [number, number, number, number][];
 }
 
-export async function loadRoads(): Promise<RoadGraph> {
-  const res = await fetch("/data/roads.json");
+export async function loadRoads(region: RegionId): Promise<RoadGraph> {
+  const res = await fetch(`/data/${region}/roads.json`);
   if (!res.ok) throw new Error(`Road data failed: ${res.status}`);
   return buildGraph((await res.json()) as RoadFile);
 }

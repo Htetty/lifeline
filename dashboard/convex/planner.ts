@@ -16,6 +16,7 @@ import {
   WATER_TOLERANCE_M,
   type PlanningInputs,
 } from "./planning";
+import { regionOf } from "./regions";
 import { priorityTier, routeEvidence } from "./schema";
 import { EXERCISE_ID } from "./seedData";
 
@@ -48,7 +49,7 @@ async function currentState(ctx: QueryCtx) {
     ...teams.map((t) => [t._id, t.name] as [string, string]),
   ]);
   const flood = floodFingerprint(incidents.map((i) => ({ ...i, id: i._id })));
-  return { inputs, fingerprint: planningFingerprint(inputs), flood, incidents, teams, names };
+  return { inputs, fingerprint: planningFingerprint(inputs), flood, incidents, teams, names, area: regionOf(exercise).bounds };
 }
 
 /** Record what the dispatcher was shown. Touches no incident, team or caller update. */
@@ -196,7 +197,7 @@ export const approvePlan = mutation({
       else if (!incident.locationVerified) fail("location isn't confirmed");
       else if (!team.available || team.currentAssignment || team.trip) fail(`${team.name} isn't available`);
       else {
-        const routeProblem = checkRouteEvidence(team, incident, evidence);
+        const routeProblem = checkRouteEvidence(team, incident, evidence, state.area);
         if (routeProblem) fail(routeProblem);
         else if (!reviewed.evidence || reviewed.basis === undefined) fail("no reviewed route was recorded for it; suggest assignments again");
         else if (Math.round(evidence.realSeconds) !== Math.round(reviewed.seconds)) {

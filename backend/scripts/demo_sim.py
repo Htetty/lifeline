@@ -1,6 +1,7 @@
-"""Demo simulation: a storm's worth of calls while the river rises, plus your own live calls.
+"""Demo simulation: a storm's worth of calls while the water rises, plus your own live calls.
 
-    python scripts/demo_sim.py                       # ~1.5 min: 22 callers, river peaks after 60 s
+    python scripts/demo_sim.py                       # ~1.5 min: 22 callers, water peaks after 60 s
+    python scripts/demo_sim.py --region sf-waterfront   # the San Francisco waterfront instead
     python scripts/demo_sim.py --calls 46 --rise 150 --max-turns 5   # the long version, every caller
     python scripts/demo_sim.py --calls 3 --rise 30   # a short smoke test
     python scripts/demo_sim.py --no-reset            # keep the current exercise (no new teams)
@@ -8,9 +9,10 @@
 What it does, against the backend on --api and the Convex deployment in backend/.env:
   1. Resets the exercise with simulated rescue teams at dry staging points
      (simulation:start), with teams finishing rescues by themselves.
-  2. Replays the 2017 San Diego River gauge record from the first reading to the peak
+  2. Replays the region's recorded storm (the 2017 San Diego River flood, or the 1983 SF
+     storm tide with a metre of sea-level rise) from the first reading to the peak
      over --rise seconds, so the flood spreads on the map.
-  3. As the water reaches each scripted caller's building (backend/scripts/sim/scenario.json,
+  3. As the water reaches each scripted caller's building (backend/scripts/sim/<region>.json,
      built by dashboard/scripts/sim/build-scenario.ts), places their call through the normal
      call stream. A second Claude plays the caller from a fictional persona and answers the
      dispatcher agent's questions, so every incident has a real transcript and extraction.
@@ -39,10 +41,9 @@ from convex import ConvexClient, ConvexError
 from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parents[2]
-SCENARIO = Path(__file__).resolve().parent / "sim" / "scenario.json"
-GAUGE_FILE = ROOT / "dashboard" / "src" / "data" / "gaugeReplay.ts"
-GAUGE_DATUM_FT = 16.48  # USGS 11023000, NAVD88 (see dashboard/src/lib/gauge.ts)
-FEET = 0.3048
+# One scenario per region (dashboard/convex/regions.ts), built by dashboard/scripts/sim/build-scenario.ts.
+SCENARIOS = Path(__file__).resolve().parent / "sim"
+REGIONS = sorted(p.stem for p in SCENARIOS.glob("*.json"))
 
 # $ per million tokens (input, output), for the cost estimate printed at the end.
 PRICES = {
@@ -103,15 +104,6 @@ def persona_text(c: dict) -> str:
     return "\n".join(lines)
 
 
-def gauge_readings() -> list[tuple[int, float]]:
-    text = GAUGE_FILE.read_text()
-    return [(int(t), float(ft)) for t, ft in re.findall(r"\[(\d+), ([\d.]+)\]", text)]
-
-
-def surface(stage_ft: float) -> float:
-    return round((GAUGE_DATUM_FT + stage_ft) * FEET, 2)
-
-
 def env() -> dict[str, str]:
     return {**{k: v for k, v in dotenv_values(ROOT / "backend" / ".env").items() if v}, **os.environ}
 
@@ -138,8 +130,9 @@ class Sim:
         self.voice_token = e.get("VOICE_BRIDGE_TOKEN", "")
         self.convex = ConvexClient(e["CONVEX_URL"])
         self.claude = anthropic.AsyncAnthropic(api_key=e.get("ANTHROPIC_API_KEY"))
-        self.scenario = json.loads(SCENARIO.read_text())
-        self.readings = gauge_readings()
+        self.scenario = json.loads((SCENARIOS / f"{args.region}.json").read_text())
+        # [time, water surface in metres NAVD88] from the region's gauge record.
+        self.readings = self.scenario["readings"]
         self.stats = Stats()
         self.run_id = uuid.uuid4().hex[:6]
         self.rng = random.Random(args.seed)
@@ -299,26 +292,26 @@ class Sim:
         while True:
             index = self.index_at(time.monotonic() - self.t0)
             if index != last:
-                at, stage = self.readings[index]
-                await self.mutation("simulation:setWaterLevel", meters=surface(stage), observedAt=at)
+                at, level = self.readings[index]
+                await self.mutation("simulation:setWaterLevel", meters=level, observedAt=at)
                 if index // 10 != last // 10 or index == self.scenario["peakIndex"]:
-                    self.log(f"🌊 river at {stage:.2f} ft (reading {index})")
+                    self.log(f"🌊 water at {level:.2f} m above sea level (reading {index})")
                 last = index
             if index >= self.scenario["peakIndex"]:
                 return
             await asyncio.sleep(self.args.water_every)
 
     async def run(self) -> None:
-        start_at, start_stage = self.readings[self.args.start_index]
+        start_at, start_level = self.readings[self.args.start_index]
         if not self.args.no_reset:
             teams = self.teams()
             await self.mutation(
                 "simulation:start", teams=teams, onSceneSpeedup=self.args.on_scene_speedup,
-                waterSurfaceElevation=surface(start_stage), waterObservedAt=start_at,
+                waterSurfaceElevation=start_level, waterObservedAt=start_at, region=self.args.region,
             )
-            print(f"Exercise reset with {len(teams)} simulated teams.")
+            print(f"Exercise reset in {self.args.region} with {len(teams)} simulated teams.")
         plan = self.schedule()
-        print(f"{len(plan)} calls over ~{plan[-1][0]:.0f}s; river rises to the 2017 peak over {self.args.rise:.0f}s. Ctrl+C to stop.\n")
+        print(f"{len(plan)} calls over ~{plan[-1][0]:.0f}s; water rises to the storm's peak over {self.args.rise:.0f}s. Ctrl+C to stop.\n")
         self.t0 = time.monotonic()
         tasks = [asyncio.create_task(self.water())]
         for at, caller in plan:
@@ -343,10 +336,11 @@ class Sim:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--api", default="http://localhost:8000")
+    p.add_argument("--region", default="mission-valley", choices=REGIONS, help="where the exercise runs")
     p.add_argument("--calls", type=int, default=22, help="how many scripted callers, spread across the storm (the scenario has 46)")
-    p.add_argument("--rise", type=float, default=60, help="seconds for the river to reach the 2017 peak")
+    p.add_argument("--rise", type=float, default=60, help="seconds for the water to reach the storm's peak")
     p.add_argument("--start-index", type=int, default=0, help="gauge reading to start from")
-    p.add_argument("--water-every", type=float, default=4, help="seconds between river level updates")
+    p.add_argument("--water-every", type=float, default=4, help="seconds between water level updates")
     p.add_argument("--min-gap", type=float, default=2, help="fewest seconds between two new calls")
     p.add_argument("--concurrency", type=int, default=12, help="simulated calls on the line at once")
     p.add_argument("--max-turns", type=int, default=3, help="most caller turns per call")

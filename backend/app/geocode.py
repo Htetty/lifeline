@@ -16,12 +16,16 @@ from dataclasses import dataclass
 
 import httpx
 
+from . import convex_store
+
 log = logging.getLogger("flood-backend.geocode")
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "lifeline-flood-dispatcher-hackathon/0.1"
-# Demo area (Mission Valley, San Diego): west, north, east, south.
-VIEWBOX = "-117.185,32.776,-117.135,32.752"
+# Searches stay inside the exercise area (dashboard/convex/regions.ts), read from Convex and
+# re-read at most this often so a region switch takes effect. Mission Valley until it's known.
+AREA_TTL_S = 60
+_area = {"viewbox": "-117.185,32.776,-117.135,32.752", "at": 0.0}  # west, north, east, south
 
 # OSM categories that point at a specific building or venue.
 PLACE_CATEGORIES = {"building", "tourism", "amenity", "shop", "office", "healthcare", "craft", "leisure", "man_made"}
@@ -50,13 +54,25 @@ class Candidate:
 
 _lock = asyncio.Lock()
 _last_request = 0.0
-_cache: dict[str, Candidate | None] = {}
+_cache: dict[tuple[str, str], Candidate | None] = {}
+
+
+async def _viewbox() -> str:
+    if time.monotonic() - _area["at"] > AREA_TTL_S:
+        _area["at"] = time.monotonic()
+        try:
+            b = await convex_store.exercise_area()
+            _area["viewbox"] = f"{b['west']},{b['north']},{b['east']},{b['south']}"
+        except Exception:  # keep the last known area; map search is best-effort
+            log.warning("couldn't read the exercise area; searching the last known one")
+    return _area["viewbox"]
 
 
 async def _search(http: httpx.AsyncClient, query: str) -> Candidate | None:
     global _last_request
-    if query in _cache:
-        return _cache[query]
+    viewbox = await _viewbox()
+    if (viewbox, query) in _cache:
+        return _cache[(viewbox, query)]
     async with _lock:
         wait = 1.0 - (time.monotonic() - _last_request)
         if wait > 0:
@@ -64,7 +80,7 @@ async def _search(http: httpx.AsyncClient, query: str) -> Candidate | None:
         _last_request = time.monotonic()
         r = await http.get(
             NOMINATIM_URL,
-            params={"q": query, "format": "jsonv2", "limit": 5, "viewbox": VIEWBOX, "bounded": 1},
+            params={"q": query, "format": "jsonv2", "limit": 5, "viewbox": viewbox, "bounded": 1},
         )
     r.raise_for_status()
     match = next((hit for hit in r.json() if _is_precise(hit)), None)
@@ -73,7 +89,7 @@ async def _search(http: httpx.AsyncClient, query: str) -> Candidate | None:
         if match
         else None
     )
-    _cache[query] = result
+    _cache[(viewbox, query)] = result
     return result
 
 

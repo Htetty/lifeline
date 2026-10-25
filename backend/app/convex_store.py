@@ -81,6 +81,11 @@ def _water_report(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def exercise_area() -> dict[str, float]:
+    """Bounds of the exercise's region: west, south, east, north."""
+    return await _query("calls:exerciseArea", {})
+
+
 async def call_ended(call_id: str) -> None:
     await _mutation("calls:callEnded", {"callId": call_id})
 

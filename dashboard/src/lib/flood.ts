@@ -1,10 +1,11 @@
+import type { Region } from "../../convex/regions";
 import type { Bounds, ElevationGrid } from "./elevation";
 
-// Simplified flood: the water surface is set by the river gauge and runs parallel
-// to the river channel (same depth above the channel along the valley). Callers'
-// reports of how deep the water is raise or lower that surface around them. Water
-// fills every cell lower than the surface AND connected to the channel or to a
-// caller's report. It ignores flow, levees, drainage and backwater, so it is an
+// Simplified flood. In a river valley the water surface is set by the river gauge and runs
+// parallel to the river channel (same depth above the channel along the valley); on a bay
+// shore it is one flat surface set by the tide gauge. Callers' reports of how deep the water
+// is raise or lower that surface around them. Water fills every cell lower than the surface
+// AND connected to the channel (or open bay water) or to a caller's report. It ignores flow, levees, drainage and backwater, so it is an
 // approximation, not a hydraulic model.
 
 export const CELL_METERS = 15;
@@ -19,6 +20,8 @@ export interface FloodGrid {
   ground: Float32Array; // NaN where unknown
   /** For each column, the row index of its lowest cell — used as river seeds. */
   seeds: number[];
+  /** Bay areas: open-water cells the flood spreads inland from (instead of `seeds`). */
+  seedCells?: number[];
   /** River channel elevation per column, smoothed to rise steadily upstream (east). */
   channel: Float32Array;
   /** Column of the stream gauge the water level is measured at. */
@@ -40,18 +43,47 @@ export function gridShape(bounds: Bounds) {
   return { dLat, dLon, cols, rows };
 }
 
-/** Building heights per grid cell from public/data/buildings.json (scripts/fetch-buildings.ts). */
-export async function loadBuildings(bounds: Bounds): Promise<Float32Array> {
-  const res = await fetch("/data/buildings.json");
+/** Building heights per grid cell from public/data/<region>/buildings.json (scripts/fetch-buildings.ts). */
+export async function loadBuildings(region: Region): Promise<Float32Array> {
+  const bounds = region.bounds;
+  const res = await fetch(`/data/${region.id}/buildings.json`);
   if (!res.ok) throw new Error(`Building data failed: ${res.status}`);
   const file = (await res.json()) as { cols: number; rows: number; cellMeters: number; runs: [number, number, number][] };
   const { cols, rows } = gridShape(bounds);
   if (file.cols !== cols || file.rows !== rows || file.cellMeters !== CELL_METERS) {
-    throw new Error("Building data is for a different flood grid; run npm run fetch:buildings");
+    throw new Error(`Building data is for a different flood grid; run npm run fetch:buildings -- --region ${region.id}`);
   }
   const heights = new Float32Array(cols * rows);
   for (const [start, length, decimetres] of file.runs) heights.fill(decimetres / 10, start, start + length);
   return heights;
+}
+
+/** Ground this far below sea level is open bay water. */
+const OPEN_WATER_M = -0.5;
+
+/** The flood grid for a region: a river valley or a bay shore (see convex/regions.ts). */
+export function buildRegionGrid(elevation: ElevationGrid, region: Region): FloodGrid {
+  return region.flood.kind === "river"
+    ? buildFloodGrid(elevation, region.bounds, region.flood.gaugeLongitude)
+    : buildBayGrid(elevation, region.bounds);
+}
+
+/**
+ * A bay shore: one flat water surface, set by the tide gauge, spreading inland from open
+ * water to every connected cell below it. The "channel" is sea level everywhere.
+ */
+export function buildBayGrid(elevation: ElevationGrid, bounds: Bounds): FloodGrid {
+  const { dLat, dLon, cols, rows } = gridShape(bounds);
+  const ground = new Float32Array(cols * rows);
+  const seedCells: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      ground[i] = elevation.sample(bounds.west + (c + 0.5) * dLon, bounds.north - (r + 0.5) * dLat) ?? NaN;
+      if (ground[i] < OPEN_WATER_M) seedCells.push(i);
+    }
+  }
+  return { bounds, cols, rows, dLon, dLat, ground, seeds: [], seedCells, channel: new Float32Array(cols), gaugeCol: 0 };
 }
 
 export function buildFloodGrid(elevation: ElevationGrid, bounds: Bounds, gaugeLon: number): FloodGrid {
@@ -237,14 +269,14 @@ export function computeFlood(grid: FloodGrid, waterSurface: number, observations
   const wet = new Uint8Array(cols * rows);
   const queue: number[] = [];
 
-  grid.seeds.forEach((r, c) => {
-    if (r < 0) return;
-    const i = r * cols + c;
+  const seed = (i: number) => {
     if (ground[i] < surface(i)) {
       wet[i] = 1;
       queue.push(i);
     }
-  });
+  };
+  grid.seeds.forEach((r, c) => r >= 0 && seed(r * cols + c));
+  grid.seedCells?.forEach(seed);
 
   while (queue.length) {
     const i = queue.pop()!;

@@ -1,5 +1,5 @@
 import type { Doc } from "./_generated/dataModel";
-import { EXERCISE_BOUNDS } from "./seedData";
+import { REGIONS, DEFAULT_REGION, type Bounds } from "./regions";
 import { moverFor, PROFILES, type Mover } from "./vehicles";
 
 // Shared by the dashboard's assignment planner and the server's approval checks.
@@ -209,28 +209,22 @@ export const MAX_ROUTE_POINTS = 50_000;
  * is reached on foot from the nearest road, or by air. About 1 km either way.
  */
 const AREA_MARGIN_DEG = 0.01;
-const PLAN_AREA = {
-  west: EXERCISE_BOUNDS.west - AREA_MARGIN_DEG,
-  east: EXERCISE_BOUNDS.east + AREA_MARGIN_DEG,
-  south: EXERCISE_BOUNDS.south - AREA_MARGIN_DEG,
-  north: EXERCISE_BOUNDS.north + AREA_MARGIN_DEG,
-};
-const inArea = (p: number[]) =>
+const inArea = (p: number[], area: Bounds) =>
   p.length === 2 &&
   p.every(Number.isFinite) &&
-  p[0] >= PLAN_AREA.west &&
-  p[0] <= PLAN_AREA.east &&
-  p[1] >= PLAN_AREA.south &&
-  p[1] <= PLAN_AREA.north;
+  p[0] >= area.west - AREA_MARGIN_DEG &&
+  p[0] <= area.east + AREA_MARGIN_DEG &&
+  p[1] >= area.south - AREA_MARGIN_DEG &&
+  p[1] <= area.north + AREA_MARGIN_DEG;
 
 /**
  * Planar distance with the east-west scale at the area's north edge. The router scales by
  * the cosine of its graph's middle latitude; within the area this cosine is never larger,
  * so the result is never longer than the router's own distance (a safe speed lower bound).
  */
-const COS_NORTH = Math.cos((PLAN_AREA.north * Math.PI) / 180);
-function metresAtMost(a: number[], b: number[]) {
-  return Math.hypot((b[0] - a[0]) * 111_320 * COS_NORTH, (b[1] - a[1]) * 111_320);
+function metresAtMost(a: number[], b: number[], area: Bounds) {
+  const cosNorth = Math.cos(((area.north + AREA_MARGIN_DEG) * Math.PI) / 180);
+  return Math.hypot((b[0] - a[0]) * 111_320 * cosNorth, (b[1] - a[1]) * 111_320);
 }
 
 /**
@@ -246,17 +240,19 @@ export function checkRouteEvidence(
   team: Pick<Doc<"teams">, "longitude" | "latitude" | "capabilities">,
   incident: Pick<Doc<"incidents">, "longitude" | "latitude">,
   r: RouteEvidence,
+  /** The exercise region's area. */
+  area: Bounds = REGIONS[DEFAULT_REGION].bounds,
 ): string | null {
-  if (!Array.isArray(r.start) || !inArea(r.start)) return "route start isn't a point in the exercise area";
-  if (!Array.isArray(r.end) || !inArea(r.end)) return "route end isn't a point in the exercise area";
+  if (!Array.isArray(r.start) || !inArea(r.start, area)) return "route start isn't a point in the exercise area";
+  if (!Array.isArray(r.end) || !inArea(r.end, area)) return "route end isn't a point in the exercise area";
   if (!Number.isInteger(r.points) || r.points < 2 || r.points > MAX_ROUTE_POINTS) return "route has an invalid number of points";
   if (!Number.isFinite(r.maxDepth) || r.maxDepth < 0) return "route has an invalid water depth";
   if (!Number.isFinite(r.realSeconds) || r.realSeconds <= 0) return "route has no usable travel time";
   const mover = moverFor(team.capabilities);
   if (r.mover !== mover) return `route is for a ${r.mover}, but this team moves as a ${mover}`;
   if (incident.longitude == null || incident.latitude == null) return "incident has no location";
-  if (metresAtMost(r.start, [team.longitude, team.latitude]) > SAME_POINT_M) return "route doesn't start at the team";
-  if (metresAtMost(r.end, [incident.longitude, incident.latitude]) > SAME_POINT_M) return "route doesn't end at the incident";
+  if (metresAtMost(r.start, [team.longitude, team.latitude], area) > SAME_POINT_M) return "route doesn't start at the team";
+  if (metresAtMost(r.end, [incident.longitude, incident.latitude], area) > SAME_POINT_M) return "route doesn't end at the incident";
   if (!r.modes.length || new Set(r.modes).size !== r.modes.length || r.modes.some((m) => !ALLOWED_MODES[mover].includes(m))) {
     return "route uses travel this team can't do";
   }
@@ -267,7 +263,7 @@ export function checkRouteEvidence(
   if (r.limit !== limit) return "route used the wrong depth limit";
   if (limit != null && !(r.maxDepth <= limit)) return "route drives through water deeper than the team's limit";
   // A relative epsilon only absorbs floating-point rounding between the two calculations.
-  if (r.realSeconds * (1 + 1e-9) < metresAtMost(r.start, r.end) / MAX_SPEED[mover]) return "travel time is faster than the team can move";
+  if (r.realSeconds * (1 + 1e-9) < metresAtMost(r.start, r.end, area) / MAX_SPEED[mover]) return "travel time is faster than the team can move";
   return null;
 }
 
