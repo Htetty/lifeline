@@ -55,9 +55,9 @@ class Clock:
         return self.now
 
 
-async def share(recipient=CALLER, **kwargs):
+async def share(recipient=CALLER, save_location=None, **kwargs):
     bridge, clock = Bridge(**kwargs), Clock()
-    s = ls.LocationShare(CALL, recipient, bridge, clock=clock)
+    s = ls.LocationShare(CALL, recipient, bridge, clock=clock, save_location=save_location)
     s.start()
     await settle(s)
     return s, bridge, clock
@@ -352,6 +352,95 @@ def test_bridge_needs_a_token_and_a_loopback_url(monkeypatch):
 
 
 # Voice session ------------------------------------------------------------------------
+
+POINT = {"latitude": 32.7612, "longitude": -117.1675, "accuracyMeters": 9,
+         "capturedAt": "2026-10-25T10:00:00.000Z"}
+
+
+@pytest.mark.asyncio
+async def test_confirmed_fix_updates_the_same_calls_map_candidate_once():
+    save = AsyncMock(return_value={"saved": True})
+    s, _, _ = await share(save_location=save)
+    await consent(s)
+    body = {"requestId": s.request["id"], "callId": CALL, "status": "confirmed", "location": POINT}
+    for wrong in ({**body, "callId": "CA" + "c" * 32}, {**body, "requestId": "f" * 32}):
+        s.apply(wrong)
+    save.assert_not_awaited()
+    s.apply(body)
+    await settle(s)
+    save.assert_awaited_once_with(CALL, body["requestId"], POINT)
+    assert "saved as the incident's map candidate" in s.state()
+    assert "not verified by the dispatcher" in s.state()
+    s.apply(body)
+    s.tick()
+    await settle(s)
+    assert save.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_map_save_retries_a_lost_response_without_repeating_the_location_ack(monkeypatch):
+    save = AsyncMock(side_effect=[OSError("response lost"), {"saved": True}])
+    monkeypatch.setattr(ls.asyncio, "sleep", AsyncMock())
+    s, _, _ = await share(save_location=save)
+    await consent(s)
+    s.apply({"requestId": s.request["id"], "callId": CALL, "status": "confirmed", "location": POINT})
+    await settle(s)
+    assert save.await_count == 2 and save.await_args_list[0] == save.await_args_list[1]
+    assert s.map_saved is True
+    assert [kind for kind, _ in s.outbox].count("received") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_witness_or_late_confirmation_never_updates_the_map():
+    for ended in (False, True):
+        save = AsyncMock()
+        s, _, _ = await share(save_location=save)
+        await consent(s)
+        if ended:
+            await s.close()
+        else:
+            s.after_turn(turn(caller_at_rescue_location="no"), "q")
+        s.apply({"requestId": s.request["id"], "callId": CALL, "status": "confirmed", "location": POINT})
+        await settle(s)
+        save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_map_save_is_background_work_and_hangup_bounds_a_stalled_write(monkeypatch):
+    monkeypatch.setattr(ls, "MAP_FLUSH_S", 0.01)
+    started = asyncio.Event()
+    async def save(*args):
+        started.set()
+        await asyncio.Event().wait()
+    s, _, clock = await share(save_location=save)
+    await consent(s)
+    s.apply({"requestId": s.request["id"], "callId": CALL, "status": "confirmed", "location": POINT})
+    await asyncio.wait_for(started.wait(), 1)
+    clock.now += ls.CONTINUE_WAIT_S
+    assert s.next_line() == ls.RECEIVED
+    assert s.map_saved is None
+    await asyncio.wait_for(s.close(), 1)
+    assert not s.tasks
+
+
+@pytest.mark.asyncio
+async def test_hangup_flushes_a_confirmation_already_received_before_the_call_ends():
+    save = AsyncMock(return_value={"saved": True})
+    s, _, _ = await share(save_location=save)
+    await consent(s)
+    s.apply({"requestId": s.request["id"], "callId": CALL, "status": "confirmed", "location": POINT})
+    # No event-loop yield between accepting Confirm and hang-up.
+    await s.close()
+    save.assert_awaited_once_with(CALL, s.request["id"], POINT)
+    assert s.map_saved is True and s.next_line() is None
+
+
+def test_phone_sessions_enable_incident_location_writes(monkeypatch):
+    from app import convex_store
+    save = AsyncMock()
+    monkeypatch.setattr(convex_store, "location_from_phone", save)
+    monkeypatch.setattr(ls.PhotonBridge, "from_env", lambda: Bridge())
+    assert ls.LocationShare.for_call(CALL, CALLER).save_location is save
 
 @pytest.fixture
 def session():

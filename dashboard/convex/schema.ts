@@ -131,6 +131,11 @@ export default defineSchema({
     locationVerified: v.boolean(),
     /** How an unverified location was found, e.g. "Map search: Days Inn San Diego Hotel Circle". */
     locationNote: v.optional(v.union(v.string(), v.null())),
+    /** Receipt for a Photon fix supplying the existing map candidate; never dispatcher verification. */
+    phoneLocation: v.optional(v.object({
+      requestId: v.string(), latitude: v.number(), longitude: v.number(),
+      accuracyMeters: v.number(), capturedAt: v.string(), active: v.boolean(),
+    })),
     peopleCount: v.union(v.number(), v.null()),
     reportedPosition: v.union(v.string(), v.null()),
     hazards: v.array(hazard),
